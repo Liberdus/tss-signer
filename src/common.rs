@@ -1,0 +1,329 @@
+#![allow(dead_code)]
+
+use crate::curv::elliptic::curves::traits::{ECPoint, ECScalar};
+use crate::errors::TssError;
+#[cfg(target_arch = "wasm32")]
+use crate::log;
+
+use aes_gcm::aead::{Aead, NewAead};
+use aes_gcm::{Aes256Gcm, Nonce};
+use rand::{rngs::OsRng, RngCore};
+
+use crate::curv::{
+    arithmetic::num_bigint::BigInt,
+    arithmetic::traits::Converter,
+    elliptic::curves::secp256_k1::{Secp256k1Point as Point, Secp256k1Scalar as Scalar},
+};
+
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use sha3::{Digest, Keccak256};
+
+use crate::errors::Result;
+
+pub type Key = String;
+
+#[allow(dead_code)]
+pub const AES_KEY_BYTES_LEN: usize = 32;
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct AEAD {
+    pub ciphertext: Vec<u8>,
+    pub tag: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct PartySignup {
+    pub number: u16,
+    pub uuid: String,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Index {
+    pub key: Key,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Entry {
+    pub key: Key,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Params {
+    pub parties: String,
+    pub threshold: String,
+}
+
+#[allow(dead_code)]
+pub fn aes_encrypt(key: &[u8], plaintext: &[u8]) -> Result<AEAD> {
+    let aes_key = aes_gcm::Key::from_slice(key);
+    let cipher = Aes256Gcm::new(aes_key);
+
+    let mut nonce = [0u8; 12];
+    let mut rng = OsRng::new()?;
+    rng.fill_bytes(&mut nonce);
+    let nonce = Nonce::from_slice(&nonce);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|_e| TssError::UnknownError {
+            msg: ("encryption failure!").to_string(),
+            line: (line!()),
+        })?;
+    Ok(AEAD {
+        ciphertext: ciphertext,
+        tag: nonce.to_vec(),
+    })
+}
+
+#[allow(dead_code)]
+pub fn aes_decrypt(key: &[u8], aead_pack: AEAD) -> Result<Vec<u8>> {
+    let aes_key = aes_gcm::Key::from_slice(key);
+    let nonce = Nonce::from_slice(&aead_pack.tag);
+    let gcm = Aes256Gcm::new(aes_key);
+
+    let out = gcm
+        .decrypt(nonce, aead_pack.ciphertext.as_slice())
+        .map_err(|_e| TssError::UnknownError {
+            msg: ("aes_decrypt").to_string(),
+            line: (line!()),
+        });
+    out
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn sleep(ms: u32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn sleep(ms: u32) {
+    std::thread::sleep(core::time::Duration::from_millis(ms as u64));
+}
+
+pub async fn postb<T>(client: &Client, addr: &str, path: &str, body: T) -> Result<String>
+where
+    T: serde::ser::Serialize,
+{
+    let url = format!("{}/{}", addr, path);
+    let retries = 3;
+    for _i in 1..retries {
+        let res = client
+            .post(url.clone())
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&body)
+            .send()
+            .await;
+        if let Ok(res) = res {
+            return Ok(res.text().await?);
+        }
+    }
+    Err(TssError::UnknownError {
+        msg: ("postb").to_string(),
+        line: (line!()),
+    })
+}
+
+pub async fn broadcast(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    round: &str,
+    data: String,
+    sender_uuid: String,
+) -> Result<()> {
+    let key = format!("{}-{}-{}", party_num, round, sender_uuid);
+    let entry = Entry { key, value: data };
+    let res_body = postb(client, addr, "set", entry).await?;
+    let u: std::result::Result<(), ()> = serde_json::from_str(&res_body)?;
+    Ok(u.unwrap())
+}
+
+pub async fn sendp2p(
+    client: &Client,
+    addr: &str,
+    party_from: u16,
+    party_to: u16,
+    round: &str,
+    data: String,
+    sender_uuid: String,
+) -> Result<()> {
+    let key = format!("{}-{}-{}-{}", party_from, party_to, round, sender_uuid);
+
+    let entry = Entry { key, value: data };
+
+    let res_body = postb(client, addr, "set", entry).await?;
+    let u: std::result::Result<(), ()> = serde_json::from_str(&res_body)?;
+    Ok(u.unwrap())
+}
+
+pub async fn poll_for_broadcasts(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    n: u16,
+    round: &str,
+    sender_uuid: String,
+    delay: u32,
+) -> Result<Vec<String>> {
+    println!("[{:?}] party {:?} {:?} {:?} => poll_for_broadcast", round, party_num, n, sender_uuid);
+    let mut ans_vec = Vec::new();
+    for i in 1..=n {
+        if i != party_num {
+            let key = format!("{}-{}-{}", i, round, sender_uuid);
+            let index = Index { key };
+            loop {
+                sleep(delay).await;
+                // add delay to allow the server to process request:
+                let res_body = postb(client, addr, "get", index.clone()).await?;
+                let answer: std::result::Result<Entry, ()> = serde_json::from_str(&res_body)?;
+                if let Ok(answer) = answer {
+                    ans_vec.push(answer.value);
+                    println!("[{:?}] party {:?} => party {:?}", round, i, party_num);
+                    break;
+                }
+            }
+        }
+    }
+    return Ok(ans_vec);
+}
+
+pub async fn poll_for_p2p(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    n: u16,
+    delay: u32,
+    round: &str,
+    sender_uuid: String,
+) -> Result<Vec<String>> {
+    let mut ans_vec = Vec::new();
+    for i in 1..=n {
+        if i != party_num {
+            let key = format!("{}-{}-{}-{}", i, party_num, round, sender_uuid);
+            let index = Index { key };
+            loop {
+                // add delay to allow the server to process request:
+                sleep(delay).await;
+                let res_body = postb(client, addr, "get", index.clone()).await?;
+                let answer: std::result::Result<Entry, ()> = serde_json::from_str(&res_body)?;
+                if let Ok(answer) = answer {
+                    ans_vec.push(answer.value);
+                    println!("[{:?}] party {:?} => party {:?}", round, i, party_num);
+                    break;
+                }
+            }
+        }
+    }
+    Ok(ans_vec)
+}
+
+pub fn check_sig(r: &Scalar, s: &Scalar, msg: &BigInt, pk: &Point) -> Result<bool> {
+    let r_vec = BigInt::to_vec(&r.to_big_int());
+    let s_vec = BigInt::to_vec(&s.to_big_int());
+
+    let mut signature_a = [0u8; 64];
+    for i in 0..32 {
+        signature_a[i] = r_vec[i];
+    }
+    for i in 0..32 {
+        signature_a[i + 32] = s_vec[i];
+    }
+
+    let signature = secp256k1::Signature::parse(&signature_a);
+
+    let msg_vec = BigInt::to_vec(msg);
+
+    let message = secp256k1::Message::parse(&msg_vec.try_into().unwrap());
+
+    let pubkey_a = pk.get_element().serialize();
+
+    let pubkey = secp256k1::PublicKey::parse(&pubkey_a)?;
+
+    #[cfg(target_arch = "wasm32")]
+    crate::console_log!("pubkey: {:?}", pubkey);
+    #[cfg(target_arch = "wasm32")]
+    crate::console_log!(
+        "Rust address: {:?}",
+        checksum(&hex::encode(public_key_address(&pubkey)))
+    );
+    #[cfg(target_arch = "wasm32")]
+    crate::console_log!(
+        "Rust public key: {:?}",
+        hex::encode(&pubkey.serialize())
+    );
+    
+    // message in hex
+    #[cfg(target_arch = "wasm32")]
+    crate::console_log!(
+        "Rust message hex: {:?}",
+        hex::encode(&message.serialize())
+    );
+    
+    // signature in hex
+    #[cfg(target_arch = "wasm32")]
+    crate::console_log!(
+        "Rust signature hex: {:?}",
+        hex::encode(&signature.serialize())
+    );
+
+
+    println!("Rust pubkey hex: {:?}", hex::encode(&pubkey.serialize()));
+    // log message digest
+    println!("Rust message hex: {:?}", hex::encode(&message.serialize()));
+    Ok(secp256k1::verify(&message, &signature, &pubkey))
+}
+
+pub fn public_key_address(public_key: &secp256k1::PublicKey) -> [u8; 20] {
+    let public_key = public_key.serialize();
+    println!("Rust public_key hex: {:?}", hex::encode(public_key));
+    debug_assert_eq!(public_key[0], 0x04);
+    let hash = keccak256(&public_key[1..]);
+    hash[12..32].try_into().unwrap()
+}
+
+pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+    let mut output = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(bytes);
+    hasher.finalize(&mut output);
+    output
+}
+
+const PREFIX: &str = "0x";
+
+pub fn checksum(address: &str) -> Result<String> {
+    let stripped = String::from(address.to_ascii_lowercase().trim_start_matches(PREFIX));
+
+    let mut hasher = Keccak256::new();
+    hasher.update(stripped.clone());
+    let hash_vec = hasher.finalize().to_vec();
+    let hash = hex::encode(hash_vec);
+
+    let mut checksum = String::new();
+
+    if address.len() != stripped.len() {
+        checksum.push_str(PREFIX);
+    }
+
+    for (pos, char) in hash.chars().enumerate() {
+        if pos > 39 {
+            break;
+        }
+        if u32::from_str_radix(&char.to_string()[..], 16)? > 7 {
+            checksum.push_str(&stripped[pos..pos + 1].to_ascii_uppercase());
+        } else {
+            checksum.push_str(&stripped[pos..pos + 1].to_ascii_lowercase());
+        }
+    }
+
+    Ok(checksum)
+}
