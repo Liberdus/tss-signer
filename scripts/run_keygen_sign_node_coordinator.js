@@ -3,6 +3,8 @@ const ethers = require("ethers");
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const crypto = require('@shardus/crypto-utils')
+const {stringify, parse} = require('../external/stringify-shardus');
 
 // configuration
 const useExistingKeystore = true;
@@ -11,11 +13,18 @@ let t = params.threshold;
 let n = params.parties;
 const coordinatorUrl = "http://127.0.0.1:8000";
 const provider = new ethers.providers.JsonRpcProvider("http://127.0.0.1:8545");
+const collectorHost = "http://dev.liberdus.com:6001";
+const proxyServerHost = "https://dev.liberdus.com:3030";
 const operationId = Math.floor(Math.random() * 1000000).toString();
 const parties = Array.from({length: n}, (_, i) => ({idx: i}));
 const senderAddress = "0x343AB7d3EEF70f7299781a5Fc007935A2CA663d9"
-const bridgeAddress = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
+const bridgeAddress = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000"; // 0xeacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af
+const bridgeAddressEthereum = "0x" + bridgeAddress.slice(0, 40); // 0xeacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af
 let lastCheckedTimestamp = 1
+let lastCheckedBlockNumber = 0
+
+crypto.init('69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc')
+crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
 // Directory to store keystore files
 const KEYSTORE_DIR = path.join(__dirname, "../keystores");
@@ -59,6 +68,57 @@ const saveKeystore = (partyIdx, keystore) => {
 const loadKeystore = (partyIdx) => {
   return fs.readFileSync(getKeystoreFilePath(partyIdx), 'utf8');
 };
+
+function verifyEthereumTx(obj) {
+  if (typeof obj !== 'object') {
+    throw new TypeError('Input must be an object.')
+  }
+  if (!obj.sign || !obj.sign.owner || !obj.sign.sig) {
+    throw new Error('Object must contain a sign field with the following data: { owner, sig }')
+  }
+  if (typeof obj.sign.owner !== 'string') {
+    throw new TypeError('Owner must be a public key represented as a hex string.')
+  }
+  if (typeof obj.sign.sig !== 'string') {
+    throw new TypeError('Signature must be a valid signature represented as a hex string.')
+  }
+  const { owner, sig } = obj.sign
+  const dataWithoutSign = Object.assign({}, obj)
+  delete dataWithoutSign.sign
+  const message = crypto.hashObj(dataWithoutSign)
+
+  const recoveredAddress = ethers.utils.verifyMessage(message, sig)
+  const recoveredShardusAddress = toShardusAddress(recoveredAddress)
+  const isValid = recoveredShardusAddress.toLowerCase() === owner.toLowerCase()
+
+  console.log('Signed Obj', obj)
+  console.log('Signature verification result:')
+  console.log('Is Valid:', isValid)
+  console.log('message', message)
+  console.log('Owner Address:', obj.sign.owner)
+  console.log('Recovered Address:', recoveredAddress)
+  console.log('Recovered Shardus Address:', recoveredShardusAddress)
+  return isValid
+}
+
+// validate ethers to coin transaction
+async function validateTokenToCoinTx(tx) {
+  // extract to, from and value from ethereum receipt
+  const receipt = await provider.getTransactionReceipt(tx.hash);
+  const {value, nonce} = tx;
+  console.log("receipt", receipt);
+  const {to, from, transactionHash} = receipt;
+  if (receipt.status !== 1) {
+    console.log("Transaction is not successful");
+    return false;
+  }
+  if (receipt.to.toLowerCase() !== bridgeAddressEthereum) {
+    console.log("Transaction is not for the bridge address");
+    return false;
+  }
+  // todo: wait a few more blocks to confirm the transaction
+  return {from, value, txId: transactionHash};
+}
 
 function validateCoinToTokenTx(receipt) {
   const {success, to, from, additionalInfo, type, txId} = receipt.data;
@@ -130,18 +190,63 @@ async function sign(m, key_store, delay, digest) {
   context = await m.gg18_sign_client_round7(context, delay);
   // console.log("sign round7: ");
   context = await m.gg18_sign_client_round8(context, delay);
-  // console.log("sign round8: ");
+  console.log("sign round8: ");
   sign_json = await m.gg18_sign_client_round9(context, delay);
-  // console.log("keysign json: ", sign_json);
+  console.log("keysign json: ", sign_json);
   return sign_json;
 }
 
-async function monitorNewTransactions() {
+
+async function monitorEthereumTransactions() {
+  try {
+    console.log("Monitoring Ethereum transactions...");
+    const newestBlockNumber = await provider.getBlockNumber();
+    console.log("Newest block number:", newestBlockNumber);
+    if (lastCheckedBlockNumber >= newestBlockNumber) {
+      console.log("this block has already been checked, skipping...", lastCheckedBlockNumber, newestBlockNumber);
+      return;
+    }
+    // iterate through the new blocks and get the transactions
+    for (let i = lastCheckedBlockNumber + 1; i <= newestBlockNumber; i++) {
+      console.log("Checking txs from block number:", i);
+      const block = await provider.getBlockWithTransactions(i);
+      const transactions = block.transactions.filter((tx) => tx.to.toLowerCase() === bridgeAddressEthereum);
+      let validTransactions = [];
+      if (transactions.length > 0) {
+        for (const tx of transactions) {
+          const validateResult = await validateTokenToCoinTx(tx);
+          if (!validateResult) {
+            console.log("Transaction is not valid, skipping...");
+            continue;
+          }
+          validTransactions.push(validateResult);
+        }
+        console.log("Valid transactions:", validTransactions);
+      }
+      if (txQueue.length + validTransactions.length > txQueueSize) {
+        throw new Error("Not enough space in the transaction queue");
+      }
+      for (const validTx of validTransactions) {
+        if (txQueueMap.has(validTx.txId)) {
+          console.log("Transaction already in queue, skipping...", validTx.txId);
+          continue;
+        }
+        txQueue.push({receipt: validTx, from: validTx.from, value: validTx.value, txId: validTx.txId, type: "tokenToCoin"});
+        txQueueMap.set(validTx.txId, {status: "pending"});
+        console.log("Transaction added to queue:", validTx);
+      }
+      lastCheckedBlockNumber = newestBlockNumber;
+    }
+  } catch (error) {
+    console.error("Error monitoring Ethereum transactions:", error);
+  }
+}
+
+async function monitorLiberdusTransactions() {
+  return
   console.log("Monitoring new transactions...");
-  // Online flow - existing implementation
-  const collectorUrl = "http://dev.liberdus.com:6001/api/transaction";
-  const query = `?accountId=${bridgeAddress}&beforeTimestamp=${lastCheckedTimestamp}&page=1`;
-  const url = collectorUrl + query;
+  const query = `?accountId=${bridgeAddress}&afterTimestamp=${lastCheckedTimestamp}&page=1`;
+  const url = collectorHost + "/api/transaction" + query;
 
   const response = await axios.get(url)
   const {success, totalTransactions, transactions} = response.data;
@@ -164,7 +269,13 @@ async function monitorNewTransactions() {
           console.log("Transaction already in queue, skipping...");
           return;
         }
-        txQueue.push({receipt, from: validateResult.from, value: validateResult.value, txId: validateResult.txId, type: "coinToToken"});
+        txQueue.push({
+          receipt,
+          from: validateResult.from,
+          value: validateResult.value,
+          txId: validateResult.txId,
+          type: "coinToToken"
+        });
         txQueueMap.set(validateResult.txId, {status: "pending"});
         console.log("Transaction added to queue:", receipt);
       });
@@ -205,7 +316,7 @@ async function DKG(items) {
   return results;
 }
 
-async function signTransaction(item, tx, digest) {
+async function signEthereumTransaction(item, tx, digest) {
   let signedTx = null
   let delay = Math.max(Math.random() % 500, 100);
   console.log(`Signing transaction with party ${item.idx}`);
@@ -237,7 +348,49 @@ async function signTransaction(item, tx, digest) {
   return signedTx;
 }
 
-async function injectTransaction(signedTx) {
+
+async function signLiberdusTransaction(item, tx, digest) {
+  let signedTx = null
+  let delay = Math.max(Math.random() % 500, 100);
+  console.log(`Signing transaction with party ${item.idx}`);
+  //select random signer
+  res = JSON.parse(await sign(gg18, item.res, delay, digest));
+  console.log("Sign result: ", res);
+  // recover the address
+  console.log("digest", digest);
+  const signature = {
+    r: "0x" + res[0],
+    s: "0x" + res[1],
+    v: Number(res[2]),
+  };
+  console.log("unjoined signature", signature);
+  // serialize signature
+  const serializedSignature = ethers.utils.joinSignature(signature);
+  let address = ethers.utils.recoverAddress(digest, signature);
+  const publicKey = ethers.utils.recoverPublicKey(digest, signature);
+  const computeAddress = ethers.utils.computeAddress(publicKey);
+
+  console.log("Signature:", serializedSignature);
+  console.log("Recovered Public Key:", publicKey);
+  console.log("recover address by etherjs", address);
+  console.log("computed Ethereum Address:", computeAddress);
+  // Serialize and output the signed transaction
+  signedTx = {
+    ...tx,
+    sign: {
+      owner: tx.from,
+      sig: serializedSignature,
+    }
+  }
+  console.log("Signed liberdus transaction:", signedTx);
+  const isValid = verifyEthereumTx(signedTx)
+  if (!isValid) {
+    console.log("Signature is not valid");
+  }
+  return signedTx;
+}
+
+async function injectEthereumTx(signedTx) {
   if (!signedTx) {
     return;
   }
@@ -262,6 +415,47 @@ async function injectTransaction(signedTx) {
     const senderBalance = await provider.getBalance(receipt.from);
     console.log("Recipient address balance:", ethers.utils.formatEther(balance));
     console.log("Sender address balance:", ethers.utils.formatEther(senderBalance));
+  } catch (e) {
+    console.log("Error sending transaction:", e);
+  }
+}
+
+async function injectLiberdusTx(signedTx) {
+  if (!signedTx) {
+    return;
+  }
+  try {
+    console.log("Injecting signed transaction to Liberdus network", signedTx);
+    const body = {tx: stringify(signedTx)}
+    const injectUrl = proxyServerHost + "/inject";
+    console.log("Inject url:", injectUrl, body);
+
+    const waitTime = signedTx.timestamp - Date.now()
+    if (waitTime > 0) {
+      console.log("Waiting for the transaction to be injected...", waitTime);
+      await sleep(waitTime);
+    }
+
+    const res = await axios.post(injectUrl, body);
+    if (res.status !== 200 || res.data?.result?.success !== true) {
+      console.log("Error injecting transaction to Liberdus network:", res.data);
+      return;
+    }
+    console.log("Transaction hash:", res.data.result.txId);
+    // Wait for the transaction to be mined
+    await sleep(6000);
+    const receipt = await getLiberdusReceipt(res.data.result.txId);
+    console.log("Transaction receipt:", receipt);
+    // Check the transaction status
+    if (receipt.success === true) {
+      console.log("Transaction was successful");
+    } else {
+      throw new Error("Transaction failed");
+    }
+    const balance = await getLiberdusAccountBalance(receipt.to);
+    const senderBalance = await getLiberdusAccountBalance(receipt.from);
+    console.log("Recipient address balance:", balance);
+    console.log("Sender address balance:", senderBalance);
   } catch (e) {
     console.log("Error sending transaction:", e);
   }
@@ -294,49 +488,175 @@ async function processCoinToToken(to, value) {
   await Promise.all(
     keyShares.map(async (item) => {
       if (item.idx < t + 1) {
-        const signedTx = await signTransaction(item, tx, digest);
-        await injectTransaction(signedTx);
+        const signedTx = await signEthereumTransaction(item, tx, digest);
+        await injectEthereumTx(signedTx);
       }
     })
   );
 }
 
-
-// run the monitor every 30 seconds
-setInterval(async () => {
-  try {
-    await monitorNewTransactions();
-  } catch (error) {
-    console.error("Error monitoring new transactions:", error);
+async function processTokenToCoin(to, value, memo = "") {
+  const tx = {
+    from: toShardusAddress(senderAddress),
+    to: toShardusAddress(to),
+    amount: BigInt(value._hex),
+    type: "transfer",
+    memo,
+  };
+  tx.chatId = calculateChatId(tx.from, tx.to);
+  const currentCycleRecord = await getLatestCycleRecord();
+  let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
+  while (futureTimestamp < Date.now()) {
+    futureTimestamp += 30 * 1000
   }
-}, 10000);
+  tx.timestamp = futureTimestamp
+  // since we have to pick a future timestamp, we need to wait until it is time to submit the tx
+  console.log("Unsigned transaction:", tx);
+  const hashMessage = crypto.hashObj(tx);
+  // convert hash message string to bytes
+  const hashMessageBytes = Buffer.from(hashMessage, 'hex');
+  // let digest = ethers.utils.keccak256(hashMessageBytes);
+  let digest = ethers.utils.hashMessage(hashMessage);
+  console.log("Transaction hash to sign:", hashMessage);
+  console.log("Transaction digest to sign:", digest);
 
-// Process the transaction queue every 10 seconds
-setInterval(async () => {
-  if (txQueue.length > 0 && !processing) {
-    const tx = txQueue.shift(); // Get the first transaction in the queue
-    txQueueMap.set(tx.id, {status: "processing"}); // Update the transaction status
-    console.log("Processing transaction:", tx);
-    try {
-      // Process the transaction here
-      processing = true;
-      if (tx.type === "coinToToken") {
-        await processCoinToToken(tx.from, tx.value)
+  let keyShares = await DKG(parties);
+
+  // ask each party to sign the transaction and inject it asynchronously
+  await Promise.all(
+    keyShares.map(async (item) => {
+      if (item.idx < t + 1) {
+        const signedTx = await signLiberdusTransaction(item, tx, digest);
+        console.log("Waiting for the transaction to be injected...");
+        await injectLiberdusTx(signedTx);
       }
-      // After processing, update the transaction status
-      txQueueMap.set(tx.id, {status: "completed"}); // be careful about memory leak
-    } catch (error) {
-      console.error("Error processing transaction:", error);
-      // add the transaction back to the queue
-      txQueue.push(tx);
-      txQueueMap.set(tx.id, {status: "pending"}); // Reset the transaction status
-    }
-    processing = false;
-  }
-}, txQueueInterval);
+    })
+  );
+}
 
-monitorNewTransactions().then(() => {
-  console.log("Monitoring started...");
+async function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function getLiberdusReceipt(txId) {
+  const url = proxyServerHost + "/transaction/" + txId;
+  let count = 0;
+  let response = null;
+  while (count < 10) {
+    try {
+      response = await axios.get(url);
+      if (response.status === 200) {
+        break;
+      }
+    } catch (e) {
+      console.log("Error getting transaction receipt:", e);
+    }
+    count++;
+    await sleep(1000);
+  }
+  if (!response) {
+    console.log("Failed to get transaction receipt");
+    return null;
+  }
+  return response.data.transaction;
+}
+
+async function getLiberdusAccountBalance(address) {
+  const url = proxyServerHost + "/account/" + address;
+  let count = 0;
+  let response = null;
+  while (count < 10) {
+    try {
+      response = await axios.get(url);
+      if (response.status === 200) {
+        break;
+      }
+    } catch (e) {
+      console.log("Error getting transaction receipt:", e);
+    }
+    count++;
+    await sleep(1000);
+  }
+  if (!response || response.data == null || response.data.account == null) {
+    console.log("Failed to get transaction receipt");
+    return null;
+  }
+  return ethers.utils.formatEther(balance);
+}
+
+async function getLatestCycleRecord() {
+  const url = collectorHost + "/api/cycleinfo?count=1";
+  const response = await axios.get(url);
+  const {success, cycles} = response.data;
+  if (success) {
+    console.log("Latest cycle record:", cycles[0]);
+    return cycles[0].cycleRecord;
+  } else {
+    console.log("Failed to get latest cycle record");
+    return null;
+  }
+}
+function calculateChatId(from, to) {
+  return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
+}
+function toShardusAddress(addressStr) {
+  //change this:0x665eab3be2472e83e3100b4233952a16eed20c76
+  //    to this:  665eab3be2472e83e3100b4233952a16eed20c76000000000000000000000000
+  return addressStr.slice(2).toLowerCase() + '0'.repeat(24)
+}
+
+
+async function main() {
+  console.log("Starting TSS party...");
+  setInterval(async () => {
+    try {
+      await monitorLiberdusTransactions();
+    } catch (error) {
+      console.error("Error monitoring new transactions:", error);
+    }
+  }, 10000);
+
+  setInterval(async () => {
+    try {
+      await monitorEthereumTransactions();
+    } catch (error) {
+      console.error("Error monitoring new transactions:", error);
+    }
+  }, 10000);
+// Process the transaction queue every 10 seconds
+  setInterval(async () => {
+    if (txQueue.length > 0 && !processing) {
+      const validTx = txQueue.shift(); // Get the first transaction in the queue
+      txQueueMap.set(validTx.id, {status: "processing"}); // Update the transaction status
+      console.log("Processing transaction:", validTx);
+      try {
+        // Process the transaction here
+        processing = true;
+        if (validTx.type === "coinToToken") {
+          await processCoinToToken(validTx.from, validTx.value)
+        } else if (validTx.type === "tokenToCoin") {
+          await processTokenToCoin(validTx.from, validTx.value, validTx.id)
+        }
+        // After processing, update the transaction status
+        txQueueMap.set(validTx.txId, {status: "completed"}); // be careful about memory leak
+      } catch (error) {
+        console.error("Error processing transaction:", error);
+        // add the transaction back to the queue
+        txQueue.push(validTx);
+        txQueueMap.set(validTx.txId, {status: "pending"}); // Reset the transaction status
+      }
+      processing = false;
+    }
+  }, txQueueInterval);
+  // first time to monitor new transactions
+  monitorLiberdusTransactions();
+  monitorEthereumTransactions();
+}
+
+main().then(() => {
+
 }).catch((error) => {
-  console.error("Error starting monitoring:", error);
+  console.error("Error starting TSS party:", error);
 })
