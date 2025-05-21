@@ -15,8 +15,8 @@ const coordinatorUrl = "http://127.0.0.1:8000";
 const provider = new ethers.providers.JsonRpcProvider("http://127.0.0.1:8545");
 const collectorHost = "http://dev.liberdus.com:6001";
 const proxyServerHost = "https://dev.liberdus.com:3030";
-const operationId = Math.floor(Math.random() * 1000000).toString();
 const parties = Array.from({length: n}, (_, i) => ({idx: i}));
+
 const tssSenderAddress = "0x343AB7d3EEF70f7299781a5Fc007935A2CA663d9"
 const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000"; // 0xeacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af
 const liberdusContractAddress = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707";
@@ -24,7 +24,8 @@ const liberdusContractAddress = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707";
 let lastCheckedTimestamp = 1
 let lastCheckedBlockNumber = 0
 
-crypto.init('69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc')
+const cryptoInitKey = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc'
+crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
 // Directory to store keystore files
@@ -221,7 +222,9 @@ function validateCoinToTokenTx(receipt) {
 }
 
 async function keygen(m, delay) {
-  let context = await m.gg18_keygen_client_new_context(coordinatorUrl, t, n, delay, operationId);
+  // we just need to run this once
+  const keygenOperationId = cryptoInitKey.slice(2, 8);
+  let context = await m.gg18_keygen_client_new_context(coordinatorUrl, t, n, delay, keygenOperationId);
   console.log("keygen new context: ");
   context = await m.gg18_keygen_client_round1(context, delay);
   console.log("keygen round1:");
@@ -244,7 +247,8 @@ async function sign(m, key_store, delay, digest) {
     n,
     key_store,
     digest.slice(2),
-    operationId
+    // first 4 bytes of the digest
+    digest.slice(2, 10),
   );
   // console.log("sign new context: ", context);
   context = await m.gg18_sign_client_round0(context, delay);
