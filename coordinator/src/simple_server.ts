@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import fs from "fs/promises";
 import path from "path";
 import sqlite3, { Database } from "sqlite3";
+import * as TransactionDB from "./storage/transactiondb";
 
 // --- Types matching your Rust models ---
 interface Entry {
@@ -22,17 +23,6 @@ interface Params {
   threshold: string;
 }
 
-// --- Transaction Receipt Interface ---
-interface TransactionReceipt {
-  tssReceipt: object;
-  originalTx: object;
-  from: string;
-  value: string;
-  txId: string;
-  type: string;
-  status: string;
-}
-
 // --- A simple Result<T> type ---
 type Result<T> = { Ok: T } | { Err: null };
 
@@ -47,30 +37,6 @@ db.set(
   JSON.stringify({ number: 0, uuid: uuidv4() } as PartySignup)
 );
 db.set(SIGN_KEY, JSON.stringify({ number: 0, uuid: uuidv4() } as PartySignup));
-
-// --- SQLite DB ---
-let sqliteDb: Database;
-
-// Initialize SQLite database
-async function initSqlite() {
-  sqliteDb = new Database("./transactions.db");
-  // Create transactions table if it doesn't exist
-  sqliteDb.exec(`
-    CREATE TABLE IF NOT EXISTS transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tssReceipt JSON NOT NULL,
-      originalTx JSON NOT NULL,
-      fromAddress TEXT NOT NULL,
-      value TEXT NOT NULL,
-      txId TEXT NOT NULL,
-      type TEXT NOT NULL,
-      status TEXT NOT NULL,
-      createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  console.log("SQLite database initialized");
-}
 
 // --- Express app setup ---
 const app = express();
@@ -192,33 +158,34 @@ app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
 app.post(
   "/transaction",
   async (
-    req: Request<{}, {}, TransactionReceipt>,
+    req: Request<{}, {}, TransactionDB.Transaction>,
     res: Response<Result<{ txId: string }>>
   ) => {
     try {
-      const { tssReceipt, originalTx, from, value, txId, type, status } =
+      const { txId, sender, value, type, tssReceipt, originalTx, status } =
         req.body;
 
       // Validate request data
       if (
+        !txId ||
+        !sender ||
+        !value ||
+        !type ||
         !tssReceipt ||
         !originalTx ||
-        !from ||
-        !value ||
-        !txId ||
-        !type ||
         !status
       ) {
         return res.status(400).json({ Err: null });
       }
-
-      // Store in SQLite
-      await run(
-        sqliteDb,
-        `INSERT INTO transactions (tssReceipt, originalTx, fromAddress, value, txId, type, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [tssReceipt, originalTx, from, value, txId, type, status]
-      );
+      await TransactionDB.saveTransaction({
+        tssReceipt,
+        originalTx,
+        sender,
+        value,
+        txId,
+        type,
+        status,
+      });
 
       console.log(
         `Transaction saved: ${txId}, type: ${type}, status: ${status}`
@@ -234,10 +201,7 @@ app.post(
 // GET /transactions — retrieve transactions (optional)
 app.get("/transactions", async (_req, res: Response) => {
   try {
-    const transactions = await all(
-      sqliteDb,
-      "SELECT * FROM transactions ORDER BY createdAt DESC"
-    );
+    const transactions = await TransactionDB.getAllTransactions();
     console.log("Transactions fetched:", transactions.length);
     res.json({ Ok: transactions });
   } catch (e) {
@@ -253,11 +217,7 @@ app.get("/transaction/:txId", async (req: Request, res: Response) => {
     if (!txId) {
       return res.status(400).json({ Err: null });
     }
-    const transaction = await get(
-      sqliteDb,
-      "SELECT * FROM transactions WHERE txId = ?",
-      [txId]
-    );
+    const transaction = await TransactionDB.getTransactionById(txId);
     if (transaction) {
       res.json({ Ok: transaction });
     } else {
@@ -269,67 +229,58 @@ app.get("/transaction/:txId", async (req: Request, res: Response) => {
   }
 });
 
-export async function run(
-  db: Database,
-  sql: string,
-  params = [] as any
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) {
-        console.log("Error running sql " + sql);
-        console.log(err);
-        reject(err);
-      } else {
-        resolve({ id: this.lastID });
+// POST /transactions/:txId/status — update the status of a transaction
+app.post(
+  "/transaction/:txId/status",
+  async (
+    req: Request<{ txId: string }, {}, { status: string }>,
+    res: Response<Result<null>>
+  ) => {
+    try {
+      const { txId } = req.params;
+      const { status } = req.body;
+      // Validate request data
+      if (!txId || !status) {
+        return res.status(400).json({ Err: null });
       }
-    });
-  });
-}
 
-export async function get(
-  db: Database,
-  sql: string,
-  params = [] as string[]
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, result) => {
-      if (err) {
-        console.log("Error running sql: " + sql);
-        console.log(err);
-        reject(err);
-      } else {
-        resolve(result);
-      }
-    });
-  });
-}
+      // Update transaction status
+      await TransactionDB.updateTransactionStatus(txId, status);
 
-export async function all(
-  db: Database,
-  sql: string,
-  params = []
-): Promise<unknown[]> {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        console.log("Error running sql: " + sql);
-        console.log(err);
-        reject(err);
-      } else {
-        resolve(rows);
-      }
-    });
-  });
-}
+      console.log(`Transaction status updated: ${txId}, status: ${status}`);
+      res.json({ Ok: null });
+    } catch (e) {
+      console.error("Failed to update transaction status:", e);
+      res.status(500).json({ Err: null });
+    }
+  }
+);
 
+// GET /transactions/:sender — retrieve transactions by sender
+app.get("/transactions/:sender", async (req: Request, res: Response) => {
+  try {
+    const { sender } = req.params;
+    if (!sender) {
+      return res.status(400).json({ Err: null });
+    }
+    const transactions = await TransactionDB.getTransactionsBySender(sender);
+    console.log(
+      `Transactions fetched for sender ${sender}:`,
+      transactions.length
+    );
+    res.json({ Ok: transactions });
+  } catch (e) {
+    console.error("Failed to fetch transactions for sender:", e);
+    res.status(500).json({ Err: null });
+  }
+});
 // Start the server
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8000;
 
 // Initialize SQLite then start Express
 (async () => {
   try {
-    await initSqlite();
+    await TransactionDB.initializeTransactionsDatabase();
     app.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
