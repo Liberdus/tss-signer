@@ -1,11 +1,11 @@
 import {ethers} from "ethers";
-
-const {BigNumber, utils: ethersUtils, providers} = ethers;
 import * as fs from "fs";
 import * as path from "path";
 import axios, {AxiosResponse} from "axios";
 import * as crypto from '@shardus/crypto-utils';
 import * as readline from "readline-sync";
+
+const {BigNumber, utils: ethersUtils, providers} = ethers;
 
 const gg18 = require("../pkg");
 const {stringify, parse} = require('../external/stringify-shardus');
@@ -385,7 +385,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
                     }
                 });
             }
-                    lastCheckedTimestamp = Date.now();
+            lastCheckedTimestamp = Date.now();
 
         }
     } catch (e) {
@@ -543,23 +543,32 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     await injectEthereumTx(signedTx);
 }
 
-async function processTokenToCoin(to: string, value: ethers.BigNumber, memo = ""): Promise<void> {
-    console.log("Processing token to coin transaction", {to, value: value.toString()});
+async function processTokenToCoin(to: string, value: any, memo: string): Promise<void> {
+    console.log("Processing token to coin transaction", {to, value, memo});
+    // convert ethers.BigNumber to bigint
+    const amountInBigInt = BigInt(value.hex ? value.hex : value._hex);
+    console.log("Amount in bigint:", amountInBigInt);
     let signedTx: SignedTx | null = null;
     const tx: LiberdusTx = {
         from: toShardusAddress(tssSenderAddress),
         to: toShardusAddress(to),
-        amount: BigInt(value._hex),
+        amount: amountInBigInt,
         type: "transfer",
         memo,
     };
     tx.chatId = calculateChatId(tx.from, tx.to);
     const currentCycleRecord = await getLatestCycleRecord();
     let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000;
-    while (futureTimestamp < Date.now()) {
-        futureTimestamp += 30 * 1000;
+    while (futureTimestamp < Date.now() + 1000 * 30) {
+        futureTimestamp += 10 * 1000;
     }
-    tx.timestamp = futureTimestamp;
+    tx.timestamp = await confirmFutureTimestamp(memo, futureTimestamp);
+    if (verboseLogs) {
+        console.log("Current timestamp:", new Date(Date.now()));
+        console.log("Future timestamp confirmed:", new Date(tx.timestamp));
+        console.log("Wait time:", tx.timestamp - Date.now());
+        console.log("Transaction:", tx);
+    }
     const hashMessage = crypto.hashObj(tx);
     let digest = ethersUtils.hashMessage(hashMessage);
     let keyShare = await DKG(ourParty);
@@ -573,6 +582,17 @@ async function processTokenToCoin(to: string, value: ethers.BigNumber, memo = ""
 
 async function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function confirmFutureTimestamp(operationId: string, timestamp: number): Promise<number> {
+    const res = await axios.post(coordinatorUrl + "/future-timestamp", {
+        key: operationId,
+        value: timestamp
+    });
+    if (res.status !== 200) {
+        throw new Error("Failed to confirm future timestamp");
+    }
+    return res.data.timestamp
 }
 
 async function getLiberdusReceipt(txId: string): Promise<any> {
@@ -659,6 +679,7 @@ async function main(): Promise<void> {
                 if (validTx.type === "coinToToken") {
                     promises.push(processCoinToToken(validTx.from, validTx.value as ethers.BigNumber, validTx.txId))
                 } else if (validTx.type === "tokenToCoin") {
+                    console.log("Processing token to coin transaction", validTx);
                     promises.push(processTokenToCoin(validTx.from, validTx.value as ethers.BigNumber, validTx.txId))
                 }
                 const threeMinPromise = 1000 * 60 * 1.5;
