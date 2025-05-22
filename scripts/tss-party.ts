@@ -89,9 +89,9 @@ const parsedIdx = process.argv[2];
 const tssPartyIdx = parsedIdx == null ? readline.question("Enter the party index (0 to 4): ") : parsedIdx;
 const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''};
 
-const tssSenderAddress = "0x343AB7d3EEF70f7299781a5Fc007935A2CA663d9";
+const tssSenderAddress = "0x343AB7d3EEF70f7299781a5Fc007935A2CA663d9"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
 const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
-const liberdusContractAddress = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707";
+const liberdusContractAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 
 let lastCheckedTimestamp = 1;
 let lastCheckedBlockNumber = 0;
@@ -101,6 +101,9 @@ crypto.init(cryptoInitKey);
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify');
 
 const KEYSTORE_DIR = path.join(__dirname, "../keystores");
+
+// enough party subscribed error
+const enoughPartyError = "Enough party already registerd to sign this transaction";
 
 if (!fs.existsSync(KEYSTORE_DIR)) {
     fs.mkdirSync(KEYSTORE_DIR, {recursive: true});
@@ -289,6 +292,12 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
         digest.slice(2),
         operationId,
     );
+    let contextJSON = JSON.parse(context);
+    if (contextJSON.party_num_int > t + 1) {
+        console.log("Party number is greater than threshold + 1, returning");
+        throw new Error(enoughPartyError);
+    }
+
     context = await m.gg18_sign_client_round0(context, delay);
     context = await m.gg18_sign_client_round1(context, delay);
     context = await m.gg18_sign_client_round2(context, delay);
@@ -357,11 +366,8 @@ async function monitorEthereumTransactions(): Promise<void> {
 
 async function monitorLiberdusTransactions(): Promise<void> {
     try {
-        console.log("Monitoring Liberdus transactions for bridge in...");
-        console.log("Last checked timestamp:", new Date(lastCheckedTimestamp));
         const query = `?accountId=${bridgeAddressInLiberdus}&afterTimestamp=${lastCheckedTimestamp}&page=1`;
         const url = collectorHost + "/api/transaction" + query;
-        console.log("Liberdus transaction URL:", url);
         const response = await axios.get(url);
         const {success, totalTransactions, transactions} = response.data;
         if (success && totalTransactions > 0) {
@@ -499,10 +505,11 @@ async function injectLiberdusTx(signedTx: SignedTx | null): Promise<boolean> {
         console.log(`Waiting for ${waitTime} ms before injecting transaction...`);
         if (waitTime > 0) await sleep(waitTime);
         const res = await axios.post(injectUrl, body);
-        if (res.status !== 200 || res.data?.result?.success !== true) return false;
+        console.log("Liberdus tx inject response:", res.data);
+        // if (res.status !== 200 || res.data?.result?.success !== true) return false;
         await sleep(10000);
-        const receipt = await getLiberdusReceipt(res.data.result.txId);
-        if (!receipt?.success) throw new Error("Transaction failed");
+        // const receipt = await getLiberdusReceipt(res.data.result.txId);
+        // if (!receipt?.success) throw new Error("Transaction failed");
         if (verboseLogs) {
             console.log("Bridge-out transaction sent successfully!", res.data.result.txId);
         }
@@ -649,6 +656,65 @@ function toShardusAddress(addressStr: string): string {
     return addressStr.slice(2).toLowerCase() + '0'.repeat(24);
 }
 
+// WebSocket provider for event subscription
+const wsProvider = new ethers.providers.WebSocketProvider("ws://127.0.0.1:8545");
+
+function subscribeEthereumTransaction() {
+    const bridgeInterface = new ethersUtils.Interface([
+        "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)"
+    ]);
+    const contract = new ethers.Contract(liberdusContractAddress, bridgeInterface, wsProvider);
+    contract.on("BridgedOut", async (from: string, amount: ethers.BigNumber, targetAddress: string, chainId: ethers.BigNumber, timestamp: ethers.BigNumber, event: any) => {
+        try {
+            if (verboseLogs) {
+                console.log("BridgedOut event received:", { from, amount: amount.toString(), targetAddress, chainId: chainId.toString(), txHash: event.transactionHash });
+            }
+            // Validate chainId
+            if (chainId.toNumber() !== 31337) {
+                if (verboseLogs) console.log("Event chainId does not match 31337, skipping");
+                return;
+            }
+            // Validate block number if needed
+            if (!addOldTxToQueue && event.blockNumber < startingBlock) {
+                if (verboseLogs) console.log("Event is older than the server start block, skipping");
+                return;
+            }
+            // Check if already in queue
+            if (txQueueMap.has(event.transactionHash)) return;
+            // Add to queue
+            const validTx: BridgeOutEvent = {
+                from,
+                amount,
+                targetAddress,
+                chainId: chainId.toNumber(),
+                txId: event.transactionHash
+            };
+            txQueue.push({
+                receipt: validTx,
+                from: validTx.targetAddress,
+                value: validTx.amount,
+                txId: validTx.txId,
+                type: "tokenToCoin"
+            });
+            txQueueMap.set(validTx.txId, {
+                status: "pending",
+                from: validTx.from,
+                value: validTx.amount,
+                txId: validTx.txId
+            });
+            saveQueueToFile(ourParty.idx);
+            if (verboseLogs) {
+                console.log("BridgedOut event added to queue:", validTx);
+            }
+        } catch (err) {
+            console.error("Error processing BridgedOut event:", err);
+        }
+    });
+    if (verboseLogs) {
+        console.log("Subscribed to BridgedOut events via eth_subscribe");
+    }
+}
+
 async function main(): Promise<void> {
     // set starting block number
     startingBlock = await provider.getBlockNumber();
@@ -660,15 +726,15 @@ async function main(): Promise<void> {
         }
     }, 10000);
 
-    setInterval(async () => {
-        try {
-            await monitorEthereumTransactions();
-        } catch (error) {
-        }
-    }, 10000);
+    // setInterval(async () => {
+    //     try {
+    //         await monitorEthereumTransactions();
+    //     } catch (error) {
+    //     }
+    // }, 10000);
 
     setInterval(async () => {
-        console.log(`Queue length: ${txQueue.length}`, processing);
+        // console.log(`Queue length: ${txQueue.length}`, processing);
         if (txQueue.length > 0 && !processing) {
             const validTx = txQueue.shift()!;
             txQueueMap.set(validTx.txId, {status: "processing", ...validTx});
@@ -700,7 +766,19 @@ async function main(): Promise<void> {
                 });
                 saveQueueToFile(ourParty.idx);
                 console.log("Transaction processed successfully:", validTx);
-            } catch (error) {
+            } catch (error: any) {
+                if (error.message === enoughPartyError) {
+                    // todo: check if the tx is actually signed by enough parties and injected properly
+                    console.log("Transaction already signed by enough parties, skipping:", validTx);
+                    txQueueMap.set(validTx.txId, {
+                        status: "completed",
+                        from: validTx.from,
+                        value: validTx.value,
+                        txId: validTx.txId
+                    });
+                    saveQueueToFile(ourParty.idx);
+                    return;
+                }
                 txQueue.push(validTx);
                 txQueueMap.set(validTx.txId, {
                     status: "pending",
@@ -716,8 +794,9 @@ async function main(): Promise<void> {
         }
     }, txQueueInterval);
 
+    subscribeEthereumTransaction();
     monitorLiberdusTransactions();
-    monitorEthereumTransactions();
+    // monitorEthereumTransactions();
 }
 
 main().then(() => {
