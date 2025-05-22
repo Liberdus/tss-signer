@@ -164,6 +164,19 @@ app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
   }
 });
 
+app.post('/future-timestamp', (req: Request<{}, {}, Entry>, res: Response<{ timestamp: number }>) => {
+  const {key, value} = req.body;
+  const dbKey = 'future-timestamp' + key
+  const dbValue = db.get(dbKey);
+  // if value is already proposed, return it
+  if (dbValue == null) {
+    db.set(dbKey, value);
+    res.json({timestamp: parseInt(value)});
+    return
+  }
+  res.json({timestamp: parseInt(dbValue)});
+});
+
 // POST /transaction — store transaction receipt
 app.post(
   "/transaction",
