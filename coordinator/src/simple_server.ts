@@ -3,7 +3,6 @@ import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
 import fs from "fs/promises";
 import path from "path";
-import sqlite3, { Database } from "sqlite3";
 import * as TransactionDB from "./storage/transactiondb";
 
 // --- Types matching your Rust models ---
@@ -37,6 +36,17 @@ db.set(
   JSON.stringify({ number: 0, uuid: uuidv4() } as PartySignup)
 );
 db.set(SIGN_KEY, JSON.stringify({ number: 0, uuid: uuidv4() } as PartySignup));
+
+// In-memory cache to track TSS party receipts
+type CachedTransaction = {
+  tx: TransactionDB.Transaction;
+  timestamp: number; // Unix timestamp in milliseconds
+};
+const txPartyMap: Map<string, Set<string>> = new Map(); // Map<txId, Set<partyId>>
+const txCache: Map<string, CachedTransaction> = new Map(); // Map<txId, CachedTransaction>
+const THRESHOLD = 3;
+const REQUIRED_CONFIRMATIONS = THRESHOLD + 1;
+const CACHE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 // --- Express app setup ---
 const app = express();
@@ -158,12 +168,20 @@ app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
 app.post(
   "/transaction",
   async (
-    req: Request<{}, {}, TransactionDB.Transaction>,
+    req: Request<{}, {}, TransactionDB.Transaction & { party: string }>,
     res: Response<Result<{ txId: string }>>
   ) => {
     try {
-      const { txId, sender, value, type, tssReceipt, originalTx, status } =
-        req.body;
+      const {
+        txId,
+        sender,
+        value,
+        type,
+        tssReceipt,
+        originalTx,
+        status,
+        party,
+      } = req.body;
 
       // Validate request data
       if (
@@ -173,24 +191,57 @@ app.post(
         !type ||
         !tssReceipt ||
         !originalTx ||
-        !status
+        !status ||
+        !party
       ) {
         return res.status(400).json({ Err: null });
       }
-      await TransactionDB.saveTransaction({
-        tssReceipt,
-        originalTx,
-        sender,
-        value,
-        txId,
-        type,
-        status,
-      });
 
-      console.log(
-        `Transaction saved: ${txId}, type: ${type}, status: ${status}`
-      );
-      res.json({ Ok: { txId } });
+      // Add sender to the tracking map
+      if (!txPartyMap.has(txId)) {
+        txPartyMap.set(txId, new Set());
+      }
+      txPartyMap.get(txId)!.add(party);
+
+      // Cache the transaction data for later use
+      if (!txCache.has(txId)) {
+        txCache.set(txId, {
+          tx: {
+            txId,
+            sender,
+            value,
+            type,
+            tssReceipt,
+            originalTx,
+            status,
+          },
+          timestamp: Date.now(),
+        });
+      }
+
+      const receivedFrom = txPartyMap.get(txId)!;
+
+      if (receivedFrom.size >= REQUIRED_CONFIRMATIONS) {
+        // Save the transaction and clean up cache
+        const { tx } = txCache.get(txId) as CachedTransaction;
+        await TransactionDB.saveTransaction(tx);
+        console.log(
+          `Transaction saved: ${txId}, type: ${type}, status: ${status}`
+        );
+        txPartyMap.delete(txId);
+        txCache.delete(txId);
+
+        return res.json({ Ok: { txId } });
+      } else {
+        console.log(
+          `Transaction ${txId} received from ${receivedFrom.size}/${REQUIRED_CONFIRMATIONS} parties`
+        );
+        return res.status(202).json({
+          Ok: {
+            txId,
+          },
+        }); // Accepted, not yet stored
+      }
     } catch (e) {
       console.error("Failed to save transaction:", e);
       res.status(500).json({ Err: null });
@@ -198,47 +249,15 @@ app.post(
   }
 );
 
-// GET /transactions — retrieve transactions (optional)
-app.get("/transactions", async (_req, res: Response) => {
-  try {
-    const transactions = await TransactionDB.getAllTransactions();
-    console.log("Transactions fetched:", transactions.length);
-    res.json({ Ok: transactions });
-  } catch (e) {
-    console.error("Failed to fetch transactions:", e);
-    res.status(500).json({ Err: null });
-  }
-});
-
-// GET /transaction/:txId — retrieve transaction by txId
-app.get("/transaction/:txId", async (req: Request, res: Response) => {
-  try {
-    const { txId } = req.params;
-    if (!txId) {
-      return res.status(400).json({ Err: null });
-    }
-    const transaction = await TransactionDB.getTransactionById(txId);
-    if (transaction) {
-      res.json({ Ok: transaction });
-    } else {
-      res.status(404).json({ Err: null });
-    }
-  } catch (e) {
-    console.error("Failed to fetch transaction:", e);
-    res.status(500).json({ Err: null });
-  }
-});
-
-// POST /transactions/:txId/status — update the status of a transaction
+// POST /transaction/status — update the status of a transaction
 app.post(
-  "/transaction/:txId/status",
+  "/transaction/status",
   async (
-    req: Request<{ txId: string }, {}, { status: string }>,
+    req: Request<{}, {}, { txId: string; status: string }>,
     res: Response<Result<null>>
   ) => {
     try {
-      const { txId } = req.params;
-      const { status } = req.body;
+      const { txId, status } = req.body;
       // Validate request data
       if (!txId || !status) {
         return res.status(400).json({ Err: null });
@@ -256,24 +275,71 @@ app.post(
   }
 );
 
-// GET /transactions/:sender — retrieve transactions by sender
-app.get("/transactions/:sender", async (req: Request, res: Response) => {
-  try {
-    const { sender } = req.params;
-    if (!sender) {
-      return res.status(400).json({ Err: null });
+type TransactionAPIQueryParameters = {
+  sender?: string;
+  txId?: string;
+  page?: string;
+};
+
+app.get(
+  "/transaction",
+  async (
+    req: Request<{}, {}, {}, TransactionAPIQueryParameters>,
+    res: Response<
+      Result<{
+        transactions: TransactionDB.Transaction[];
+        totalPages?: number;
+        totalTranactions?: number;
+      }>
+    >
+  ) => {
+    try {
+      const { sender, txId, page } = req.query;
+      let pageNum = 1;
+      let txsPerPage = 10;
+      let transactions: TransactionDB.Transaction[] = [];
+      let totalTranactions = 0;
+      let totalPages = 0;
+      if (page) {
+        pageNum = parseInt(page);
+      }
+      const pageStart = (pageNum - 1) * txsPerPage;
+      if (txId) {
+        const transaction = await TransactionDB.getTransactionById(txId);
+        if (transaction) transactions.push(transaction);
+        res.json({ Ok: { transactions } });
+        return;
+      } else if (sender) {
+        totalTranactions = await TransactionDB.getTotalTransactionsBySender(
+          sender
+        );
+        totalPages = Math.ceil(totalTranactions / txsPerPage);
+        if (pageNum > totalPages) {
+          return res.status(400).json({ Err: null });
+        }
+        transactions = await TransactionDB.getTransactionsBySender(
+          sender,
+          txsPerPage,
+          pageStart
+        );
+      } else {
+        totalTranactions = await TransactionDB.getTotalTransactions();
+        totalPages = Math.ceil(totalTranactions / txsPerPage);
+        if (pageNum > totalPages) {
+          return res.status(400).json({ Err: null });
+        }
+        transactions = await TransactionDB.getTransactionsByPage(
+          txsPerPage,
+          pageStart
+        );
+      }
+      res.json({ Ok: { transactions, totalTranactions, totalPages } });
+    } catch (e) {
+      console.error("Failed to fetch transactions for sender:", e);
+      res.status(500).json({ Err: null });
     }
-    const transactions = await TransactionDB.getTransactionsBySender(sender);
-    console.log(
-      `Transactions fetched for sender ${sender}:`,
-      transactions.length
-    );
-    res.json({ Ok: transactions });
-  } catch (e) {
-    console.error("Failed to fetch transactions for sender:", e);
-    res.status(500).json({ Err: null });
   }
-});
+);
 // Start the server
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8000;
 
@@ -284,6 +350,17 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8000;
     app.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
+
+    setInterval(() => {
+      const now = Date.now();
+      for (const [txId, { timestamp }] of txCache.entries()) {
+        if (now - timestamp > CACHE_TIMEOUT_MS) {
+          txCache.delete(txId);
+          txPartyMap.delete(txId);
+          console.log(`Cleaned up stale transaction: ${txId}`);
+        }
+      }
+    }, 60 * 1000); // Runs every 60 seconds
   } catch (err) {
     console.error("Failed to initialize the application:", err);
     process.exit(1);
