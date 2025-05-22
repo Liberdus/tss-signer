@@ -73,24 +73,55 @@ export async function getTransactionById(
 }
 
 /**
- * Retrieve all transactions
+ * Retrieve total transactions count
+ * @returns Total transactions count
+ */
+export async function getTotalTransactions(): Promise<number> {
+  return await db.count("transactions");
+}
+
+/**
+ * Retrieve transactions by page
+ * @param limit - Number of items to return per page
+ * @param offset - Number of items to skip
  * @returns Array of Transaction objects
  */
-export async function getAllTransactions(): Promise<Transaction[]> {
+export async function getTransactionsByPage(
+  limit: number,
+  offset: number
+): Promise<Transaction[]> {
+  // Add total txs count
   return await db.all<Transaction>(
-    "SELECT * FROM transactions ORDER BY createdAt DESC"
+    "SELECT * FROM transactions ORDER BY createdAt DESC LIMIT ? OFFSET ?",
+    [limit, offset]
   );
 }
+
+/**
+ * Retrieve total transactions count by sender
+ * @param sender - Sender's address
+ * @returns Total transactions count
+ */
+export async function getTotalTransactionsBySender(
+  sender: string
+): Promise<number> {
+  return await db.count("transactions", "sender = ?", [sender]);
+}
+
 /**
  * Retrieve transactions by sender
  * @param sender - Sender's address
+ * @param limit - Number of items to return per page
+ * @param offset - Number of items to skip
  * @returns Array of Transaction objects
  */
 export async function getTransactionsBySender(
-  sender: string
+  sender: string,
+  limit: number,
+  offset: number
 ): Promise<Transaction[]> {
   return await db.all<Transaction>(
-    "SELECT * FROM transactions WHERE sender = ? ORDER BY createdAt DESC",
-    [sender]
+    "SELECT * FROM transactions WHERE sender = ? ORDER BY createdAt DESC LIMIT ? OFFSET ?",
+    [sender, limit, offset]
   );
 }
