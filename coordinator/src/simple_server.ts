@@ -135,8 +135,8 @@ app.post("/signupkeygen", async (_req, res: Response<Result<PartySignup>>) => {
 // POST /signupsign  — round-robin sign signup
 app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
   try {
-    const { threshold } = await loadParams();
-    const max = parseInt(threshold, 10) + 1;
+    const { threshold, parties } = await loadParams();
+    const max = parseInt(parties, 10);
     const key = _req.body;
     console.log("Signup sign request body:", _req.body);
 
