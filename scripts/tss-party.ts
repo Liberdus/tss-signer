@@ -68,7 +68,10 @@ interface SignedTx {
     };
 }
 
-const useExistingKeystore = true;
+const parsedIdx = process.argv[2];
+const keygenFlag = process.argv[3];
+
+const generateKeystore = keygenFlag === '--keygen';
 const loadExistingQueue = true;
 const verboseLogs = true
 const addOldTxToQueue = false;
@@ -79,21 +82,22 @@ let startingBlock = 0;
 let params: Params = loadParams();
 let t = params.threshold;
 let n = params.parties;
-const coordinatorUrl = "http://127.0.0.1:8000";
-const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider("http://127.0.0.1:8545");
+
+const chainId = 80002;
+const coordinatorUrl = "http://localhost:8000";
+const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider("https://polygon-amoy.drpc.org/");
 const collectorHost = "http://dev.liberdus.com:6001";
 const proxyServerHost = "https://dev.liberdus.com:3030";
-const parties: { idx: number }[] = Array.from({length: n}, (_, i) => ({idx: i}));
+const wsProvider = new ethers.providers.WebSocketProvider("wss://rpc-amoy.polygon.technology/");
 
-const parsedIdx = process.argv[2];
 const tssPartyIdx = parsedIdx == null ? readline.question("Enter the party index (0 to 4): ") : parsedIdx;
 const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''};
 
 const tssSenderAddress = "0x343AB7d3EEF70f7299781a5Fc007935A2CA663d9"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
 const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
-const liberdusContractAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const liberdusContractAddress = "0xac41aa5bc3b73a062de5f3aaac21c304fe9c3b79";
 
-let lastCheckedTimestamp = 1;
+let lastCheckedTimestamp = serverStartTime
 let lastCheckedBlockNumber = 0;
 
 const cryptoInitKey = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc';
@@ -224,9 +228,9 @@ async function validateTokenToCoinTx(tx: ethers.providers.TransactionResponse): 
     const from = parsedLog.args.from;
     const amount = parsedLog.args.amount;
     const targetAddress = parsedLog.args.targetAddress;
-    const chainId = parsedLog.args.chainId.toNumber();
-    console.log("BridgedOut event data:", {from, amount: amount.toString(), targetAddress, chainId});
-    if (chainId !== 31337) {
+    const parsedChainId = parsedLog.args.chainId.toNumber();
+    console.log("BridgedOut event data:", {from, amount: amount.toString(), targetAddress, chainId: parsedChainId});
+    if (parsedChainId !== chainId) {
         console.log("Transaction is for a different chain ID");
         return false;
     }
@@ -234,12 +238,13 @@ async function validateTokenToCoinTx(tx: ethers.providers.TransactionResponse): 
         from: from,
         targetAddress: targetAddress,
         amount: amount,
-        chainId: chainId,
+        chainId: parsedChainId,
         txId: receipt.transactionHash
     };
 }
 
 function validateCoinToTokenTx(receipt: any): { from: string, value: ethers.BigNumber, txId: string } | false {
+    console.log("receipt", receipt);
     const {success, to, from, additionalInfo, type, txId, timestamp} = receipt.data;
 
     if (!addOldTxToQueue) {
@@ -297,15 +302,25 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
         console.log("Party number is greater than threshold + 1, returning");
         throw new Error(enoughPartyError);
     }
+    console.log("our party number", contextJSON.party_num_int);
 
+    console.log("sign round", 0)
     context = await m.gg18_sign_client_round0(context, delay);
+    console.log("sign round", 1)
     context = await m.gg18_sign_client_round1(context, delay);
+    console.log("sign round", 2)
     context = await m.gg18_sign_client_round2(context, delay);
+    console.log("sign round", 3)
     context = await m.gg18_sign_client_round3(context, delay);
+    console.log("sign round", 4)
     context = await m.gg18_sign_client_round4(context, delay);
+    console.log("sign round", 5)
     context = await m.gg18_sign_client_round5(context, delay);
+    console.log("sign round", 6)
     context = await m.gg18_sign_client_round6(context, delay);
+    console.log("sign round", 7)
     context = await m.gg18_sign_client_round7(context, delay);
+    console.log("sign round", 8)
     context = await m.gg18_sign_client_round8(context, delay);
     const sign_json = await m.gg18_sign_client_round9(context, delay);
     console.log("Signature:", sign_json);
@@ -374,6 +389,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
             if (transactions.length > 0) {
                 transactions.forEach((receipt: any) => {
                     const validateResult = validateCoinToTokenTx(receipt);
+                    console.log("validateResult", validateResult);
                     if (!validateResult) return;
                     if (txQueue.length > txQueueSize) return;
                     if (txQueueMap.has(validateResult.txId)) return;
@@ -402,7 +418,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
 async function DKG(party: KeyShare): Promise<KeyShare> {
     if (party.res) return party;
     const partyIdx = party.idx;
-    if (useExistingKeystore && keystoreExists(partyIdx)) {
+    if (!generateKeystore && keystoreExists(partyIdx)) {
         party.res = loadKeystore(partyIdx);
     } else {
         let delay = Math.max(Math.random() % 500, 100);
@@ -480,8 +496,8 @@ async function injectEthereumTx(signedTx: string | null): Promise<boolean> {
         if (verboseLogs) {
             console.log("BridgeIn transaction sent successfully!", receipt.transactionHash);
         }
-    } catch (e) {
-        console.log("Error sending ethereum transaction:");
+    } catch (e: any) {
+        console.log("Error sending ethereum transaction:", e.message);
         // check other party injected the transaction
         if (txHash) {
             // check tx receipt from RPC
@@ -524,6 +540,7 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     console.log("Processing coin to token transaction", {to, value: value.toString()});
     const senderNonce = await provider.getTransactionCount(tssSenderAddress);
     const currentGasPrice = await provider.getGasPrice();
+    const fixedGasPrice = ethersUtils.parseUnits("160", "gwei");
     const bridgeInterface = new ethersUtils.Interface([
         "function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public"
     ]);
@@ -531,7 +548,7 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     const data = bridgeInterface.encodeFunctionData("bridgeIn", [
         "0x" + to.slice(0, 40),
         value,
-        31337,
+        chainId,
         txIdBytes32
     ]);
     const tx = {
@@ -541,8 +558,9 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
         nonce: senderNonce,
         gasLimit: 200000,
         gasPrice: currentGasPrice,
-        chainId: 31337,
+        chainId: chainId,
     };
+    console.log("eth tx to sign", tx)
     const unsignedTx = ethersUtils.serializeTransaction(tx);
     let digest = ethersUtils.keccak256(unsignedTx);
     let keyShare = await DKG(ourParty);
@@ -657,21 +675,26 @@ function toShardusAddress(addressStr: string): string {
 }
 
 // WebSocket provider for event subscription
-const wsProvider = new ethers.providers.WebSocketProvider("ws://127.0.0.1:8545");
 
 function subscribeEthereumTransaction() {
     const bridgeInterface = new ethersUtils.Interface([
         "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)"
     ]);
     const contract = new ethers.Contract(liberdusContractAddress, bridgeInterface, wsProvider);
-    contract.on("BridgedOut", async (from: string, amount: ethers.BigNumber, targetAddress: string, chainId: ethers.BigNumber, timestamp: ethers.BigNumber, event: any) => {
+    contract.on("BridgedOut", async (from: string, amount: ethers.BigNumber, targetAddress: string, parsedChainId: ethers.BigNumber, timestamp: ethers.BigNumber, event: any) => {
         try {
             if (verboseLogs) {
-                console.log("BridgedOut event received:", { from, amount: amount.toString(), targetAddress, chainId: chainId.toString(), txHash: event.transactionHash });
+                console.log("BridgedOut event received:", {
+                    from,
+                    amount: amount.toString(),
+                    targetAddress,
+                    chainId: parsedChainId.toString(),
+                    txHash: event.transactionHash
+                });
             }
             // Validate chainId
-            if (chainId.toNumber() !== 31337) {
-                if (verboseLogs) console.log("Event chainId does not match 31337, skipping");
+            if (parsedChainId.toNumber() !== chainId) {
+                if (verboseLogs) console.log("Event chainId does not match , skipping");
                 return;
             }
             // Validate block number if needed
@@ -686,7 +709,7 @@ function subscribeEthereumTransaction() {
                 from,
                 amount,
                 targetAddress,
-                chainId: chainId.toNumber(),
+                chainId: parsedChainId.toNumber(),
                 txId: event.transactionHash
             };
             txQueue.push({
@@ -716,6 +739,37 @@ function subscribeEthereumTransaction() {
 }
 
 async function main(): Promise<void> {
+    if (generateKeystore) {
+        // generate new key share
+        const partyIdx = ourParty.idx;
+        const delay = Math.max(Math.random() % 500, 100);
+        try {
+            ourParty.res = await keygen(gg18, delay);
+            saveKeystore(partyIdx, ourParty.res);
+            // sign a test message
+            const testDigest = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("test message"));
+            let res = JSON.parse(await sign(gg18, ourParty.res, delay, testDigest))
+            const signature = {
+                r: "0x" + res[0],
+                s: "0x" + res[1],
+                v: res[2],
+            };
+            const publicKey = ethersUtils.recoverPublicKey(testDigest, signature);
+            const address = ethersUtils.computeAddress(publicKey);
+            console.log("Public key and address of TSS account:", publicKey, address);
+            // write public key and address to a json file with the party index
+            const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}.json`);
+            const publicKeyData = {
+                publicKey: publicKey,
+                address: address
+            };
+            fs.writeFileSync(publicKeyFilePath, JSON.stringify(publicKeyData, null, 2));
+            process.exit(0)
+        } catch (e) {
+            console.error("Error generating key share:", e);
+            return;
+        }
+    }
     // set starting block number
     startingBlock = await provider.getBlockNumber();
     if (loadExistingQueue) loadQueueFromFile(ourParty.idx);
