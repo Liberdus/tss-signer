@@ -363,13 +363,14 @@ async function monitorEthereumTransactions(): Promise<void> {
             }
             for (const validTx of validTransactions) {
                 if (txQueueMap.has(validTx.txId)) continue;
-                txQueue.push({
+                const txData: TransactionQueueItem = {
                     receipt: validTx,
                     from: validTx.targetAddress,
                     value: validTx.amount,
                     txId: validTx.txId,
                     type: "tokenToCoin"
-                });
+                }
+                txQueue.push(txData);
                 txQueueMap.set(validTx.txId, {
                     status: "pending",
                     from: validTx.from,
@@ -380,6 +381,7 @@ async function monitorEthereumTransactions(): Promise<void> {
                 if (verboseLogs) {
                     console.log("Ethereum transaction added to queue:", validTx);
                 }
+                sendTxDataToCoordinator(txData)
             }
             lastCheckedBlockNumber = i;
         }
@@ -402,18 +404,20 @@ async function monitorLiberdusTransactions(): Promise<void> {
                     if (!validateResult) return;
                     if (txQueue.length > txQueueSize) return;
                     if (txQueueMap.has(validateResult.txId)) return;
-                    txQueue.push({
+                    const txData: TransactionQueueItem = {
                         receipt,
                         from: validateResult.from,
                         value: validateResult.value,
                         txId: validateResult.txId,
                         type: "coinToToken"
-                    });
+                    }
+                    txQueue.push(txData);
                     txQueueMap.set(validateResult.txId, {status: "pending", ...validateResult});
                     saveQueueToFile(ourParty.idx);
                     if (verboseLogs) {
                         console.log("Liberdus transaction added to queue:", validateResult);
                     }
+                    sendTxDataToCoordinator(txData)
                 });
             }
             lastCheckedTimestamp = Date.now();
@@ -423,6 +427,52 @@ async function monitorLiberdusTransactions(): Promise<void> {
         console.error("Error monitoring Liberdus transactions:", e);
     }
 }
+
+async function sendTxDataToCoordinator(txData: TransactionQueueItem): Promise<void> {
+    console.log(ethersUtils.hexValue(txData.value))
+    const tx: any = {
+        txId: txData.txId,
+        sender: txData.from,
+        value: ethersUtils.hexValue(txData.value),
+        type: txData.type,
+        tssReceipt: "",
+        originalTx: "",
+        status: "pending",
+        party: ourParty.idx,
+    }
+    try {
+        const url = `${coordinatorUrl}/transaction`;
+        const response = await axios.post(url, tx);
+        console.log("response", response.status)
+        if (response.status !== 202 && response.status !== 200) {
+            console.error("Failed to send txData to coordinator:", response.data);
+            return;
+        }
+        if (verboseLogs) {
+            console.log("Sent txData to coordinator:", response.data);
+        }
+    } catch (error) {
+        console.error("Error sending txData to coordinator:", error);
+    }
+}
+
+async function sendTxStatusToCoordinator(txId: string, status: string, tssReceipt: string): Promise<void> {
+    try {
+        const url = `${coordinatorUrl}/transaction/status`;
+        const data = { txId, status, tssReceipt };
+        const response = await axios.post(url, data);
+        if (response.status !== 202 && response.status !== 200) {
+            console.error("Failed to update transaction status to coordinator:", response.data);
+            return;
+        }
+        if (verboseLogs) {
+            console.log("Updated transaction status to coordinator:", response.data);
+        }
+    } catch (error) {
+        console.error("Error updating transaction status to coordinator:", error);
+    }
+}
+
 
 async function DKG(party: KeyShare): Promise<KeyShare> {
     if (party.res) return party;
@@ -589,6 +639,9 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     let keyShare = await DKG(ourParty);
     const signedTx = await signEthereumTransaction(keyShare, tx, digest);
     await injectEthereumTx(signedTx);
+    // precompute tx hash from signedTx
+    const txHash = ethersUtils.keccak256(signedTx as string);
+    sendTxStatusToCoordinator(txId, "completed", txHash);
 }
 
 async function processTokenToCoin(to: string, value: any, memo: string): Promise<void> {
@@ -734,13 +787,14 @@ function subscribeEthereumTransaction() {
                 chainId: parsedChainId.toNumber(),
                 txId: event.transactionHash
             };
-            txQueue.push({
+            const txData: TransactionQueueItem = {
                 receipt: validTx,
                 from: validTx.targetAddress,
                 value: validTx.amount,
                 txId: validTx.txId,
                 type: "tokenToCoin"
-            });
+            }
+            txQueue.push(txData)
             txQueueMap.set(validTx.txId, {
                 status: "pending",
                 from: validTx.from,
@@ -751,6 +805,7 @@ function subscribeEthereumTransaction() {
             if (verboseLogs) {
                 console.log("BridgedOut event added to queue:", validTx);
             }
+            sendTxDataToCoordinator(txData);
         } catch (err) {
             console.error("Error processing BridgedOut event:", err);
         }

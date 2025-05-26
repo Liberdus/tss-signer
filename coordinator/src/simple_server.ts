@@ -195,6 +195,7 @@ app.post(
         status,
         party,
       } = req.body;
+      console.log("Transaction request body:", req.body);
 
       // Validate request data
       if (
@@ -202,8 +203,8 @@ app.post(
         !sender ||
         !value ||
         !type ||
-        !tssReceipt ||
-        !originalTx ||
+        // !tssReceipt ||
+        // !originalTx ||
         !status ||
         !party
       ) {
@@ -266,18 +267,18 @@ app.post(
 app.post(
   "/transaction/status",
   async (
-    req: Request<{}, {}, { txId: string; status: string }>,
+    req: Request<{}, {}, { txId: string; status: string, tssReceipt: string }>,
     res: Response<Result<null>>
   ) => {
     try {
-      const { txId, status } = req.body;
+      const { txId, status, tssReceipt } = req.body;
       // Validate request data
-      if (!txId || !status) {
+      if (!txId || !status || !tssReceipt) {
         return res.status(400).json({ Err: null });
       }
 
       // Update transaction status
-      await TransactionDB.updateTransactionStatus(txId, status);
+      await TransactionDB.updateTransactionStatus(txId, status, tssReceipt);
 
       console.log(`Transaction status updated: ${txId}, status: ${status}`);
       res.json({ Ok: null });
