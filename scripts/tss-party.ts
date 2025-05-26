@@ -24,7 +24,7 @@ interface TransactionQueueItem {
 }
 
 interface TxQueueMapValue {
-    status: "pending" | "processing" | "completed";
+    status: "pending" | "processing" | "completed" | "failed";
     from: string;
     value: ethers.BigNumber | bigint;
     txId: string;
@@ -83,19 +83,24 @@ let params: Params = loadParams();
 let t = params.threshold;
 let n = params.parties;
 
+const infuraKeys = JSON.parse(fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'));
+
 const chainId = 80002;
-const coordinatorUrl = "http://localhost:8000";
-const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider("https://polygon-amoy.drpc.org/");
+const coordinatorUrl = "http://dev.liberdus.com:8000";
 const collectorHost = "http://dev.liberdus.com:6001";
 const proxyServerHost = "https://dev.liberdus.com:3030";
-const wsProvider = new ethers.providers.WebSocketProvider("wss://rpc-amoy.polygon.technology/");
 
-const tssPartyIdx = parsedIdx == null ? readline.question("Enter the party index (0 to 4): ") : parsedIdx;
+
+const tssPartyIdx = parsedIdx == null ? readline.question("Enter the party index (1 to 5): ") : parsedIdx;
 const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''};
 
-const tssSenderAddress = "0x343AB7d3EEF70f7299781a5Fc007935A2CA663d9"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
+const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1];
+const wsProvider = new ethers.providers.WebSocketProvider(`wss://polygon-amoy.infura.io/ws/v3/${ourInfurKey}`);
+const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`https://polygon-amoy.infura.io/v3/${ourInfurKey}`);
+
+const tssSenderAddress = "0x22443e34ed93D88cAA380f76d8e072998990D221"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
 const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
-const liberdusContractAddress = "0xac41aa5bc3b73a062de5f3aaac21c304fe9c3b79";
+const liberdusContractAddress = "0x4EA46e5dD276eeB5D423465b4aFf646AC3f7bd74";
 
 let lastCheckedTimestamp = serverStartTime
 let lastCheckedBlockNumber = 0;
@@ -116,7 +121,7 @@ if (!fs.existsSync(KEYSTORE_DIR)) {
 const txQueue: TransactionQueueItem[] = [];
 const txQueueMap: Map<string, TxQueueMapValue> = new Map();
 const txQueueSize = 10;
-const txQueueInterval = 10000;
+const txQueueInterval = 3000;
 let processing = false;
 
 const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -331,15 +336,19 @@ async function monitorEthereumTransactions(): Promise<void> {
     try {
         console.log("Monitoring Ethereum transactions for bridgeOut calls...");
         const newestBlockNumber = await provider.getBlockNumber();
+        console.log("Newest block number:", newestBlockNumber);
         if (lastCheckedBlockNumber >= newestBlockNumber) {
             console.log("This block has already been checked, skipping...", lastCheckedBlockNumber, newestBlockNumber);
             return;
         }
         for (let i = lastCheckedBlockNumber + 1; i <= newestBlockNumber; i++) {
             const block = await provider.getBlockWithTransactions(i);
+            console.log("Processing block", i, block.number);
+            console.log("Found block with transactions:", block.transactions.length);
             const transactions = block.transactions.filter((tx: any) =>
                 tx.to && tx.to.toLowerCase() === liberdusContractAddress.toLowerCase()
             );
+            console.log("Filtered transactions for Liberdus contract:", transactions.length);
             let validTransactions: BridgeOutEvent[] = [];
             if (transactions.length > 0) {
                 for (const tx of transactions) {
@@ -539,7 +548,21 @@ async function injectLiberdusTx(signedTx: SignedTx | null): Promise<boolean> {
 async function processCoinToToken(to: string, value: ethers.BigNumber, txId: string): Promise<void> {
     console.log("Processing coin to token transaction", {to, value: value.toString()});
     const senderNonce = await provider.getTransactionCount(tssSenderAddress);
-    const currentGasPrice = await provider.getGasPrice();
+    let currentGasPrice = await provider.getGasPrice();
+    // make sure gas price a bit more deterministic
+    if (currentGasPrice.lt(ethersUtils.parseUnits("50", "gwei"))) {
+        currentGasPrice = ethersUtils.parseUnits("50", "gwei");
+    } else if (currentGasPrice.lt(ethersUtils.parseUnits("100", "gwei"))) {
+        currentGasPrice = ethersUtils.parseUnits("100", "gwei");
+    } else if (currentGasPrice.lt(ethersUtils.parseUnits("150", "gwei"))) {
+        currentGasPrice = ethersUtils.parseUnits("150", "gwei");
+    } else if (currentGasPrice.lt(ethersUtils.parseUnits("200", "gwei"))) {
+        currentGasPrice = ethersUtils.parseUnits("200", "gwei");
+    } else if (currentGasPrice.lt(ethersUtils.parseUnits("250", "gwei"))) {
+        currentGasPrice = ethersUtils.parseUnits("250", "gwei");
+    } else if (currentGasPrice.lt(ethersUtils.parseUnits("300", "gwei"))) {
+        currentGasPrice = ethersUtils.parseUnits("300", "gwei");
+    }
     const fixedGasPrice = ethersUtils.parseUnits("160", "gwei");
     const bridgeInterface = new ethersUtils.Interface([
         "function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public"
@@ -674,13 +697,12 @@ function toShardusAddress(addressStr: string): string {
     return addressStr.slice(2).toLowerCase() + '0'.repeat(24);
 }
 
-// WebSocket provider for event subscription
-
 function subscribeEthereumTransaction() {
     const bridgeInterface = new ethersUtils.Interface([
         "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)"
     ]);
     const contract = new ethers.Contract(liberdusContractAddress, bridgeInterface, wsProvider);
+
     contract.on("BridgedOut", async (from: string, amount: ethers.BigNumber, targetAddress: string, parsedChainId: ethers.BigNumber, timestamp: ethers.BigNumber, event: any) => {
         try {
             if (verboseLogs) {
@@ -831,18 +853,20 @@ async function main(): Promise<void> {
                         txId: validTx.txId
                     });
                     saveQueueToFile(ourParty.idx);
+                    processing = false;
                     return;
                 }
-                txQueue.push(validTx);
+                // todo: find better way to handle errors
+                // txQueue.push(validTx);
                 txQueueMap.set(validTx.txId, {
-                    status: "pending",
+                    status: "failed",
                     from: validTx.from,
                     value: validTx.value,
                     txId: validTx.txId
                 });
                 saveQueueToFile(ourParty.idx);
                 console.error("Error processing transaction:", error);
-                console.log("Transaction re-added to queue:", validTx);
+                // console.log("Transaction re-added to queue:", validTx);
             }
             processing = false;
         }
