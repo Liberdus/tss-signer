@@ -2,12 +2,12 @@ import SQLiteManager from "./sqliteManager";
 
 // Define the interface for a transaction
 export interface Transaction {
-  tssReceipt: string;
-  originalTx: string;
+  txId: string;
   sender: string;
   value: string;
-  txId: string;
   type: string;
+  tssReceipt: string;
+  originalTx: string;
   status: string;
   createdAt?: string;
   updatedAt?: string;
@@ -48,11 +48,12 @@ export async function saveTransaction(transaction: Transaction): Promise<void> {
  */
 export async function updateTransactionStatus(
   txId: string,
-  status: string
+  status: string,
+  tssReceipt: string
 ): Promise<void> {
   await db.update(
     "transactions",
-    { status, updatedAt: new Date().toISOString() },
+    { status, tssReceipt, updatedAt: new Date().toISOString() },
     "txId = ?",
     [txId]
   );
