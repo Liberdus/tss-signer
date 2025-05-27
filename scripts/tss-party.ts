@@ -639,13 +639,14 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     let keyShare = await DKG(ourParty);
     const signedTx = await signEthereumTransaction(keyShare, tx, digest);
     await injectEthereumTx(signedTx);
+    // [TODO] Move sending tx status to coordinator in the proper place
     // precompute tx hash from signedTx
     const txHash = ethersUtils.keccak256(signedTx as string);
     sendTxStatusToCoordinator(txId, "completed", txHash);
 }
 
-async function processTokenToCoin(to: string, value: any, memo: string): Promise<void> {
-    console.log("Processing token to coin transaction", {to, value, memo});
+async function processTokenToCoin(to: string, value: any, txId: string): Promise<void> {
+    console.log("Processing token to coin transaction", {to, value, txId});
     // convert ethers.BigNumber to bigint
     const amountInBigInt = BigInt(value.hex ? value.hex : value._hex);
     console.log("Amount in bigint:", amountInBigInt);
@@ -655,7 +656,7 @@ async function processTokenToCoin(to: string, value: any, memo: string): Promise
         to: toShardusAddress(to),
         amount: amountInBigInt,
         type: "transfer",
-        memo,
+        memo: txId,
     };
     tx.chatId = calculateChatId(tx.from, tx.to);
     const currentCycleRecord = await getLatestCycleRecord();
@@ -663,7 +664,7 @@ async function processTokenToCoin(to: string, value: any, memo: string): Promise
     while (futureTimestamp < Date.now() + 1000 * 30) {
         futureTimestamp += 10 * 1000;
     }
-    tx.timestamp = await confirmFutureTimestamp(memo, futureTimestamp);
+    tx.timestamp = await confirmFutureTimestamp(txId, futureTimestamp);
     if (verboseLogs) {
         console.log("Current timestamp:", new Date(Date.now()));
         console.log("Future timestamp confirmed:", new Date(tx.timestamp));
@@ -678,6 +679,10 @@ async function processTokenToCoin(to: string, value: any, memo: string): Promise
     if (!success) {
         // throw new Error("Failed to sign and inject transaction");
     } else if (success) {
+        // [TODO] Move sending tx status to coordinator in the proper place
+        // Compute txId from signedTx
+        const signedTxId = crypto.hashObj(signedTx as SignedTx, true);
+        sendTxStatusToCoordinator(txId, "completed", signedTxId);
     }
 }
 
