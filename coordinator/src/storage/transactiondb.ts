@@ -5,12 +5,39 @@ export interface Transaction {
   txId: string;
   sender: string;
   value: string;
-  type: string;
-  tssReceipt: string;
-  originalTx: string;
-  status: string;
+  type: TransactionType;
+  txTimestamp: number;
+  status: TransactionStatus;
+  receipt: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export enum TransactionStatus {
+  PENDING = 0,
+  PROCESSING = 1,
+  COMPLETED = 2,
+  FAILED = 3,
+}
+
+export enum TransactionType {
+  BRIDGE_IN = 0, // COIN to TOKEN
+  BRIDGE_OUT = 1, // TOKEN to COIN
+}
+
+export function isTransactionType(value: any): value is TransactionType {
+  return (
+    value === TransactionType.BRIDGE_IN || value === TransactionType.BRIDGE_OUT
+  );
+}
+
+export function isTransactionStatus(value: any): value is TransactionStatus {
+  return (
+    value === TransactionStatus.PENDING ||
+    value === TransactionStatus.PROCESSING ||
+    value === TransactionStatus.COMPLETED ||
+    value === TransactionStatus.FAILED
+  );
 }
 
 // Initialize the database
@@ -24,13 +51,23 @@ export async function initializeTransactionsDatabase(): Promise<void> {
     txId: "TEXT NOT NULL UNIQUE PRIMARY KEY",
     sender: "TEXT NOT NULL",
     value: "TEXT NOT NULL",
-    type: "TEXT NOT NULL",
-    tssReceipt: "TEXT NOT NULL",
-    originalTx: "TEXT NOT NULL",
-    status: "TEXT NOT NULL",
-    createdAt: "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-    updatedAt: "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    type: "INTEGER NOT NULL",
+    txTimestamp: "BIGINT NOT NULL", // assume this is from blockchain or external source
+    receipt: "TEXT NOT NULL",
+    status: "INTEGER NOT NULL",
+    createdAt: "INTEGER DEFAULT (strftime('%s','now'))",
+    updatedAt: "INTEGER DEFAULT (strftime('%s','now'))",
   });
+  await db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_transactions_updatedAt
+    AFTER UPDATE ON transactions
+    FOR EACH ROW
+    BEGIN
+        UPDATE transactions
+        SET updatedAt = strftime('%s','now')
+        WHERE txId = OLD.txId;
+    END;
+  `);
 }
 
 /**
@@ -49,14 +86,9 @@ export async function saveTransaction(transaction: Transaction): Promise<void> {
 export async function updateTransactionStatus(
   txId: string,
   status: string,
-  tssReceipt: string
+  receipt: string
 ): Promise<void> {
-  await db.update(
-    "transactions",
-    { status, tssReceipt, updatedAt: new Date().toISOString() },
-    "txId = ?",
-    [txId]
-  );
+  await db.update("transactions", { status, receipt }, "txId = ?", [txId]);
 }
 
 /**
@@ -74,55 +106,88 @@ export async function getTransactionById(
 }
 
 /**
- * Retrieve total transactions count
+ * Retrieve total transactions count based on optional filters.
+ * @param options - An object containing optional filters:
+ * - sender: Sender's address
+ * - type: TransactionType
+ * - status: TransactionStatus
  * @returns Total transactions count
  */
-export async function getTotalTransactions(): Promise<number> {
-  return await db.count("transactions");
+export async function getTotalTransactions(options?: {
+  sender?: string;
+  type?: TransactionType;
+  status?: TransactionStatus;
+}): Promise<number> {
+  let whereClause = "";
+  const params: (string | number)[] = [];
+
+  if (options?.sender) {
+    appendAndClause(whereClause, params);
+    whereClause += "sender = ?";
+    params.push(options.sender);
+  }
+  if (options?.type !== undefined) {
+    appendAndClause(whereClause, params);
+    whereClause += "type = ?";
+    params.push(options.type);
+  }
+  if (options?.status !== undefined) {
+    appendAndClause(whereClause, params);
+    whereClause += "status = ?";
+    params.push(options.status);
+  }
+
+  return await db.count("transactions", whereClause, params);
 }
 
 /**
- * Retrieve transactions by page
+ * Retrieve transactions by page with optional filters.
  * @param limit - Number of items to return per page
  * @param offset - Number of items to skip
+ * @param options - An object containing optional filters:
+ * - sender: Sender's address
+ * - type: TransactionType
+ * - status: TransactionStatus
  * @returns Array of Transaction objects
  */
 export async function getTransactionsByPage(
   limit: number,
-  offset: number
+  offset: number,
+  options?: {
+    sender?: string;
+    type?: TransactionType;
+    status?: TransactionStatus;
+  }
 ): Promise<Transaction[]> {
-  // Add total txs count
-  return await db.all<Transaction>(
-    "SELECT * FROM transactions ORDER BY createdAt DESC LIMIT ? OFFSET ?",
-    [limit, offset]
-  );
+  let whereClause = "";
+  const params: (string | number)[] = [];
+
+  if (options?.sender) {
+    appendAndClause(whereClause, params);
+    whereClause += "sender = ?";
+    params.push(options.sender);
+  }
+  if (options?.type !== undefined) {
+    appendAndClause(whereClause, params);
+    whereClause += "type = ?";
+    params.push(options.type);
+  }
+  if (options?.status !== undefined) {
+    appendAndClause(whereClause, params);
+    whereClause += "status = ?";
+    params.push(options.status);
+  }
+
+  const query = `SELECT * FROM transactions ${
+    whereClause ? `WHERE ${whereClause}` : ""
+  } ORDER BY createdAt DESC LIMIT ? OFFSET ?`;
+
+  params.push(limit, offset);
+
+  return await db.all<Transaction>(query, params);
 }
 
-/**
- * Retrieve total transactions count by sender
- * @param sender - Sender's address
- * @returns Total transactions count
- */
-export async function getTotalTransactionsBySender(
-  sender: string
-): Promise<number> {
-  return await db.count("transactions", "sender = ?", [sender]);
-}
-
-/**
- * Retrieve transactions by sender
- * @param sender - Sender's address
- * @param limit - Number of items to return per page
- * @param offset - Number of items to skip
- * @returns Array of Transaction objects
- */
-export async function getTransactionsBySender(
-  sender: string,
-  limit: number,
-  offset: number
-): Promise<Transaction[]> {
-  return await db.all<Transaction>(
-    "SELECT * FROM transactions WHERE sender = ? ORDER BY createdAt DESC LIMIT ? OFFSET ?",
-    [sender, limit, offset]
-  );
-}
+// Helper function to append "AND" to SQL query
+const appendAndClause = (sql: string, inputs: any[]) => {
+  if (inputs.length > 0) sql += " AND ";
+};

@@ -68,6 +68,31 @@ interface SignedTx {
     };
 }
 
+// Transaction interface to send to the coordinator
+export interface Transaction {
+  txId: string;
+  sender: string;
+  value: string;
+  type: TransactionType;
+  txTimestamp: number;
+  status: TransactionStatus;
+  receipt: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export enum TransactionStatus {
+  PENDING = 0,
+  PROCESSING = 1,
+  COMPLETED = 2,
+  FAILED = 3,
+}
+
+export enum TransactionType {
+  BRIDGE_IN = 0, // COIN to TOKEN
+  BRIDGE_OUT = 1, // TOKEN to COIN
+}
+
 const parsedIdx = process.argv[2];
 const keygenFlag = process.argv[3];
 
@@ -381,7 +406,7 @@ async function monitorEthereumTransactions(): Promise<void> {
                 if (verboseLogs) {
                     console.log("Ethereum transaction added to queue:", validTx);
                 }
-                sendTxDataToCoordinator(txData)
+                sendTxDataToCoordinator(txData, block.timestamp * 1000);
             }
             lastCheckedBlockNumber = i;
         }
@@ -417,7 +442,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
                     if (verboseLogs) {
                         console.log("Liberdus transaction added to queue:", validateResult);
                     }
-                    sendTxDataToCoordinator(txData)
+                    sendTxDataToCoordinator(txData, receipt.timestamp)
                 });
             }
             lastCheckedTimestamp = Date.now();
@@ -428,16 +453,15 @@ async function monitorLiberdusTransactions(): Promise<void> {
     }
 }
 
-async function sendTxDataToCoordinator(txData: TransactionQueueItem): Promise<void> {
-    console.log(ethersUtils.hexValue(txData.value))
-    const tx: any = {
+async function sendTxDataToCoordinator(txData: TransactionQueueItem, timestamp: number): Promise<void> {
+    const tx: Transaction & { party: number } = {
         txId: txData.txId,
         sender: txData.from,
         value: ethersUtils.hexValue(txData.value),
-        type: txData.type,
-        tssReceipt: "",
-        originalTx: "",
-        status: "pending",
+        type: txData.type === "tokenToCoin" ? TransactionType.BRIDGE_OUT : TransactionType.BRIDGE_IN,
+        txTimestamp: timestamp,
+        status: TransactionStatus.PENDING,
+        receipt: txData.receipt,
         party: ourParty.idx,
     }
     try {
@@ -456,10 +480,10 @@ async function sendTxDataToCoordinator(txData: TransactionQueueItem): Promise<vo
     }
 }
 
-async function sendTxStatusToCoordinator(txId: string, status: string, tssReceipt: string): Promise<void> {
+async function sendTxStatusToCoordinator(txId: string, status: TransactionStatus, receipt: string): Promise<void> {
     try {
         const url = `${coordinatorUrl}/transaction/status`;
-        const data = { txId, status, tssReceipt };
+        const data = { txId, status, receipt };
         const response = await axios.post(url, data);
         if (response.status !== 202 && response.status !== 200) {
             console.error("Failed to update transaction status to coordinator:", response.data);
@@ -642,7 +666,7 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     // [TODO] Move sending tx status to coordinator in the proper place
     // precompute tx hash from signedTx
     const txHash = ethersUtils.keccak256(signedTx as string);
-    sendTxStatusToCoordinator(txId, "completed", txHash);
+    sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash);
 }
 
 async function processTokenToCoin(to: string, value: any, txId: string): Promise<void> {
@@ -682,7 +706,7 @@ async function processTokenToCoin(to: string, value: any, txId: string): Promise
         // [TODO] Move sending tx status to coordinator in the proper place
         // Compute txId from signedTx
         const signedTxId = crypto.hashObj(signedTx as SignedTx, true);
-        sendTxStatusToCoordinator(txId, "completed", signedTxId);
+        sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId);
     }
 }
 
@@ -810,7 +834,7 @@ function subscribeEthereumTransaction() {
             if (verboseLogs) {
                 console.log("BridgedOut event added to queue:", validTx);
             }
-            sendTxDataToCoordinator(txData);
+            sendTxDataToCoordinator(txData, timestamp.toNumber() * 1000);
         } catch (err) {
             console.error("Error processing BridgedOut event:", err);
         }
