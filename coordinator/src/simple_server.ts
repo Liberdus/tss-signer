@@ -23,7 +23,7 @@ interface Params {
 }
 
 // --- A simple Result<T> type ---
-type Result<T> = { Ok: T } | { Err: null };
+type Result<T> = { Ok: T } | { Err: string | null };
 
 // --- In-memory DB ---
 const db = new Map<string, string>();
@@ -164,18 +164,21 @@ app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
   }
 });
 
-app.post('/future-timestamp', (req: Request<{}, {}, Entry>, res: Response<{ timestamp: number }>) => {
-  const {key, value} = req.body;
-  const dbKey = 'future-timestamp' + key
-  const dbValue = db.get(dbKey);
-  // if value is already proposed, return it
-  if (dbValue == null) {
-    db.set(dbKey, value);
-    res.json({timestamp: parseInt(value)});
-    return
+app.post(
+  "/future-timestamp",
+  (req: Request<{}, {}, Entry>, res: Response<{ timestamp: number }>) => {
+    const { key, value } = req.body;
+    const dbKey = "future-timestamp" + key;
+    const dbValue = db.get(dbKey);
+    // if value is already proposed, return it
+    if (dbValue == null) {
+      db.set(dbKey, value);
+      res.json({ timestamp: parseInt(value) });
+      return;
+    }
+    res.json({ timestamp: parseInt(dbValue) });
   }
-  res.json({timestamp: parseInt(dbValue)});
-});
+);
 
 // POST /transaction — store transaction receipt
 app.post(
@@ -185,16 +188,8 @@ app.post(
     res: Response<Result<{ txId: string }>>
   ) => {
     try {
-      const {
-        txId,
-        sender,
-        value,
-        type,
-        tssReceipt,
-        originalTx,
-        status,
-        party,
-      } = req.body;
+      const { txId, sender, value, type, txTimestamp, receipt, status, party } =
+        req.body;
       console.log("Transaction request body:", req.body);
 
       // Validate request data
@@ -202,13 +197,13 @@ app.post(
         !txId ||
         !sender ||
         !value ||
-        !type ||
-        // !tssReceipt ||
-        // !originalTx ||
-        !status ||
+        !TransactionDB.isTransactionType(type) ||
+        !txTimestamp ||
+        !receipt ||
+        !TransactionDB.isTransactionType(status) ||
         !party
       ) {
-        return res.status(400).json({ Err: null });
+        return res.status(400).json({ Err: "Invalid transaction data" });
       }
 
       // Add sender to the tracking map
@@ -221,12 +216,12 @@ app.post(
       if (!txCache.has(txId)) {
         txCache.set(txId, {
           tx: {
-            txId,
-            sender,
+            txId: txId.toLowerCase(),
+            sender: sender.toLowerCase(),
             value,
             type,
-            tssReceipt,
-            originalTx,
+            txTimestamp,
+            receipt: receipt.toLowerCase(),
             status,
           },
           timestamp: Date.now(),
@@ -258,7 +253,7 @@ app.post(
       }
     } catch (e) {
       console.error("Failed to save transaction:", e);
-      res.status(500).json({ Err: null });
+      res.status(500).json({ Err: "Failed to save transaction" });
     }
   }
 );
@@ -267,13 +262,13 @@ app.post(
 app.post(
   "/transaction/status",
   async (
-    req: Request<{}, {}, { txId: string; status: string, tssReceipt: string }>,
+    req: Request<{}, {}, { txId: string; status: string; tssReceipt: string }>,
     res: Response<Result<null>>
   ) => {
     try {
       const { txId, status, tssReceipt } = req.body;
       // Validate request data
-      if (!txId || !status || !tssReceipt) {
+      if (!txId || !TransactionDB.isTransactionStatus(status) || !tssReceipt) {
         return res.status(400).json({ Err: null });
       }
 
@@ -291,6 +286,8 @@ app.post(
 
 type TransactionAPIQueryParameters = {
   sender?: string;
+  type?: TransactionDB.TransactionType;
+  status?: TransactionDB.TransactionStatus;
   txId?: string;
   page?: string;
 };
@@ -308,7 +305,7 @@ app.get(
     >
   ) => {
     try {
-      const { sender, txId, page } = req.query;
+      let { sender, txId, page, type, status } = req.query;
       let pageNum = 1;
       let txsPerPage = 10;
       let transactions: TransactionDB.Transaction[] = [];
@@ -316,41 +313,81 @@ app.get(
       let totalPages = 0;
       if (page) {
         pageNum = parseInt(page);
+        if (isNaN(parseInt(page)) || parseInt(page) < 1) {
+          return res.status(400).json({ Err: "Invalid page number" });
+        }
       }
       const pageStart = (pageNum - 1) * txsPerPage;
       if (txId) {
+        if (
+          txId.length !== 64 &&
+          !(txId.startsWith("0x") && txId.length === 66)
+        ) {
+          res.status(400).json({ Err: "Invalid txId" });
+          return;
+        }
         const transaction = await TransactionDB.getTransactionById(txId);
         if (transaction) transactions.push(transaction);
-        res.json({ Ok: { transactions } });
+        res.json({
+          Ok: {
+            transactions,
+            totalTranactions: transactions.length,
+            totalPages: transactions.length,
+          },
+        });
         return;
-      } else if (sender) {
-        totalTranactions = await TransactionDB.getTotalTransactionsBySender(
-          sender
-        );
-        totalPages = Math.ceil(totalTranactions / txsPerPage);
-        if (pageNum > totalPages) {
-          return res.status(400).json({ Err: null });
-        }
-        transactions = await TransactionDB.getTransactionsBySender(
-          sender,
-          txsPerPage,
-          pageStart
-        );
-      } else {
-        totalTranactions = await TransactionDB.getTotalTransactions();
-        totalPages = Math.ceil(totalTranactions / txsPerPage);
-        if (pageNum > totalPages) {
-          return res.status(400).json({ Err: null });
-        }
-        transactions = await TransactionDB.getTransactionsByPage(
-          txsPerPage,
-          pageStart
-        );
       }
+      if (sender) {
+        if (
+          sender.length !== 64 &&
+          !(sender.startsWith("0x") && sender.length === 42)
+        ) {
+          return res.status(400).json({ Err: "Invalid sender" });
+        }
+        // Normalize to lowercase
+        sender = sender.toLowerCase();
+      }
+      if (type !== undefined) {
+        const parsedType = parseInt(type as unknown as string);
+        if (!TransactionDB.isTransactionType(parsedType)) {
+          return res.status(400).json({ Err: "Invalid type" });
+        }
+        type = parsedType;
+      }
+      if (status !== undefined) {
+        const parsedStatus = parseInt(status as unknown as string);
+        if (!TransactionDB.isTransactionStatus(parsedStatus)) {
+          return res.status(400).json({ Err: "Invalid status" });
+        }
+        status = parsedStatus;
+      }
+      totalTranactions = await TransactionDB.getTotalTransactions({
+        sender: sender?.toLowerCase(),
+        type,
+        status,
+      });
+      totalPages = Math.ceil(totalTranactions / txsPerPage);
+      if (pageNum > 1 && pageNum > totalPages) {
+        return res.status(400).json({ Err: `Page ${pageNum} is out of range` });
+      }
+      if (totalTranactions === 0) {
+        return res.json({
+          Ok: { transactions, totalTranactions, totalPages: 0 },
+        });
+      }
+      transactions = await TransactionDB.getTransactionsByPage(
+        txsPerPage,
+        pageStart,
+        {
+          sender,
+          type,
+          status,
+        }
+      );
       res.json({ Ok: { transactions, totalTranactions, totalPages } });
     } catch (e) {
-      console.error("Failed to fetch transactions for sender:", e);
-      res.status(500).json({ Err: null });
+      console.error("Failed to fetch transactions:", e);
+      res.status(500).json({ Err: `Failed to fetch transactions ${e}` });
     }
   }
 );
