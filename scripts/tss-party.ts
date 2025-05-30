@@ -458,10 +458,10 @@ async function sendTxDataToCoordinator(txData: TransactionQueueItem, timestamp: 
         txId: txData.txId,
         sender: txData.from,
         value: ethersUtils.hexValue(txData.value),
-        type: txData.type === "tokenToCoin" ? TransactionType.BRIDGE_OUT : TransactionType.BRIDGE_IN,
+        type: txData.type === "coinToToken" ? TransactionType.BRIDGE_IN : TransactionType.BRIDGE_OUT,
         txTimestamp: timestamp,
         status: TransactionStatus.PENDING,
-        receipt: txData.receipt,
+        receipt: '',
         party: ourParty.idx,
     }
     try {

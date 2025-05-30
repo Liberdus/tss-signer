@@ -190,7 +190,6 @@ app.post(
     try {
       const { txId, sender, value, type, txTimestamp, receipt, status, party } =
         req.body;
-      console.log("Transaction request body:", req.body);
 
       // Validate request data
       if (
@@ -199,10 +198,11 @@ app.post(
         !value ||
         !TransactionDB.isTransactionType(type) ||
         !txTimestamp ||
-        !receipt ||
-        !TransactionDB.isTransactionType(status) ||
+        receipt !== "" ||
+        !TransactionDB.isTransactionStatus(status) ||
         !party
       ) {
+        console.log("Transaction request body:", req.body);
         return res.status(400).json({ Err: "Invalid transaction data" });
       }
 
@@ -262,18 +262,19 @@ app.post(
 app.post(
   "/transaction/status",
   async (
-    req: Request<{}, {}, { txId: string; status: string; tssReceipt: string }>,
+    req: Request<{}, {}, { txId: string; status: string; receipt: string }>,
     res: Response<Result<null>>
   ) => {
     try {
-      const { txId, status, tssReceipt } = req.body;
+      const { txId, status, receipt } = req.body;
       // Validate request data
-      if (!txId || !TransactionDB.isTransactionStatus(status) || !tssReceipt) {
-        return res.status(400).json({ Err: null });
+      if (!txId || !TransactionDB.isTransactionStatus(status) || !receipt) {
+        console.error("Invalid transaction status data:", req.body);
+        return res.status(400).json({ Err: "Invalid transaction status data" });
       }
 
       // Update transaction status
-      await TransactionDB.updateTransactionStatus(txId, status, tssReceipt);
+      await TransactionDB.updateTransactionStatus(txId, status, receipt);
 
       console.log(`Transaction status updated: ${txId}, status: ${status}`);
       res.json({ Ok: null });
