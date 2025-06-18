@@ -1,14 +1,14 @@
-import {ethers} from "ethers";
+import { ethers } from "ethers";
 import * as fs from "fs";
 import * as path from "path";
-import axios, {AxiosResponse} from "axios";
+import axios, { AxiosResponse } from "axios";
 import * as crypto from '@shardus/crypto-utils';
 import * as readline from "readline-sync";
 
-const {BigNumber, utils: ethersUtils, providers} = ethers;
+const { BigNumber, utils: ethersUtils, providers } = ethers;
 
 const gg18 = require("../pkg");
-const {stringify, parse} = require('../external/stringify-shardus');
+const { stringify, parse } = require('../external/stringify-shardus');
 
 interface Params {
     threshold: number;
@@ -70,27 +70,27 @@ interface SignedTx {
 
 // Transaction interface to send to the coordinator
 export interface Transaction {
-  txId: string;
-  sender: string;
-  value: string;
-  type: TransactionType;
-  txTimestamp: number;
-  status: TransactionStatus;
-  receipt: string;
-  createdAt?: string;
-  updatedAt?: string;
+    txId: string;
+    sender: string;
+    value: string;
+    type: TransactionType;
+    txTimestamp: number;
+    status: TransactionStatus;
+    receipt: string;
+    createdAt?: string;
+    updatedAt?: string;
 }
 
 export enum TransactionStatus {
-  PENDING = 0,
-  PROCESSING = 1,
-  COMPLETED = 2,
-  FAILED = 3,
+    PENDING = 0,
+    PROCESSING = 1,
+    COMPLETED = 2,
+    FAILED = 3,
 }
 
 export enum TransactionType {
-  BRIDGE_IN = 0, // COIN to TOKEN
-  BRIDGE_OUT = 1, // TOKEN to COIN
+    BRIDGE_IN = 0, // COIN to TOKEN
+    BRIDGE_OUT = 1, // TOKEN to COIN
 }
 
 const parsedIdx = process.argv[2];
@@ -108,24 +108,32 @@ let params: Params = loadParams();
 let t = params.threshold;
 let n = params.parties;
 
-const infuraKeys = JSON.parse(fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'));
+// const infuraKeys = JSON.parse(fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'));
 
-const chainId = 80002;
-const coordinatorUrl = "http://dev.liberdus.com:8000";
+// const chainId = 80002;
+// const coordinatorUrl = "http://dev.liberdus.com:8000";
+const chainId = 31337;
+const coordinatorUrl = "http://127.0.0.1:8000";
 const collectorHost = "http://dev.liberdus.com:6001";
 const proxyServerHost = "https://dev.liberdus.com:3030";
 
 
 const tssPartyIdx = parsedIdx == null ? readline.question("Enter the party index (1 to 5): ") : parsedIdx;
-const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''};
+const ourParty: KeyShare = { idx: parseInt(tssPartyIdx), res: '' };
 
-const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1];
-const wsProvider = new ethers.providers.WebSocketProvider(`wss://polygon-amoy.infura.io/ws/v3/${ourInfurKey}`);
-const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`https://polygon-amoy.infura.io/v3/${ourInfurKey}`);
+// const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1];
+// const wsProvider = new ethers.providers.WebSocketProvider(`wss://polygon-amoy.infura.io/ws/v3/${ourInfurKey}`);
+// const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`https://polygon-amoy.infura.io/v3/${ourInfurKey}`);
 
-const tssSenderAddress = "0x22443e34ed93D88cAA380f76d8e072998990D221"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
-const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
-const liberdusContractAddress = "0x4EA46e5dD276eeB5D423465b4aFf646AC3f7bd74";
+// const tssSenderAddress = "0x22443e34ed93D88cAA380f76d8e072998990D221"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
+// const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
+// const liberdusContractAddress = "0x4EA46e5dD276eeB5D423465b4aFf646AC3f7bd74";
+
+const wsProvider = new ethers.providers.WebSocketProvider(`ws://127.0.0.1:8545`);
+const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`http://127.0.0.1:8545`);
+const tssSenderAddress = "0x8895B0669355A2cfd88f5e46B4Fed8357cDAa66c"; // "8895B0669355A2cfd88f5e46B4Fed8357cDAa66c000000000000000000000000";
+const bridgeAddressInLiberdus = "439bd3bfa8ecac56e2998ae092a120655a88601f000000000000000000000000"; // aaa
+const liberdusContractAddress = "0xBE282e13e62a15187F683126C4E7d4335AcD02b9";
 
 let lastCheckedTimestamp = serverStartTime
 let lastCheckedBlockNumber = 0;
@@ -140,14 +148,19 @@ const KEYSTORE_DIR = path.join(__dirname, "../keystores");
 const enoughPartyError = "Enough party already registerd to sign this transaction";
 
 if (!fs.existsSync(KEYSTORE_DIR)) {
-    fs.mkdirSync(KEYSTORE_DIR, {recursive: true});
+    fs.mkdirSync(KEYSTORE_DIR, { recursive: true });
 }
 
 const txQueue: TransactionQueueItem[] = [];
 const txQueueMap: Map<string, TxQueueMapValue> = new Map();
 const txQueueSize = 10;
-const txQueueInterval = 3000;
-let processing = false;
+const txQueueProcessingInterval = 3000;
+const liberdusTxMonitorInterval = 5000
+const ethereumTxMonitorInterval = 10000;
+
+// Define maximum concurrent transactions
+const MAX_CONCURRENT_TXS = 1;
+const processingTransactionIds = new Set<string>();
 
 const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -202,8 +215,8 @@ function verifyEthereumTx(obj: SignedTx): boolean {
     if (!obj.sign || !obj.sign.owner || !obj.sign.sig) throw new Error('Object must contain a sign field with the following data: { owner, sig }');
     if (typeof obj.sign.owner !== 'string') throw new TypeError('Owner must be a public key represented as a hex string.');
     if (typeof obj.sign.sig !== 'string') throw new TypeError('Signature must be a valid signature represented as a hex string.');
-    const {owner, sig} = obj.sign;
-    const dataWithoutSign = {...obj};
+    const { owner, sig } = obj.sign;
+    const dataWithoutSign = { ...obj };
     (dataWithoutSign as any).sign = undefined;
     const message = crypto.hashObj(dataWithoutSign);
     const recoveredAddress = ethersUtils.verifyMessage(message, sig);
@@ -259,7 +272,7 @@ async function validateTokenToCoinTx(tx: ethers.providers.TransactionResponse): 
     const amount = parsedLog.args.amount;
     const targetAddress = parsedLog.args.targetAddress;
     const parsedChainId = parsedLog.args.chainId.toNumber();
-    console.log("BridgedOut event data:", {from, amount: amount.toString(), targetAddress, chainId: parsedChainId});
+    console.log("BridgedOut event data:", { from, amount: amount.toString(), targetAddress, chainId: parsedChainId });
     if (parsedChainId !== chainId) {
         console.log("Transaction is for a different chain ID");
         return false;
@@ -275,7 +288,7 @@ async function validateTokenToCoinTx(tx: ethers.providers.TransactionResponse): 
 
 function validateCoinToTokenTx(receipt: any): { from: string, value: ethers.BigNumber, txId: string } | false {
     console.log("receipt", receipt);
-    const {success, to, from, additionalInfo, type, txId, timestamp} = receipt.data;
+    const { success, to, from, additionalInfo, type, txId, timestamp } = receipt.data;
 
     if (!addOldTxToQueue) {
         if (timestamp < serverStartTime) {
@@ -301,7 +314,7 @@ function validateCoinToTokenTx(receipt: any): { from: string, value: ethers.BigN
         console.log("Transaction value is less than 1 LIB");
         return false;
     }
-    return {from, value: transferAmountInBigInt, txId};
+    return { from, value: transferAmountInBigInt, txId };
 }
 
 async function keygen(m: any, delay: number): Promise<string> {
@@ -416,14 +429,15 @@ async function monitorEthereumTransactions(): Promise<void> {
 }
 
 async function monitorLiberdusTransactions(): Promise<void> {
+    console.log("Running monitorLiberdusTransactions", new Date().toISOString());
     try {
         const query = `?accountId=${bridgeAddressInLiberdus}&afterTimestamp=${lastCheckedTimestamp}&page=1`;
         const url = collectorHost + "/api/transaction" + query;
         const response = await axios.get(url);
-        const {success, totalTransactions, transactions} = response.data;
+        const { success, totalTransactions, transactions } = response.data;
         if (success && totalTransactions > 0) {
             if (transactions.length > 0) {
-                transactions.forEach((receipt: any) => {
+                transactions.forEach((receipt: any, index: number) => {
                     const validateResult = validateCoinToTokenTx(receipt);
                     console.log("validateResult", validateResult);
                     if (!validateResult) return;
@@ -437,15 +451,18 @@ async function monitorLiberdusTransactions(): Promise<void> {
                         type: "coinToToken"
                     }
                     txQueue.push(txData);
-                    txQueueMap.set(validateResult.txId, {status: "pending", ...validateResult});
+                    txQueueMap.set(validateResult.txId, { status: "pending", ...validateResult });
                     saveQueueToFile(ourParty.idx);
                     if (verboseLogs) {
                         console.log("Liberdus transaction added to queue:", validateResult);
                     }
                     sendTxDataToCoordinator(txData, receipt.timestamp)
+                    // Set lastCheckedTimestamp to the timestamp of the last transaction
+                    if (index === transactions.length - 1) {
+                        lastCheckedTimestamp = receipt.timestamp;
+                    }
                 });
             }
-            lastCheckedTimestamp = Date.now();
 
         }
     } catch (e) {
@@ -509,7 +526,7 @@ async function DKG(party: KeyShare): Promise<KeyShare> {
             party.res = await keygen(gg18, delay);
             saveKeystore(partyIdx, party.res);
         } catch (e) {
-            return {idx: partyIdx, res: null as any};
+            return { idx: partyIdx, res: null as any };
         }
     }
     return party;
@@ -598,7 +615,7 @@ async function injectEthereumTx(signedTx: string | null): Promise<boolean> {
 async function injectLiberdusTx(signedTx: SignedTx | null): Promise<boolean> {
     if (!signedTx) return false;
     try {
-        const body = {tx: stringify(signedTx)};
+        const body = { tx: stringify(signedTx) };
         const injectUrl = proxyServerHost + "/inject";
         const waitTime = (signedTx.timestamp ?? 0) - Date.now();
         console.log(`Waiting for ${waitTime} ms before injecting transaction...`);
@@ -620,7 +637,7 @@ async function injectLiberdusTx(signedTx: SignedTx | null): Promise<boolean> {
 }
 
 async function processCoinToToken(to: string, value: ethers.BigNumber, txId: string): Promise<void> {
-    console.log("Processing coin to token transaction", {to, value: value.toString()});
+    console.log("Processing coin to token transaction", { to, value: value.toString() });
     const senderNonce = await provider.getTransactionCount(tssSenderAddress);
     let currentGasPrice = await provider.getGasPrice();
     // make sure gas price a bit more deterministic
@@ -662,15 +679,16 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     let digest = ethersUtils.keccak256(unsignedTx);
     let keyShare = await DKG(ourParty);
     const signedTx = await signEthereumTransaction(keyShare, tx, digest);
-    await injectEthereumTx(signedTx);
-    // [TODO] Move sending tx status to coordinator in the proper place
     // precompute tx hash from signedTx
     const txHash = ethersUtils.keccak256(signedTx as string);
+    console.log('Injecting ethereum transaction', txHash);
+    await injectEthereumTx(signedTx);
+    // [TODO] Move sending tx status to coordinator in the proper place
     sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash);
 }
 
 async function processTokenToCoin(to: string, value: any, txId: string): Promise<void> {
-    console.log("Processing token to coin transaction", {to, value, txId});
+    console.log("Processing token to coin transaction", { to, value, txId });
     // convert ethers.BigNumber to bigint
     const amountInBigInt = BigInt(value.hex ? value.hex : value._hex);
     console.log("Amount in bigint:", amountInBigInt);
@@ -766,7 +784,7 @@ async function getLiberdusAccountBalance(address: string): Promise<string | null
 async function getLatestCycleRecord(): Promise<any> {
     const url = collectorHost + "/api/cycleinfo?count=1";
     const response = await axios.get(url);
-    const {success, cycles} = response.data;
+    const { success, cycles } = response.data;
     if (success) return cycles[0].cycleRecord;
     return null;
 }
@@ -879,67 +897,46 @@ async function main(): Promise<void> {
     // set starting block number
     startingBlock = await provider.getBlockNumber();
     if (loadExistingQueue) loadQueueFromFile(ourParty.idx);
-    setInterval(async () => {
+
+    async function processTransaction(validTx: any): Promise<void> {
+        const { txId } = validTx;
+        const startTime = Date.now();
         try {
-            await monitorLiberdusTransactions();
-        } catch (error) {
-        }
-    }, 10000);
-
-    // setInterval(async () => {
-    //     try {
-    //         await monitorEthereumTransactions();
-    //     } catch (error) {
-    //     }
-    // }, 10000);
-
-    setInterval(async () => {
-        // console.log(`Queue length: ${txQueue.length}`, processing);
-        if (txQueue.length > 0 && !processing) {
-            const validTx = txQueue.shift()!;
-            txQueueMap.set(validTx.txId, {status: "processing", ...validTx});
-            saveQueueToFile(ourParty.idx);
-            try {
-                processing = true;
-                let promises = [];
-                if (validTx.type === "coinToToken") {
-                    promises.push(processCoinToToken(validTx.from, validTx.value as ethers.BigNumber, validTx.txId))
-                } else if (validTx.type === "tokenToCoin") {
-                    console.log("Processing token to coin transaction", validTx);
-                    promises.push(processTokenToCoin(validTx.from, validTx.value as ethers.BigNumber, validTx.txId))
-                }
-                const threeMinPromise = 1000 * 60 * 1.5;
-                const failPromise = new Promise((resolve, reject) => {
-                    setTimeout(() => {
-                        reject(new Error("Transaction processing timed out"));
-                    }, threeMinPromise);
-                })
-                promises.push(failPromise);
-                // wait for either the transaction to be processed or the timeout
-                await Promise.race(promises);
-                // if the transaction was processed successfully, remove it from the queue
+            let promises: Promise<any>[] = [];
+            if (validTx.type === "coinToToken") {
+                promises.push(processCoinToToken(validTx.from, validTx.value as ethers.BigNumber, validTx.txId))
+            } else if (validTx.type === "tokenToCoin") {
+                console.log("Processing token to coin transaction", validTx);
+                promises.push(processTokenToCoin(validTx.from, validTx.value as ethers.BigNumber, validTx.txId))
+            }
+            const threeMinPromise = 1000 * 60 * 1.5;
+            const failPromise = new Promise((resolve, reject) => {
+                setTimeout(() => {
+                    reject(new Error("Transaction processing timed out"));
+                }, threeMinPromise);
+            })
+            promises.push(failPromise);
+            // wait for either the transaction to be processed or the timeout
+            await Promise.race(promises);
+            // if the transaction was processed successfully, remove it from the queue
+            txQueueMap.set(validTx.txId, {
+                status: "completed",
+                from: validTx.from,
+                value: validTx.value,
+                txId: validTx.txId
+            });
+            console.log("Transaction processed successfully:", validTx);
+        } catch (error: any) {
+            if (error.message === enoughPartyError) {
+                // todo: check if the tx is actually signed by enough parties and injected properly
+                console.log("Transaction already signed by enough parties, skipping:", validTx);
                 txQueueMap.set(validTx.txId, {
                     status: "completed",
                     from: validTx.from,
                     value: validTx.value,
                     txId: validTx.txId
                 });
-                saveQueueToFile(ourParty.idx);
-                console.log("Transaction processed successfully:", validTx);
-            } catch (error: any) {
-                if (error.message === enoughPartyError) {
-                    // todo: check if the tx is actually signed by enough parties and injected properly
-                    console.log("Transaction already signed by enough parties, skipping:", validTx);
-                    txQueueMap.set(validTx.txId, {
-                        status: "completed",
-                        from: validTx.from,
-                        value: validTx.value,
-                        txId: validTx.txId
-                    });
-                    saveQueueToFile(ourParty.idx);
-                    processing = false;
-                    return;
-                }
+            } else {
                 // todo: find better way to handle errors
                 // txQueue.push(validTx);
                 txQueueMap.set(validTx.txId, {
@@ -948,17 +945,107 @@ async function main(): Promise<void> {
                     value: validTx.value,
                     txId: validTx.txId
                 });
-                saveQueueToFile(ourParty.idx);
-                console.error("Error processing transaction:", error);
-                // console.log("Transaction re-added to queue:", validTx);
             }
-            processing = false;
+            saveQueueToFile(ourParty.idx);
+            console.error("Error processing transaction:", error);
+            // console.log("Transaction re-added to queue:", validTx);
+        } finally {
+            // Remove from processing set when done (success or failure)
+            const endTime = Date.now();
+            console.log(`Time taken for processTransaction: ${endTime - startTime} ms`);
+            processingTransactionIds.delete(validTx.txId);
         }
-    }, txQueueInterval);
+    }
 
+    const handleTransactionQueue = () => {
+        console.log("Running handleTransactionQueue", new Date().toISOString());
+        // Clean up any stale transaction IDs that might have completed/failed but aren't reflected in our processing set
+        for (const txId of processingTransactionIds) {
+            const txStatus = txQueueMap.get(txId);
+            if (txStatus && (txStatus.status === "completed" || txStatus.status === "failed")) {
+                processingTransactionIds.delete(txId);
+            }
+        }
+
+        // console.log(`Queue length: ${txQueue.length}`, processing);
+        // Process new transactions while we have available slots
+        while (txQueue.length > 0 && processingTransactionIds.size < MAX_CONCURRENT_TXS) {
+            const validTx = txQueue.shift()!;
+
+            // Update transaction status to processing
+            txQueueMap.set(validTx.txId, { status: "processing", ...validTx });
+            saveQueueToFile(ourParty.idx);
+
+            // Add to processing set
+            processingTransactionIds.add(validTx.txId);
+
+            // Start processing the transaction (fire and forget)
+            processTransaction(validTx).catch(error => {
+                console.error(`Unexpected error in processTransaction for ${validTx.txId}:`, error);
+                // Ensure cleanup happens even if there's an unexpected error
+                processingTransactionIds.delete(validTx.txId);
+            });
+        }
+        if (processingTransactionIds.size) console.log(`Currently processing ${processingTransactionIds.size} transactions, ${txQueue.length} in queue`);
+    };
+
+    /**
+ * Drift-resistant scheduler that synchronizes function execution across multiple servers
+ *
+ * This scheduler solves several problems:
+ * 1. Timer Drift: setInterval accumulates small timing errors over time
+ * 2. Server Synchronization: Multiple servers starting at different times stay synchronized
+ * 3. Clock Alignment: All executions happen at exact second boundaries (e.g., 0s, 3s, 6s, 9s)
+ *
+ * How it works:
+ * - Calculates the next exact second boundary based on the interval
+ * - Uses setTimeout with precise delays to hit those boundaries
+ * - Self-corrects on each execution by recalculating the next target time
+ * - Always targets 0 milliseconds (.000Z) to prevent drift
+ *
+ * @param {Function} fn - Function to execute on schedule
+ * @param {number} intervalMS - Interval in milliseconds (e.g., 3000 for 3 seconds)
+ */
+
+    function startDriftResistantScheduler(fn: () => void | Promise<void>, intervalMS: number) {
+        console.log(`Starting drift-resistant scheduler for ${fn.name} with interval ${intervalMS} ms`);
+        const intervalSeconds = Math.round(intervalMS / 1000);
+
+        function scheduleNext() {
+            const now = new Date();
+            const currentSeconds = now.getSeconds();
+
+            // Find next exact boundary (e.g., if every 3s: 0, 3, 6, ..., 57)
+            let nextBoundary = Math.floor(currentSeconds / intervalSeconds + 1) * intervalSeconds;
+
+            let targetTime = new Date(now);
+
+            if (nextBoundary >= 60) {
+                // Go to next minute if needed
+                targetTime.setMinutes(targetTime.getMinutes() + 1);
+                targetTime.setSeconds(nextBoundary - 60, 0);
+            } else {
+                targetTime.setSeconds(nextBoundary, 0);
+            }
+
+            const delay = targetTime.getTime() - now.getTime();
+
+            // console.log(`Next run at: ${targetTime.toISOString()}, waiting ${delay}ms`);
+
+            setTimeout(() => {
+                fn();
+                scheduleNext();
+            }, delay);
+        }
+
+        // Start the first execution
+        scheduleNext();
+    }
+
+    startDriftResistantScheduler(handleTransactionQueue, txQueueProcessingInterval);
+    startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval);
+    // startDriftResistantScheduler(monitorEthereumTransactions, ethereumTxMonitorInterval);
     subscribeEthereumTransaction();
-    monitorLiberdusTransactions();
-    // monitorEthereumTransactions();
 }
 
 main().then(() => {
