@@ -149,7 +149,7 @@ app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
     }
 
     let next: PartySignup;
-    if (current && current.number < max) {
+    if (current && current.number <= max) {
       next = { number: current.number + 1, uuid: current.uuid };
     } else {
       next = { number: 1, uuid: uuidv4() };

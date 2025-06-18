@@ -7,3 +7,4 @@ yarn-error.log
 package-lock.json
 pkg
 Cargo.lock
+*.log
