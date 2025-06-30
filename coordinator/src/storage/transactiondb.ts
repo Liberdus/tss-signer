@@ -9,6 +9,7 @@ export interface Transaction {
   txTimestamp: number;
   status: TransactionStatus;
   receipt: string;
+  reason?: string | null; // Optional field for error reason
   createdAt?: string;
   updatedAt?: string;
 }
@@ -55,6 +56,7 @@ export async function initializeTransactionsDatabase(): Promise<void> {
     txTimestamp: "BIGINT NOT NULL", // assume this is from blockchain or external source
     receipt: "TEXT NOT NULL",
     status: "INTEGER NOT NULL",
+    reason: "TEXT",
     createdAt: "INTEGER DEFAULT (strftime('%s','now'))",
     updatedAt: "INTEGER DEFAULT (strftime('%s','now'))",
   });
@@ -85,10 +87,16 @@ export async function saveTransaction(transaction: Transaction): Promise<void> {
  */
 export async function updateTransactionStatus(
   txId: string,
-  status: string,
-  receipt: string
+  status: TransactionStatus,
+  receipt: string,
+  reason: string | null
 ): Promise<void> {
-  await db.update("transactions", { status, receipt }, "txId = ?", [txId]);
+  if (reason !== "") {
+    await db.update("transactions", { status, receipt, reason }, "txId = ?", [txId]);
+    return;
+  } else {
+    await db.update("transactions", { status, receipt }, "txId = ?", [txId]);
+  }
 }
 
 /**

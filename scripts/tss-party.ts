@@ -4,6 +4,7 @@ import * as path from "path";
 import axios, { AxiosResponse } from "axios";
 import * as crypto from '@shardus/crypto-utils';
 import * as readline from "readline-sync";
+import { toEthereumAddress, toShardusAddress } from "./transformAddress";
 
 const { BigNumber, utils: ethersUtils, providers } = ethers;
 
@@ -108,12 +109,10 @@ let params: Params = loadParams();
 let t = params.threshold;
 let n = params.parties;
 
-// const infuraKeys = JSON.parse(fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'));
+const infuraKeys = JSON.parse(fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'));
 
-// const chainId = 80002;
-// const coordinatorUrl = "http://dev.liberdus.com:8000";
-const chainId = 31337;
-const coordinatorUrl = "http://127.0.0.1:8000";
+const chainId = 80002;
+const coordinatorUrl = "http://dev.liberdus.com:8000";
 const collectorHost = "http://dev.liberdus.com:6001";
 const proxyServerHost = "https://dev.liberdus.com:3030";
 
@@ -121,19 +120,13 @@ const proxyServerHost = "https://dev.liberdus.com:3030";
 const tssPartyIdx = parsedIdx == null ? readline.question("Enter the party index (1 to 5): ") : parsedIdx;
 const ourParty: KeyShare = { idx: parseInt(tssPartyIdx), res: '' };
 
-// const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1];
-// const wsProvider = new ethers.providers.WebSocketProvider(`wss://polygon-amoy.infura.io/ws/v3/${ourInfurKey}`);
-// const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`https://polygon-amoy.infura.io/v3/${ourInfurKey}`);
+const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1];
+const wsProvider = new ethers.providers.WebSocketProvider(`wss://polygon-amoy.infura.io/ws/v3/${ourInfurKey}`);
+const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`https://polygon-amoy.infura.io/v3/${ourInfurKey}`);
 
-// const tssSenderAddress = "0x22443e34ed93D88cAA380f76d8e072998990D221"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
-// const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
-// const liberdusContractAddress = "0x4EA46e5dD276eeB5D423465b4aFf646AC3f7bd74";
-
-const wsProvider = new ethers.providers.WebSocketProvider(`ws://127.0.0.1:8545`);
-const provider: ethers.providers.JsonRpcProvider = new providers.JsonRpcProvider(`http://127.0.0.1:8545`);
-const tssSenderAddress = "0x8895B0669355A2cfd88f5e46B4Fed8357cDAa66c"; // "8895B0669355A2cfd88f5e46B4Fed8357cDAa66c000000000000000000000000";
-const bridgeAddressInLiberdus = "439bd3bfa8ecac56e2998ae092a120655a88601f000000000000000000000000"; // aaa
-const liberdusContractAddress = "0xBE282e13e62a15187F683126C4E7d4335AcD02b9";
+const tssSenderAddress = "0x22443e34ed93D88cAA380f76d8e072998990D221"; // "343AB7d3EEF70f7299781a5Fc007935A2CA663d9000000000000000000000000";
+const bridgeAddressInLiberdus = "eacb10fb8e61b0f382c0b3f25b6ffcdb985ea5af000000000000000000000000";
+const liberdusContractAddress = "0x4EA46e5dD276eeB5D423465b4aFf646AC3f7bd74";
 
 let lastCheckedTimestamp = serverStartTime
 let lastCheckedBlockNumber = 0;
@@ -473,7 +466,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
 async function sendTxDataToCoordinator(txData: TransactionQueueItem, timestamp: number): Promise<void> {
     const tx: Transaction & { party: number } = {
         txId: txData.txId,
-        sender: txData.from,
+        sender: toEthereumAddress(txData.from),
         value: ethersUtils.hexValue(txData.value),
         type: txData.type === "coinToToken" ? TransactionType.BRIDGE_IN : TransactionType.BRIDGE_OUT,
         txTimestamp: timestamp,
@@ -497,10 +490,10 @@ async function sendTxDataToCoordinator(txData: TransactionQueueItem, timestamp: 
     }
 }
 
-async function sendTxStatusToCoordinator(txId: string, status: TransactionStatus, receipt: string): Promise<void> {
+async function sendTxStatusToCoordinator(txId: string, status: TransactionStatus, receipt: string, failedReason = ""): Promise<void> {
     try {
         const url = `${coordinatorUrl}/transaction/status`;
-        const data = { txId, status, receipt };
+        const data = { txId, status, receipt, reason: failedReason };
         const response = await axios.post(url, data);
         if (response.status !== 202 && response.status !== 200) {
             console.error("Failed to update transaction status to coordinator:", response.data);
@@ -582,38 +575,27 @@ async function signLiberdusTransaction(item: KeyShare, tx: LiberdusTx, digest: s
     return signedTx;
 }
 
-async function injectEthereumTx(signedTx: string | null): Promise<boolean> {
-    if (!signedTx) return false;
-    let txHash: string | null = null;
+async function injectEthereumTx(txHash: string, signedTx: string): Promise<{ success: boolean, reason?: string }> {
     try {
-        // precompute tx hash from signedTx
-        txHash = ethersUtils.keccak256(signedTx);
         const txResponse = await provider.sendTransaction(signedTx);
         const receipt = await txResponse.wait();
+        console.log('Receipt', txHash, receipt)
         if (receipt.status !== 1) throw new Error("Transaction failed");
-        const balance = await provider.getBalance(receipt.to!);
-        const senderBalance = await provider.getBalance(receipt.from);
+        // const balance = await provider.getBalance(receipt.to!);
+        // const senderBalance = await provider.getBalance(receipt.from);
+        // console.log("Recipient address balance:", ethers.utils.formatEther(balance));
+        // console.log("Sender address balance:", ethers.utils.formatEther(senderBalance));
         if (verboseLogs) {
             console.log("BridgeIn transaction sent successfully!", receipt.transactionHash);
         }
     } catch (e: any) {
-        console.log("Error sending ethereum transaction:", e.message);
-        // check other party injected the transaction
-        if (txHash) {
-            // check tx receipt from RPC
-            const receipt = await provider.getTransactionReceipt(txHash);
-            if (receipt && receipt.status === 1) {
-                console.log("Transaction already injected by another party:", txHash);
-                return true;
-            }
-        }
-        return false;
+        console.log("Error sending ethereum transaction:", txHash, e.message);
+        throw e;
     }
-    return true
+    return { success: true };
 }
 
-async function injectLiberdusTx(signedTx: SignedTx | null): Promise<boolean> {
-    if (!signedTx) return false;
+async function injectLiberdusTx(txId: string, signedTx: SignedTx): Promise<{ success: boolean, reason?: string }> {
     try {
         const body = { tx: stringify(signedTx) };
         const injectUrl = proxyServerHost + "/inject";
@@ -622,18 +604,18 @@ async function injectLiberdusTx(signedTx: SignedTx | null): Promise<boolean> {
         if (waitTime > 0) await sleep(waitTime);
         const res = await axios.post(injectUrl, body);
         console.log("Liberdus tx inject response:", res.data);
-        // if (res.status !== 200 || res.data?.result?.success !== true) return false;
+        if (res.status !== 200 || res.data?.result?.success !== true) throw new Error(res.data?.result?.reason || "Transaction injection failed");
         await sleep(10000);
-        // const receipt = await getLiberdusReceipt(res.data.result.txId);
-        // if (!receipt?.success) throw new Error("Transaction failed");
+        const receipt = await getLiberdusReceipt(res.data.result.txId, 30);
+        if (receipt && receipt.success === false) throw new Error("Transaction failed");
         if (verboseLogs) {
-            console.log("Bridge-out transaction sent successfully!", res.data.result.txId);
+            console.log("BridgeOut transaction sent successfully!", txId);
         }
-    } catch (e) {
-        console.log("Error sending liberdus transaction:");
-        return false;
+    } catch (e: any) {
+        console.log("Error sending liberdus transaction:", txId, e.message);
+        throw e;
     }
-    return true;
+    return { success: true };
 }
 
 async function processCoinToToken(to: string, value: ethers.BigNumber, txId: string): Promise<void> {
@@ -679,12 +661,42 @@ async function processCoinToToken(to: string, value: ethers.BigNumber, txId: str
     let digest = ethersUtils.keccak256(unsignedTx);
     let keyShare = await DKG(ourParty);
     const signedTx = await signEthereumTransaction(keyShare, tx, digest);
+    if (!signedTx) {
+        console.log("Failed to sign Ethereum transaction, skipping", txId);
+        return;
+    }
     // precompute tx hash from signedTx
     const txHash = ethersUtils.keccak256(signedTx as string);
     console.log('Injecting ethereum transaction', txHash);
-    await injectEthereumTx(signedTx);
-    // [TODO] Move sending tx status to coordinator in the proper place
-    sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash);
+    let res: { success: boolean, reason?: string }
+    // Retry injection with linear delay progression
+    try {
+        res = await retryOperation(
+            () => injectEthereumTx(txHash, signedTx),
+            {
+                txId: txHash,
+                maxRetries: 3
+            }
+        );
+        console.log("Ethereum transaction injected", txHash, res);
+
+    } catch (error) {
+        const reason = error instanceof Error ? error.message : error as string;
+        console.error(`Failed to inject ethereum transaction: ${txHash}`, reason);
+        res = { success: false, reason };
+    }
+
+    const receipt = await provider.getTransactionReceipt(txHash);
+    if (receipt && receipt.status === 1) {
+        console.log(`Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash}`);
+        // Send tx status to coordinator
+        sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash);
+    } else {
+        console.log(`Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash}`, res.reason);
+        // Send tx status to coordinator
+        sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string);
+    }
+
 }
 
 async function processTokenToCoin(to: string, value: any, txId: string): Promise<void> {
@@ -717,16 +729,88 @@ async function processTokenToCoin(to: string, value: any, txId: string): Promise
     let digest = ethersUtils.hashMessage(hashMessage);
     let keyShare = await DKG(ourParty);
     signedTx = await signLiberdusTransaction(keyShare, tx, digest);
-    const success = await injectLiberdusTx(signedTx);
-    if (!success) {
-        // throw new Error("Failed to sign and inject transaction");
-    } else if (success) {
-        // [TODO] Move sending tx status to coordinator in the proper place
-        // Compute txId from signedTx
-        const signedTxId = crypto.hashObj(signedTx as SignedTx, true);
+    if (!signedTx) {
+        console.log("Failed to sign liberdus transaction, skipping", txId);
+        return;
+    }
+    // Compute txId from signedTx
+    const signedTxId = crypto.hashObj(signedTx as SignedTx, true);
+    console.log("Transaction Id:", signedTxId);
+    let res: { success: boolean, reason?: string };
+    // Retry injection with linear delay progression
+    try {
+        res = await retryOperation(
+            () => injectLiberdusTx(signedTxId, signedTx as SignedTx),
+            {
+                txId: signedTxId,
+                maxRetries: 3
+            }
+        );
+        console.log("Liberdus transaction injected", signedTxId, res);
+    } catch (error) {
+        const reason = error instanceof Error ? error.message : error as string;
+        console.error(`Failed to inject liberdus transaction: ${signedTxId}`, reason);
+
+        res = { success: false, reason };
+    }
+
+    const receipt = await getLiberdusReceipt(signedTxId, 2);
+    if (receipt && receipt.success === true) {
+        console.log(`Transaction is successful - ethereum tx ${txId} - liberdus tx ${signedTxId}`);
+        // Send tx status to coordinator
         sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId);
+    } else if (receipt && receipt.success === false && receipt.reason) {
+        console.log(`Transaction is failed - ethereum tx ${txId} - liberdus tx ${signedTxId} with reason ${receipt.reason}`);
+        // Send tx status to coordinator
+        sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, receipt.reason);
+    } else {
+        console.log(`Transaction is failed - ethereum tx ${txId} - liberdus tx ${signedTxId} with reason ${res.reason}`);
+        // Send tx status to coordinator
+        sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, res.reason as string);
     }
 }
+
+// Retry function with linear delay progression
+async function retryOperation<T>(
+    operation: () => Promise<T>,
+    options: {
+        txId: string, // Used for logging purposes
+        maxRetries: number;
+        shouldRetry?: (error: Error) => boolean;
+    }
+): Promise<T> {
+    const {
+        txId,
+        maxRetries = 3,
+        shouldRetry = (error: Error) =>
+            !error.message.includes('invalid signature') &&
+            !error.message.includes('Nonce too low') &&
+            !error.message.includes('Transaction Failed'),
+    } = options;
+
+    let lastError: Error;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            return await operation();
+        } catch (error) {
+            lastError = error as Error;
+
+            if (!shouldRetry(lastError) || attempt === maxRetries) {
+                console.log(`[${txId}] Failed after ${attempt} ${attempt === 1 ? 'attempt' : `attempts`} `, lastError.message);
+                throw lastError;
+            }
+
+            const delay = attempt * 1000;
+            console.log(`[${txId}] Attempt ${attempt + 1} failed, retrying in ${delay}ms`);
+
+            if (delay > 0) await sleep(delay);
+        }
+    }
+
+    throw lastError!;
+}
+
 
 async function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -743,14 +827,18 @@ async function confirmFutureTimestamp(operationId: string, timestamp: number): P
     return res.data.timestamp
 }
 
-async function getLiberdusReceipt(txId: string): Promise<any> {
+async function getLiberdusReceipt(txId: string, maxRetries = 30): Promise<any> {
     const url = proxyServerHost + "/transaction/" + txId;
     let count = 0;
     let response: AxiosResponse | null = null;
-    while (count < 10) {
+    while (count < maxRetries) { // try up to <maxRetries> times/seconds
         try {
             response = await axios.get(url);
-            if (response && response.status === 200) break;
+            if (response && response.status === 200) {
+                if (response.data && response.data.transaction && response.data.transaction.success !== undefined) {
+                    break; // Exit loop if we got a valid response
+                }
+            }
         } catch (e) {
         }
         count++;
@@ -791,10 +879,6 @@ async function getLatestCycleRecord(): Promise<any> {
 
 function calculateChatId(from: string, to: string): string {
     return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''));
-}
-
-function toShardusAddress(addressStr: string): string {
-    return addressStr.slice(2).toLowerCase() + '0'.repeat(24);
 }
 
 function subscribeEthereumTransaction() {
