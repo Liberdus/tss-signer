@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import fs from "fs/promises";
 import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
+import { isEthereumAddress } from "./utils/transformAddress";
 
 // --- Types matching your Rust models ---
 interface Entry {
@@ -41,6 +42,7 @@ db.set(SIGN_KEY, JSON.stringify({ number: 0, uuid: uuidv4() } as PartySignup));
 type CachedTransaction = {
   tx: TransactionDB.Transaction;
   timestamp: number; // Unix timestamp in milliseconds
+  saved?: boolean; // Flag to indicate if transaction has been saved
 };
 const txPartyMap: Map<string, Set<string>> = new Map(); // Map<txId, Set<partyId>>
 const txCache: Map<string, CachedTransaction> = new Map(); // Map<txId, CachedTransaction>
@@ -195,6 +197,7 @@ app.post(
       if (
         !txId ||
         !sender ||
+        isEthereumAddress(sender) ||
         !value ||
         !TransactionDB.isTransactionType(type) ||
         !txTimestamp ||
@@ -225,6 +228,7 @@ app.post(
             status,
           },
           timestamp: Date.now(),
+          saved: false,
         });
       }
 
@@ -232,7 +236,14 @@ app.post(
 
       if (receivedFrom.size >= REQUIRED_CONFIRMATIONS) {
         // Save the transaction and clean up cache
-        const { tx } = txCache.get(txId) as CachedTransaction;
+        let { tx, saved } = txCache.get(txId) as CachedTransaction;
+        if (saved) {
+          console.log(`Transaction ${txId} already saved, skipping.`);
+          return res.status(202).json({ Ok: { txId } }); // Already saved
+        }
+        // Update saved to true to prevent race conditions
+        txCache.get(txId)!.saved = true;
+        console.log(`Saving transaction`, tx);
         await TransactionDB.saveTransaction(tx);
         console.log(
           `Transaction saved: ${txId}, type: ${type}, status: ${status}`
@@ -262,19 +273,36 @@ app.post(
 app.post(
   "/transaction/status",
   async (
-    req: Request<{}, {}, { txId: string; status: string; receipt: string }>,
+    req: Request<
+      {},
+      {},
+      Omit<
+        TransactionDB.Transaction,
+        "sender" | "value" | "type" | "txTimestamp"
+      >
+    >,
     res: Response<Result<null>>
   ) => {
     try {
-      const { txId, status, receipt } = req.body;
+      const { txId, status, receipt, reason } = req.body;
       // Validate request data
-      if (!txId || !TransactionDB.isTransactionStatus(status) || !receipt) {
+      if (
+        !txId ||
+        !TransactionDB.isTransactionStatus(status) ||
+        !receipt ||
+        typeof reason !== "string"
+      ) {
         console.error("Invalid transaction status data:", req.body);
         return res.status(400).json({ Err: "Invalid transaction status data" });
       }
 
       // Update transaction status
-      await TransactionDB.updateTransactionStatus(txId, status, receipt);
+      await TransactionDB.updateTransactionStatus(
+        txId,
+        status,
+        receipt,
+        reason
+      );
 
       console.log(`Transaction status updated: ${txId}, status: ${status}`);
       res.json({ Ok: null });
