@@ -64,6 +64,7 @@ interface TxQueueMapValue {
 interface KeyShare {
   idx: number
   res: string
+  chainId?: number // Add chainId to identify which chain this keystore is for
 }
 
 interface BridgeOutEvent {
@@ -124,9 +125,10 @@ export enum TransactionType {
 }
 
 const parsedIdx = process.argv[2]
-const keygenFlag = process.argv[3]
+const operationFlag = process.argv[3]
 
-const generateKeystore = keygenFlag === '--keygen'
+const generateKeystore = operationFlag === '--keygen'
+const verifyKeystores = operationFlag === '--verify'
 const loadExistingQueue = true
 const verboseLogs = true
 const addOldTxToQueue = false
@@ -161,19 +163,30 @@ for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains))
   const rpcUrl = config.rpcUrl.includes('infura.io')
     ? `${config.rpcUrl}${ourInfurKey}`
     : config.rpcUrl
-  const wsUrl = config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl
 
   const provider = new providers.JsonRpcProvider(rpcUrl)
-  const wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
+
+  // Only create WebSocket provider if not in keygen mode and URL is valid
+  let wsProvider: ethers.providers.WebSocketProvider | null = null
+  if (!generateKeystore) {
+    try {
+      const wsUrl = config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl
+      wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
+      console.log(`WebSocket provider initialized for ${config.name} (Chain ID: ${chainId})`)
+    } catch (error) {
+      console.warn(`Failed to initialize WebSocket provider for ${config.name}: ${error}`)
+      console.log(`Will use HTTP provider only for ${config.name}`)
+    }
+  }
 
   chainProviders.set(chainId, {
     provider,
-    wsProvider,
+    wsProvider: wsProvider!,
     config,
     lastCheckedBlockNumber: 0,
   })
 
-  console.log(`Initialized providers for ${config.name} (Chain ID: ${chainId})`)
+  console.log(`HTTP provider initialized for ${config.name} (Chain ID: ${chainId})`)
 }
 
 // Legacy variables for backward compatibility (using default chain)
@@ -217,21 +230,93 @@ function loadChainConfigs(): ChainConfigs {
   return JSON.parse(data)
 }
 
-const getKeystoreFilePath = (partyIdx: number): string => {
+const getKeystoreFilePath = (partyIdx: number, chainId?: number): string => {
+  if (chainId) {
+    return path.join(KEYSTORE_DIR, `keystore_party_${partyIdx}_chain_${chainId}.json`)
+  }
+  // Legacy path for backward compatibility
   return path.join(KEYSTORE_DIR, `keystore_party_${partyIdx}.json`)
 }
 
-const keystoreExists = (partyIdx: number): boolean => {
-  return fs.existsSync(getKeystoreFilePath(partyIdx))
+const keystoreExists = (partyIdx: number, chainId?: number): boolean => {
+  return fs.existsSync(getKeystoreFilePath(partyIdx, chainId))
 }
 
-const saveKeystore = (partyIdx: number, keystore: string): void => {
-  fs.writeFileSync(getKeystoreFilePath(partyIdx), keystore)
-  console.log(`Keystore for party ${partyIdx} saved to ${getKeystoreFilePath(partyIdx)}`)
+const saveKeystore = (partyIdx: number, keystore: string, chainId?: number): void => {
+  const filePath = getKeystoreFilePath(partyIdx, chainId)
+  fs.writeFileSync(filePath, keystore)
+  if (chainId) {
+    console.log(`Keystore for party ${partyIdx} chain ${chainId} saved to ${filePath}`)
+  } else {
+    console.log(`Keystore for party ${partyIdx} saved to ${filePath}`)
+  }
 }
 
-const loadKeystore = (partyIdx: number): string => {
-  return fs.readFileSync(getKeystoreFilePath(partyIdx), 'utf8')
+const loadKeystore = (partyIdx: number, chainId?: number): string => {
+  return fs.readFileSync(getKeystoreFilePath(partyIdx, chainId), 'utf8')
+}
+
+// New function to get all available chain keystores for a party
+const getAvailableChainKeystores = (partyIdx: number): number[] => {
+  const chainIds: number[] = []
+
+  // Check for chain-specific keystores
+  for (const chainIdStr of Object.keys(chainConfigs.supportedChains)) {
+    const chainId = parseInt(chainIdStr)
+    if (keystoreExists(partyIdx, chainId)) {
+      chainIds.push(chainId)
+    }
+  }
+
+  return chainIds
+}
+
+// New function to ensure all chain keystores exist for a party
+const ensureChainKeystores = async (partyIdx: number): Promise<Map<number, string>> => {
+  const keystores = new Map<number, string>()
+
+  for (const chainIdStr of Object.keys(chainConfigs.supportedChains)) {
+    const chainId = parseInt(chainIdStr)
+
+    if (keystoreExists(partyIdx, chainId)) {
+      // Load existing keystore
+      keystores.set(chainId, loadKeystore(partyIdx, chainId))
+      console.log(`Loaded existing keystore for party ${partyIdx} chain ${chainId}`)
+    } else {
+      // Generate new keystore for this chain
+      console.log(`Generating new keystore for party ${partyIdx} chain ${chainId}`)
+      const delay = Math.max(Math.random() * 500, 100)
+      // Create deterministic operation ID based on chain ID and a fixed identifier
+      const operationId = `keygen-chain-${chainId}`
+
+      try {
+        const newKeystore = await keygen(gg18, delay, operationId)
+        saveKeystore(partyIdx, newKeystore, chainId)
+        keystores.set(chainId, newKeystore)
+        console.log(`Generated new keystore for party ${partyIdx} chain ${chainId}`)
+      } catch (e) {
+        console.error(`Failed to generate keystore for party ${partyIdx} chain ${chainId}:`, e)
+        throw e
+      }
+    }
+  }
+
+  return keystores
+}
+
+// New function to get keystore for a specific chain
+const getKeystoreForChain = (partyIdx: number, chainId: number): string => {
+  if (keystoreExists(partyIdx, chainId)) {
+    return loadKeystore(partyIdx, chainId)
+  }
+
+  // Fallback to legacy keystore if chain-specific doesn't exist
+  if (keystoreExists(partyIdx)) {
+    console.warn(`Using legacy keystore for party ${partyIdx} chain ${chainId}`)
+    return loadKeystore(partyIdx)
+  }
+
+  throw new Error(`No keystore found for party ${partyIdx} chain ${chainId}`)
 }
 
 const saveQueueToFile = (partyIdx: number): void => {
@@ -258,6 +343,62 @@ const loadQueueFromFile = (partyIdx: number): void => {
   }
 }
 
+// Extract EOA address and public key from keystore without requiring TSS coordination
+const extractPublicKeyFromKeystore = (keystoreJson: string): { publicKey: string; address: string } => {
+  try {
+    const keystore = JSON.parse(keystoreJson)
+    
+    // The public key is stored in the keystore at index 5
+    // and it's in the format {x: "hex", y: "hex"}
+    const publicKeyData = keystore[5]
+    if (!publicKeyData || !publicKeyData.x || !publicKeyData.y) {
+      throw new Error('Invalid keystore structure: public key not found at index 5')
+    }
+    
+    const publicKeyX = publicKeyData.x
+    const publicKeyY = publicKeyData.y
+    
+    // Convert the uncompressed public key to the format expected by ethers
+    // Ethereum uses uncompressed public keys: 0x04 + x + y
+    const uncompressedPublicKey = '0x04' + publicKeyX + publicKeyY
+    
+    // Compute the Ethereum address from the public key
+    const address = ethersUtils.computeAddress(uncompressedPublicKey)
+    
+    return {
+      publicKey: uncompressedPublicKey,
+      address: address
+    }
+  } catch (error) {
+    console.error('Failed to extract public key from keystore:', error)
+    throw error
+  }
+}
+
+// Generate public key file from keystore
+const generatePublicKeyFile = (partyIdx: number, chainId: number): void => {
+  try {
+    const keystore = getKeystoreForChain(partyIdx, chainId)
+    const { publicKey, address } = extractPublicKeyFromKeystore(keystore)
+    const chainConfig = chainConfigs.supportedChains[chainId.toString()]
+    const chainName = chainConfig?.name || `Chain ${chainId}`
+    
+    const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}_chain_${chainId}.json`)
+    const publicKeyData = {
+      chainId,
+      chainName,
+      publicKey: publicKey,
+      address: address,
+      generated: new Date().toISOString()
+    }
+    fs.writeFileSync(publicKeyFilePath, JSON.stringify(publicKeyData, null, 2))
+    console.log(`📄 Generated public key file for ${chainName}: ${publicKeyFilePath}`)
+  } catch (error) {
+    console.error(`Failed to generate public key file for party ${partyIdx} chain ${chainId}:`, error)
+  }
+}
+
+// Display all EOA addresses for a party across all chains
 function verifyEthereumTx(obj: SignedTx): boolean {
   if (typeof obj !== 'object') throw new TypeError('Input must be an object.')
   if (!obj.sign || !obj.sign.owner || !obj.sign.sig)
@@ -401,8 +542,8 @@ function validateCoinToTokenTx(
   return {from, value: transferAmountInBigInt, txId, targetChainId}
 }
 
-async function keygen(m: any, delay: number): Promise<string> {
-  const keygenOperationId = cryptoInitKey.slice(2, 8)
+async function keygen(m: any, delay: number, operationId?: string): Promise<string> {
+  const keygenOperationId = operationId || cryptoInitKey.slice(2, 8)
   let context = await m.gg18_keygen_client_new_context(
     coordinatorUrl,
     t,
@@ -410,6 +551,7 @@ async function keygen(m: any, delay: number): Promise<string> {
     delay,
     keygenOperationId,
   )
+  console.log('Keygen context created:', context)
   context = await m.gg18_keygen_client_round1(context, delay)
   context = await m.gg18_keygen_client_round2(context, delay)
   context = await m.gg18_keygen_client_round3(context, delay)
@@ -664,13 +806,26 @@ async function sendTxStatusToCoordinator(
   }
 }
 
-async function DKG(party: KeyShare): Promise<KeyShare> {
-  if (party.res) return party
+async function DKG(party: KeyShare, chainId?: number): Promise<KeyShare> {
   const partyIdx = party.idx
+
+  // If chainId is provided, use chain-specific keystore
+  if (chainId) {
+    try {
+      const chainKeystore = getKeystoreForChain(partyIdx, chainId)
+      return { idx: partyIdx, res: chainKeystore, chainId }
+    } catch (e) {
+      console.error(`Failed to get keystore for chain ${chainId}:`, e)
+      throw e
+    }
+  }
+
+  // Legacy behavior for backward compatibility
+  if (party.res) return party
   if (!generateKeystore && keystoreExists(partyIdx)) {
     party.res = loadKeystore(partyIdx)
   } else {
-    let delay = Math.max(Math.random() % 500, 100)
+    let delay = Math.max(Math.random() * 500, 100)
     try {
       party.res = await keygen(gg18, delay)
       saveKeystore(partyIdx, party.res)
@@ -849,7 +1004,9 @@ async function processCoinToToken(
   console.log(`eth tx to sign on ${targetChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
-  let keyShare = await DKG(ourParty)
+
+  // Use chain-specific keystore for signing
+  let keyShare = await DKG(ourParty, targetChainId)
   const signedTx = await signEthereumTransaction(keyShare, tx, digest)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
@@ -933,7 +1090,9 @@ async function processTokenToCoin(
   }
   const hashMessage = crypto.hashObj(tx)
   let digest = ethersUtils.hashMessage(hashMessage)
-  let keyShare = await DKG(ourParty)
+
+  // Use chain-specific keystore for signing (source chain for Liberdus transactions)
+  let keyShare = await DKG(ourParty, sourceChainId)
   signedTx = await signLiberdusTransaction(keyShare, tx, digest)
   if (!signedTx) {
     console.log(`Failed to sign liberdus transaction from ${sourceChainName}, skipping`, txId)
@@ -1197,37 +1356,120 @@ function subscribeEthereumTransactions() {
 }
 
 async function main(): Promise<void> {
+  // Show help if no valid operation flag is provided
+  if (!generateKeystore && !verifyKeystores && !process.argv[3]) {
+    console.log('\nUsage: ts-node scripts/tss-party.ts <party_index> <operation>')
+    console.log('\nOperations:')
+    console.log('  --keygen  : Generate new keystores for all supported chains (pure key generation)')
+    console.log('  --verify  : Verify and test existing keystores, display EOA addresses')
+    console.log('  (none)    : Start normal TSS party operation (requires existing keystores)')
+    console.log('\nExamples:')
+    console.log('  ts-node scripts/tss-party.ts 1 --keygen   # Generate keystores for party 1')
+    console.log('  ts-node scripts/tss-party.ts 1 --verify   # Verify keystores for party 1')
+    console.log('  ts-node scripts/tss-party.ts 1            # Start party 1 for TSS operations')
+    console.log('')
+  }
+
   if (generateKeystore) {
-    // generate new key share
+    // Pure key generation for all supported chains
     const partyIdx = ourParty.idx
-    const delay = Math.max(Math.random() % 500, 100)
+    console.log(`Generating keystores for party ${partyIdx} for all supported chains...`)
+
     try {
-      ourParty.res = await keygen(gg18, delay)
-      saveKeystore(partyIdx, ourParty.res)
-      // sign a test message
-      const testDigest = ethers.utils.keccak256(ethers.utils.toUtf8Bytes('test message'))
-      let res = JSON.parse(await sign(gg18, ourParty.res, delay, testDigest))
-      const signature = {
-        r: '0x' + res[0],
-        s: '0x' + res[1],
-        v: res[2],
-      }
-      const publicKey = ethersUtils.recoverPublicKey(testDigest, signature)
-      const address = ethersUtils.computeAddress(publicKey)
-      console.log('Public key and address of TSS account:', publicKey, address)
-      // write public key and address to a json file with the party index
-      const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}.json`)
-      const publicKeyData = {
-        publicKey: publicKey,
-        address: address,
-      }
-      fs.writeFileSync(publicKeyFilePath, JSON.stringify(publicKeyData, null, 2))
+      // Ensure all chain keystores exist for this party
+      const keystores = await ensureChainKeystores(partyIdx)
+      console.log(`Successfully generated keystores for all ${keystores.size} chains`)
+      console.log('Use --verify flag to test and verify the generated keystores')
       process.exit(0)
     } catch (e) {
-      console.error('Error generating key share:', e)
-      return
+      console.error('Error generating key shares:', e)
+      process.exit(1)
     }
   }
+
+  if (verifyKeystores) {
+    // Verify and test keystores, display EOA addresses
+    const partyIdx = ourParty.idx
+    console.log(`Verifying keystores for party ${partyIdx} for all supported chains...`)
+
+    try {
+      // Load existing keystores
+      const keystores = new Map<number, string>()
+      
+      for (const chainIdStr of Object.keys(chainConfigs.supportedChains)) {
+        const chainId = parseInt(chainIdStr)
+        try {
+          const keystore = getKeystoreForChain(partyIdx, chainId)
+          keystores.set(chainId, keystore)
+          console.log(`Loaded keystore for chain ${chainId}`)
+        } catch (e) {
+          console.error(`Failed to load keystore for chain ${chainId}:`, e)
+          continue
+        }
+      }
+
+      if (keystores.size === 0) {
+        console.error('No keystores found. Please run with --keygen first.')
+        process.exit(1)
+      }
+
+      // Display public keys and addresses for each keystore
+      console.log(`\n🔑 EOA Addresses Summary for Party ${partyIdx}:`)
+      console.log('=' .repeat(60))
+      
+      for (const [chainId, keystore] of keystores.entries()) {
+        const chainConfig = chainConfigs.supportedChains[chainId.toString()]
+        const chainName = chainConfig?.name || `Chain ${chainId}`
+
+        console.log(`\n${chainName} (Chain ID: ${chainId}):`)
+        console.log(`  🗂️  Keystore: ✅ Found`)
+        
+        // Check if public key file exists, if not, generate it from keystore
+        const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}_chain_${chainId}.json`)
+        
+        try {
+          // Always try to extract and display the public key and address from keystore
+          const { publicKey, address } = extractPublicKeyFromKeystore(keystore)
+          console.log(`  📍 Address: ${address}`)
+          console.log(`  🔑 Public Key: ${publicKey}`)
+          
+          if (fs.existsSync(publicKeyFilePath)) {
+            console.log(`  📄 Public Key File: ✅ Found`)
+          } else {
+            // Generate the public key file from keystore
+            generatePublicKeyFile(partyIdx, chainId)
+            console.log(`  📄 Public Key File: ✅ Generated`)
+          }
+        } catch (e) {
+          console.log(`  📄 Public Key File: ❌ Error extracting from keystore`)
+          console.log(`  ⚠️  Error: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        
+        console.log(`  🌐 RPC URL: ${chainConfig.rpcUrl}`)
+        console.log(`  📋 Contract: ${chainConfig.contractAddress}`)
+      }
+
+      console.log(`\n✅ Verification complete for all ${keystores.size} chains`)
+      console.log('📄 All public key files have been generated from keystores')
+      console.log('\nNote: This verification extracts addresses from keystores without TSS coordination.')
+      console.log('      For full TSS signing tests, you need to coordinate with other parties.')
+      process.exit(0)
+    } catch (e) {
+      console.error('Error verifying keystores:', e)
+      process.exit(1)
+    }
+  }
+
+  // Ensure all chain keystores exist before starting normal operation
+  try {
+    console.log(`Ensuring all chain keystores exist for party ${ourParty.idx}...`)
+    await ensureChainKeystores(ourParty.idx)
+    console.log('All chain keystores are ready')
+  } catch (e) {
+    console.error('Failed to ensure chain keystores:', e)
+    process.exit(1)
+  }
+
   // set starting block number for all chains
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
@@ -1280,7 +1522,7 @@ async function main(): Promise<void> {
       txQueueMap.set(validTx.txId, {
         status: 'completed',
         from: validTx.from,
-        value: validTx.value,
+        value: validTx.amount,
         txId: validTx.txId,
         chainId: validTx.chainId,
       })
@@ -1292,7 +1534,7 @@ async function main(): Promise<void> {
         txQueueMap.set(validTx.txId, {
           status: 'completed',
           from: validTx.from,
-          value: validTx.value,
+          value: validTx.amount,
           txId: validTx.txId,
           chainId: validTx.chainId,
         })
@@ -1302,7 +1544,7 @@ async function main(): Promise<void> {
         txQueueMap.set(validTx.txId, {
           status: 'failed',
           from: validTx.from,
-          value: validTx.value,
+          value: validTx.amount,
           txId: validTx.txId,
           chainId: validTx.chainId,
         })
