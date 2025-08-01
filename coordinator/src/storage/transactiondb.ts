@@ -7,6 +7,7 @@ export interface Transaction {
   value: string;
   type: TransactionType;
   txTimestamp: number;
+  chainId: number;
   status: TransactionStatus;
   receipt: string;
   reason?: string | null; // Optional field for error reason
@@ -55,6 +56,7 @@ export async function initializeTransactionsDatabase(): Promise<void> {
     type: "INTEGER NOT NULL",
     txTimestamp: "BIGINT NOT NULL", // assume this is from blockchain or external source
     receipt: "TEXT NOT NULL",
+    chainId: "INTEGER NOT NULL",
     status: "INTEGER NOT NULL",
     reason: "TEXT",
     createdAt: "INTEGER DEFAULT (strftime('%s','now'))",
