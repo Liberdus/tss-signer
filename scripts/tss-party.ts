@@ -49,7 +49,7 @@ interface TransactionQueueItem {
   value: ethers.BigNumber | bigint
   txId: string
   type: 'tokenToCoin' | 'coinToToken'
-  chainId?: number // Add chainId to track which chain this transaction belongs to
+  chainId: number // Add chainId to track which chain this transaction belongs to
 }
 
 interface TxQueueMapValue {
@@ -99,17 +99,38 @@ interface SignedTx {
   }
 }
 
-// Transaction interface to send to the coordinator
+// Transaction interface saved in the coordinator
 export interface Transaction {
   txId: string
   sender: string
   value: string
   type: TransactionType
   txTimestamp: number
+  chainId: number
   status: TransactionStatus
   receipt: string
+  reason?: string | null; // Optional field for error reason
   createdAt?: string
   updatedAt?: string
+}
+
+// Transaction data sent to the coordinator
+interface TxData extends Omit<Transaction, 'createdAt' | 'updatedAt' | 'reason'> {
+  party: number; 
+}
+
+interface TxStatusData
+  extends Omit<
+    Transaction,
+    | "sender"
+    | "value"
+    | "type"
+    | "txTimestamp"
+    | "chainId"
+    | "createdAt"
+    | "updatedAt"
+  > {
+  party: number;
 }
 
 export enum TransactionStatus {
@@ -754,7 +775,7 @@ async function sendTxDataToCoordinator(
   txData: TransactionQueueItem,
   timestamp: number,
 ): Promise<void> {
-  const tx: Transaction & { party: number; chainId?: number } = {
+  const tx: TxData = {
     txId: txData.txId,
     sender: toEthereumAddress(txData.from),
     value: ethersUtils.hexValue(txData.value),
@@ -792,7 +813,7 @@ async function sendTxStatusToCoordinator(
 ): Promise<void> {
   try {
     const url = `${coordinatorUrl}/transaction/status`
-    const data = {txId, status, receipt, reason: failedReason}
+    const data: TxStatusData = {txId, status, receipt, reason: failedReason, party: ourParty.idx}
     const response = await axios.post(url, data)
     if (response.status !== 202 && response.status !== 200) {
       console.error('Failed to update transaction status to coordinator:', response.data)

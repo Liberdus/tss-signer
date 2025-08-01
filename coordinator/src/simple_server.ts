@@ -38,14 +38,40 @@ db.set(
 );
 db.set(SIGN_KEY, JSON.stringify({ number: 0, uuid: uuidv4() } as PartySignup));
 
+// Transaction data received from TSS
+interface TxData
+  extends Omit<
+    TransactionDB.Transaction,
+    "createdAt" | "updatedAt" | "reason"
+  > {
+  party: number;
+}
+
+interface TxStatusData
+  extends Omit<
+    TransactionDB.Transaction,
+    | "sender"
+    | "value"
+    | "type"
+    | "txTimestamp"
+    | "chainId"
+    | "createdAt"
+    | "updatedAt"
+  > {
+  party: number;
+}
 // In-memory cache to track TSS party receipts
 type CachedTransaction = {
   tx: TransactionDB.Transaction;
   timestamp: number; // Unix timestamp in milliseconds
   saved?: boolean; // Flag to indicate if transaction has been saved
 };
-const txPartyMap: Map<string, Set<string>> = new Map(); // Map<txId, Set<partyId>>
-const txCache: Map<string, CachedTransaction> = new Map(); // Map<txId, CachedTransaction>
+
+type TxId = string;
+type PartyId = number;
+
+const txPartyMap: Map<TxId, Set<PartyId>> = new Map();
+const txCache: Map<TxId, CachedTransaction> = new Map();
 const THRESHOLD = 3;
 const REQUIRED_CONFIRMATIONS = THRESHOLD + 1;
 const CACHE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -186,26 +212,36 @@ app.post(
 app.post(
   "/transaction",
   async (
-    req: Request<{}, {}, TransactionDB.Transaction & { party: string }>,
+    req: Request<{}, {}, TxData>,
     res: Response<Result<{ txId: string }>>
   ) => {
     try {
-      const { txId, sender, value, type, txTimestamp, receipt, status, party } =
-        req.body;
+      const {
+        txId,
+        sender,
+        value,
+        type,
+        txTimestamp,
+        receipt,
+        chainId,
+        status,
+        party,
+      } = req.body;
 
-      // Validate request data
+      // Validate request data [TODO - add more validation]
       if (
         !txId ||
         !sender ||
-        isEthereumAddress(sender) ||
+        !isEthereumAddress(sender) ||
         !value ||
         !TransactionDB.isTransactionType(type) ||
         !txTimestamp ||
         receipt !== "" ||
+        !chainId || // [TODO] Add proper chainId validation
         !TransactionDB.isTransactionStatus(status) ||
         !party
       ) {
-        console.log("Transaction request body:", req.body);
+        console.log("Invalid Transaction Data:", req.body);
         return res.status(400).json({ Err: "Invalid transaction data" });
       }
 
@@ -225,6 +261,7 @@ app.post(
             type,
             txTimestamp,
             receipt: receipt.toLowerCase(),
+            chainId,
             status,
           },
           timestamp: Date.now(),
@@ -272,20 +309,10 @@ app.post(
 // POST /transaction/status — update the status of a transaction
 app.post(
   "/transaction/status",
-  async (
-    req: Request<
-      {},
-      {},
-      Omit<
-        TransactionDB.Transaction,
-        "sender" | "value" | "type" | "txTimestamp"
-      >
-    >,
-    res: Response<Result<null>>
-  ) => {
+  async (req: Request<{}, {}, TxStatusData>, res: Response<Result<null>>) => {
     try {
       const { txId, status, receipt, reason } = req.body;
-      // Validate request data
+      // Validate request data [TODO - add more validation]
       if (
         !txId ||
         !TransactionDB.isTransactionStatus(status) ||
