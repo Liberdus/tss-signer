@@ -13,13 +13,20 @@
   "scripts": {
     "build": "wasm-pack build --target web --release && ./node_modules/webpack/bin/webpack.js",
     "build_node": "wasm-pack build --target nodejs --release",
-    "test": "wasm-pack test --node"
+    "test": "wasm-pack test --node",
+    "compile-tss": "tsc scripts/tss-party.ts --target ES2020 --module CommonJS --outDir dist --esModuleInterop --skipLibCheck --moduleResolution node --resolveJsonModule --allowJs --strict false --downlevelIteration",
+    "start-tss": "pm2 start ecosystem.config.js",
+    "stop-tss": "pm2 stop ecosystem.config.js",
+    "restart-tss": "pm2 restart ecosystem.config.js",
+    "logs-tss": "pm2 logs",
+    "status-tss": "pm2 status"
   },
   "devDependencies": {
     "@types/readline-sync": "^1.4.8",
     "@wasm-tool/wasm-pack-plugin": "1.0.1",
     "ethers": "^5.7.1",
     "html-webpack-plugin": "^3.2.0",
+    "pm2": "^5.3.0",
     "text-encoding": "^0.7.0",
     "webpack": "^4.29.4",
     "webpack-cli": "^3.1.1",
