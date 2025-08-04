@@ -165,8 +165,8 @@ const infuraKeys = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'),
 )
 
-const coordinatorUrl = 'http://dev.liberdus.com:8000'
-const collectorHost = 'http://dev.liberdus.com:6001'
+const coordinatorUrl = 'http://127.0.0.1:8000'
+const collectorHost = 'http://127.0.0.1:6001'
 const proxyServerHost = 'https://dev.liberdus.com:3030'
 
 const tssPartyIdx =
@@ -717,6 +717,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
     )
 
     for (const bridgeAddress of bridgeAddresses) {
+      console.log('Updated lastCheckedTimestamp:', new Date(lastCheckedTimestamp).toISOString())
       const query = `?accountId=${bridgeAddress}&afterTimestamp=${lastCheckedTimestamp}&page=1`
       const url = collectorHost + '/api/transaction' + query
       const response = await axios.get(url)
@@ -727,9 +728,30 @@ async function monitorLiberdusTransactions(): Promise<void> {
           transactions.forEach((receipt: any, index: number) => {
             const validateResult = validateCoinToTokenTx(receipt)
             console.log('validateResult', validateResult)
-            if (!validateResult) return
-            if (txQueue.length > txQueueSize) return
-            if (txQueueMap.has(validateResult.txId)) return
+            if (!validateResult) {
+              console.log('Transaction validation failed, skipping:', receipt.txId)
+              // Set lastCheckedTimestamp to the timestamp of the last transaction
+              if (index === transactions.length - 1) {
+                lastCheckedTimestamp = receipt.timestamp
+              }
+              return
+            }
+            if (txQueue.length > txQueueSize) {
+              console.error('Transaction queue is full, cannot add more transactions')
+              return
+            }
+            if (txQueueMap.has(validateResult.txId)) {
+              console.log('Transaction already exists in the queue, skipping:', validateResult.txId)
+              return
+            }
+            if (txQueue.length > txQueueSize) {
+              console.error('Transaction queue is full, cannot add more transactions')
+              return
+            }
+            if (txQueueMap.has(validateResult.txId)) {
+              console.log('Transaction already exists in the queue, skipping:', validateResult.txId)
+              return
+            }
 
             const txData: TransactionQueueItem = {
               receipt,
@@ -1315,12 +1337,29 @@ function subscribeEthereumTransactions() {
             })
           }
 
-          // Validate that the target chainId is not the same as the source chain
-          if (parsedChainId.toNumber() === chainId) {
-            if (verboseLogs)
-              console.log(`Event trying to bridge to the same chain (${chainName}), skipping`)
+          // Debug: Log all event details for analysis
+          console.log(`🔍 BridgedOut event analysis for ${chainName}:`, {
+            eventChainId: parsedChainId.toNumber(),
+            currentChainId: chainId,
+            shouldProcess: parsedChainId.toNumber() === chainId,
+            eventData: {
+              from,
+              targetAddress,
+              amount: amount.toString(),
+              timestamp: timestamp.toString(),
+              blockNumber: event.blockNumber,
+              txHash: event.transactionHash
+            }
+          });
+
+          // Only process events from the current chain (for replay protection)
+          // The chainId in the event should match the current EVM chain ID
+          if (parsedChainId.toNumber() !== chainId) {
+            console.log(`❌ Skipping event: chainId mismatch (event: ${parsedChainId.toNumber()}, current: ${chainId}) on ${chainName}`)
             return
           }
+
+          console.log(`✅ Processing valid bridge event on ${chainName}`);
 
           // Check if target chain is Liberdus (we might need to define a special chainId for Liberdus)
           // For now, accept any chainId that's different from the source chain
@@ -1370,8 +1409,25 @@ function subscribeEthereumTransactions() {
       },
     )
 
+    // Add WebSocket error handling and monitoring
+    if (chainProvider.wsProvider) {
+      chainProvider.wsProvider.on('error', (error) => {
+        console.error(`❌ WebSocket error for ${chainName}:`, error);
+      });
+
+      chainProvider.wsProvider.on('close', () => {
+        console.warn(`⚠️ WebSocket connection closed for ${chainName}`);
+      });
+
+      chainProvider.wsProvider.on('open', () => {
+        console.log(`🟢 WebSocket connection opened for ${chainName}`);
+      });
+    }
+
     if (verboseLogs) {
-      console.log(`Subscribed to BridgedOut events from ${chainName} via eth_subscribe`)
+      console.log(`📡 Subscribed to BridgedOut events from ${chainName} via WebSocket`)
+      console.log(`📋 Contract address: ${chainProvider.config.contractAddress}`)
+      console.log(`🔗 WebSocket URL: ${chainProvider.config.wsUrl}`)
     }
   }
 }
