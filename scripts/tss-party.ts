@@ -148,9 +148,11 @@ export enum TransactionType {
 
 const parsedIdx = process.argv[2]
 const operationFlag = process.argv[3]
+const recoveryTimestamp = process.argv[4] // Optional timestamp for emergency recovery
 
 const generateKeystore = operationFlag === '--keygen'
 const verifyKeystores = operationFlag === '--verify'
+const recoverFromBackup = operationFlag === '--recover'
 const loadExistingQueue = true
 const verboseLogs = true
 const addOldTxToQueue = false
@@ -232,8 +234,8 @@ if (!fs.existsSync(KEYSTORE_DIR)) {
 const txQueue: TransactionQueueItem[] = []
 const txQueueMap: Map<string, TxQueueMapValue> = new Map()
 const txQueueSize = 10
-const txQueueProcessingInterval = 3000
-const liberdusTxMonitorInterval = 5000
+const txQueueProcessingInterval = 10000
+const liberdusTxMonitorInterval = 10000
 const ethereumTxMonitorInterval = 10000
 
 // Define maximum concurrent transactions
@@ -245,29 +247,56 @@ const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTime
 // Add this cleanup function for memory management
 function cleanupOldTransactions() {
   const now = Date.now()
-  const maxAge = 24 * 60 * 60 * 1000 // 24 hours
+  const maxAge = 2 * 60 * 60 * 1000 // Reduced to 2 hours for more aggressive cleanup
+  const maxPendingAge = 30 * 60 * 1000 // 30 minutes for pending transactions
   let removedCount = 0
+  let statusCounts = { pending: 0, processing: 0, completed: 0, failed: 0, unknown: 0 }
   
   for (const [txId, txData] of txQueueMap.entries()) {
+    // Count transaction statuses for debugging
+    statusCounts[txData.status as keyof typeof statusCounts] = (statusCounts[txData.status as keyof typeof statusCounts] || 0) + 1
+    
+    const txTimestamp = txData.timestamp || 0
+    const txAge = now - txTimestamp
+    
+    let shouldRemove = false
+    
     if (txData.status === 'completed' || txData.status === 'failed') {
-      // Remove completed/failed transactions older than maxAge
-      const txAge = now - (txData.timestamp || 0)
-      if (txAge > maxAge) {
-        txQueueMap.delete(txId)
-        processingTransactionIds.delete(txId)
-        removedCount++
+      // Remove completed/failed transactions older than 2 hours
+      shouldRemove = txAge > maxAge
+    } else if (txData.status === 'pending' && txTimestamp > 0) {
+      // Remove pending transactions older than 30 minutes (likely stuck)
+      shouldRemove = txAge > maxPendingAge
+    } else if (txTimestamp === 0) {
+      // Remove transactions without timestamps that are older than server start
+      shouldRemove = now - serverStartTime > maxAge
+    }
+    
+    if (shouldRemove) {
+      txQueueMap.delete(txId)
+      processingTransactionIds.delete(txId)
+      removedCount++
+      
+      if (verboseLogs) {
+        console.log(`🗑️ Removed ${txData.status} transaction ${txId} (age: ${Math.round(txAge / 60000)}min)`)
       }
     }
   }
   
-  if (verboseLogs && removedCount > 0) {
-    console.log(`🧹 Cleanup complete. Removed ${removedCount} old transactions. txQueueMap size: ${txQueueMap.size}`)
-  }
+  // Always log cleanup results for monitoring
+  console.log(`🧹 Cleanup complete. Removed ${removedCount} transactions. Status counts:`, statusCounts)
+  console.log(`📊 Current txQueueMap size: ${txQueueMap.size}, processingSet size: ${processingTransactionIds.size}`)
   
-  // Force garbage collection if available and memory usage is high
-  if (global.gc && process.memoryUsage().heapUsed > 512 * 1024 * 1024) { // 512MB threshold
+  // Force garbage collection more aggressively
+  if (global.gc && (removedCount > 0 || process.memoryUsage().heapUsed > 256 * 1024 * 1024)) { // 256MB threshold
+    const beforeGC = process.memoryUsage().heapUsed
     global.gc()
-    console.log('🗑️ Forced garbage collection due to high memory usage')
+    const afterGC = process.memoryUsage().heapUsed
+    const freedMB = Math.round((beforeGC - afterGC) / 1024 / 1024)
+    
+    if (freedMB > 0) {
+      console.log(`🗑️ Forced garbage collection freed ${freedMB} MB`)
+    }
   }
 }
 
@@ -391,6 +420,61 @@ const loadQueueFromFile = (partyIdx: number): void => {
       txQueueMap.set(key, value)
     })
     console.log(`Queue for party ${party} loaded from ${filePath}`)
+  }
+}
+
+// Function to recover from emergency backup if needed
+const recoverFromEmergencyBackup = (partyIdx: number, backupTimestamp?: number): boolean => {
+  try {
+    // Find the most recent emergency backup if no timestamp provided
+    const backupFiles = fs.readdirSync(KEYSTORE_DIR)
+      .filter(file => file.startsWith(`emergency_backup_party_${partyIdx}_`) && file.endsWith('.json'))
+      .sort((a, b) => {
+        const timestampA = parseInt(a.match(/emergency_backup_party_\d+_(\d+)\.json$/)?.[1] || '0')
+        const timestampB = parseInt(b.match(/emergency_backup_party_\d+_(\d+)\.json$/)?.[1] || '0')
+        return timestampB - timestampA // Most recent first
+      })
+    
+    if (backupFiles.length === 0) {
+      console.log('❌ No emergency backup files found')
+      return false
+    }
+    
+    const backupFile = backupTimestamp 
+      ? `emergency_backup_party_${partyIdx}_${backupTimestamp}.json`
+      : backupFiles[0]
+    
+    const backupPath = path.join(KEYSTORE_DIR, backupFile)
+    
+    if (!fs.existsSync(backupPath)) {
+      console.log(`❌ Emergency backup file not found: ${backupPath}`)
+      return false
+    }
+    
+    const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'))
+    
+    console.log(`💾 Recovering from emergency backup: ${backupFile}`)
+    console.log(`📊 Backup info: ${backupData.reason}, original size: ${backupData.originalSize}`)
+    
+    // Clear current queue and load from backup
+    txQueue.length = 0
+    txQueueMap.clear()
+    processingTransactionIds.clear()
+    
+    txQueue.push(...backupData.queue)
+    backupData.map.forEach(([key, value]: [string, TxQueueMapValue]) => {
+      txQueueMap.set(key, value)
+    })
+    
+    console.log(`✅ Successfully recovered ${txQueueMap.size} transactions from emergency backup`)
+    
+    // Save the recovered state as the current queue
+    saveQueueToFile(partyIdx)
+    
+    return true
+  } catch (error) {
+    console.error('❌ Failed to recover from emergency backup:', error)
+    return false
   }
 }
 
@@ -615,42 +699,69 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
   const operationId = digest.slice(2, 8)
   console.log('Signing digest:', digest)
   console.log('Operation ID:', operationId)
-  let context = await m.gg18_sign_client_new_context(
-    coordinatorUrl,
-    t,
-    n,
-    key_store,
-    digest.slice(2),
-    operationId,
-  )
-  let contextJSON = JSON.parse(context)
-  if (contextJSON.party_num_int > t + 1) {
-    console.log('Party number is greater than threshold + 1, returning')
-    throw new Error(enoughPartyError)
-  }
-  console.log('our party number', contextJSON.party_num_int)
+  
+  let context = null
+  try {
+    context = await m.gg18_sign_client_new_context(
+      coordinatorUrl,
+      t,
+      n,
+      key_store,
+      digest.slice(2),
+      operationId,
+    )
+    let contextJSON = JSON.parse(context)
+    if (contextJSON.party_num_int > t + 1) {
+      console.log('Party number is greater than threshold + 1, returning')
+      throw new Error(enoughPartyError)
+    }
+    console.log('our party number', contextJSON.party_num_int)
 
-  console.log('sign round', 0)
-  context = await m.gg18_sign_client_round0(context, delay)
-  console.log('sign round', 1)
-  context = await m.gg18_sign_client_round1(context, delay)
-  console.log('sign round', 2)
-  context = await m.gg18_sign_client_round2(context, delay)
-  console.log('sign round', 3)
-  context = await m.gg18_sign_client_round3(context, delay)
-  console.log('sign round', 4)
-  context = await m.gg18_sign_client_round4(context, delay)
-  console.log('sign round', 5)
-  context = await m.gg18_sign_client_round5(context, delay)
-  console.log('sign round', 6)
-  context = await m.gg18_sign_client_round6(context, delay)
-  console.log('sign round', 7)
-  context = await m.gg18_sign_client_round7(context, delay)
-  console.log('sign round', 8)
-  context = await m.gg18_sign_client_round8(context, delay)
-  const sign_json = await m.gg18_sign_client_round9(context, delay)
-  console.log('Signature:', sign_json)
-  return sign_json
+    console.log('sign round', 0)
+    context = await m.gg18_sign_client_round0(context, delay)
+    console.log('sign round', 1)
+    context = await m.gg18_sign_client_round1(context, delay)
+    console.log('sign round', 2)
+    context = await m.gg18_sign_client_round2(context, delay)
+    console.log('sign round', 3)
+    context = await m.gg18_sign_client_round3(context, delay)
+    console.log('sign round', 4)
+    context = await m.gg18_sign_client_round4(context, delay)
+    console.log('sign round', 5)
+    context = await m.gg18_sign_client_round5(context, delay)
+    console.log('sign round', 6)
+    context = await m.gg18_sign_client_round6(context, delay)
+    console.log('sign round', 7)
+    context = await m.gg18_sign_client_round7(context, delay)
+    console.log('sign round', 8)
+    context = await m.gg18_sign_client_round8(context, delay)
+    const sign_json = await m.gg18_sign_client_round9(context, delay)
+    console.log('Signature:', sign_json)
+    
+    // Force cleanup after successful signing
+    if (global.gc) {
+      global.gc()
+    }
+    
+    return sign_json
+  } catch (error) {
+    // Clean up any context or resources on error
+    console.log('Error in sign function, cleaning up resources')
+    if (context && m.gg18_cleanup_context) {
+      try {
+        await m.gg18_cleanup_context(context)
+      } catch (cleanupError) {
+        console.warn('Failed to cleanup signing context:', cleanupError)
+      }
+    }
+    
+    // Force garbage collection on error
+    if (global.gc) {
+      global.gc()
+    }
+    
+    throw error
+  }
 }
 
 async function monitorEthereumTransactions(): Promise<void> {
@@ -748,7 +859,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
     )
 
     for (const bridgeAddress of bridgeAddresses) {
-      console.log('Updated lastCheckedTimestamp:', new Date(lastCheckedTimestamp).toISOString())
+      // console.log('Updated lastCheckedTimestamp:', new Date(lastCheckedTimestamp).toISOString())
       const query = `?accountId=${bridgeAddress}&afterTimestamp=${lastCheckedTimestamp}&page=1`
       const url = collectorHost + '/api/transaction' + query
       const response = await axios.get(url)
@@ -916,6 +1027,7 @@ async function signEthereumTransaction(
   tx: any,
   digest: string,
 ): Promise<string | null> {
+  const startMemory = process.memoryUsage()
   let delay = Math.max(Math.random() % 500, 100)
   const res = JSON.parse(await sign(gg18, item.res, delay, digest))
   const signature = {
@@ -927,6 +1039,14 @@ async function signEthereumTransaction(
   const publicKey = ethersUtils.recoverPublicKey(digest, signature)
   const computeAddress = ethersUtils.computeAddress(publicKey)
   const signedTx = ethersUtils.serializeTransaction(tx, signature)
+  
+  // Monitor memory usage after signing
+  const endMemory = process.memoryUsage()
+  const memoryDelta = endMemory.heapUsed - startMemory.heapUsed
+  if (memoryDelta > 5 * 1024 * 1024) { // Alert if > 5MB increase
+    console.warn(`🚨 High memory increase during Ethereum signing: ${Math.round(memoryDelta / 1024 / 1024)} MB`)
+  }
+  
   if (verboseLogs) {
     console.log('Ethereum transaction signed successfully!', {
       ...tx,
@@ -944,6 +1064,7 @@ async function signLiberdusTransaction(
   tx: LiberdusTx,
   digest: string,
 ): Promise<SignedTx | null> {
+  const startMemory = process.memoryUsage()
   let delay = Math.max(Math.random() % 500, 100)
   const res = JSON.parse(await sign(gg18, item.res, delay, digest))
   const signature = {
@@ -963,6 +1084,14 @@ async function signLiberdusTransaction(
   if (!isValid) {
     return null
   }
+  
+  // Monitor memory usage after signing
+  const endMemory = process.memoryUsage()
+  const memoryDelta = endMemory.heapUsed - startMemory.heapUsed
+  if (memoryDelta > 5 * 1024 * 1024) { // Alert if > 5MB increase
+    console.warn(`🚨 High memory increase during Liberdus signing: ${Math.round(memoryDelta / 1024 / 1024)} MB`)
+  }
+  
   if (verboseLogs) {
     console.log('Liberdus transaction signed successfully!', signedTx)
   }
@@ -1286,30 +1415,212 @@ function logMemoryUsage() {
     external: formatMB(usage.external),
     txQueueMapSize: txQueueMap.size,
     processingSetSize: processingTransactionIds.size,
-    txQueueLength: txQueue.length
+    txQueueLength: txQueue.length,
+    recentlyCompletedSize: recentlyCompletedTxs.size
   })
   
-  // Force garbage collection if memory usage is high
+  // More aggressive memory management thresholds
   const heapUsedMB = usage.heapUsed / 1024 / 1024
-  if (heapUsedMB > 800 && global.gc) { // 800MB threshold
-    console.log('⚠️ High memory usage detected, forcing garbage collection')
+  const rssMB = usage.rss / 1024 / 1024
+  
+  // Force garbage collection if memory usage is high (lower thresholds)
+  if (heapUsedMB > 40 && global.gc) { // Reduced from 50MB to 40MB
+    console.log('⚠️ High heap usage detected, forcing garbage collection')
+    const beforeGC = usage.heapUsed
     global.gc()
     
     // Log memory after GC
     const afterGC = process.memoryUsage()
+    const freedMB = Math.round((beforeGC - afterGC.heapUsed) / 1024 / 1024)
     console.log('🗑️ Memory after GC:', {
       heapUsed: formatMB(afterGC.heapUsed),
-      freed: `${Math.round((usage.heapUsed - afterGC.heapUsed) / 1024 / 1024)} MB`
+      freed: `${freedMB} MB`
     })
   }
   
-  // Warn about potential memory leaks
-  if (txQueueMap.size > 1000) {
-    console.warn(`⚠️ Large txQueueMap detected: ${txQueueMap.size} entries. Consider cleanup.`)
+  // Monitor RSS memory growth (resident set size - actual memory usage)
+  if (rssMB > 120) { // Alert if RSS exceeds 120MB
+    console.warn(`⚠️ High RSS memory usage: ${formatMB(usage.rss)}. Triggering aggressive cleanup.`)
+    cleanupOldTransactions()
+    if (global.gc) {
+      global.gc()
+    }
   }
   
-  if (processingTransactionIds.size > 50) {
+  // Warn about potential memory leaks
+  if (txQueueMap.size > 100) {
+    console.warn(`⚠️ Large txQueueMap detected: ${txQueueMap.size} entries. Running emergency cleanup.`)
+    emergencyCleanup()
+  }
+  
+  if (processingTransactionIds.size > 10) {
     console.warn(`⚠️ Large processing set detected: ${processingTransactionIds.size} entries. Potential stuck transactions.`)
+    cleanupStuckTransactions()
+  }
+}
+
+// Add post-transaction memory monitoring
+function checkPostTransactionMemory(txId: string, operationType: string) {
+  const usage = process.memoryUsage()
+  const formatMB = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`
+  const heapUsedMB = usage.heapUsed / 1024 / 1024
+  const rssMB = usage.rss / 1024 / 1024
+  
+  console.log(`📈 Post-${operationType} memory for ${txId}:`, {
+    rss: formatMB(usage.rss),
+    heapUsed: formatMB(usage.heapUsed)
+  })
+  
+  // If memory usage spiked after transaction, force cleanup
+  if (heapUsedMB > 45 || rssMB > 110) {
+    console.warn(`🚨 Memory spike detected after ${operationType} (${txId}). Forcing immediate cleanup.`)
+    if (global.gc) {
+      global.gc()
+      
+      // Log memory after forced GC
+      const afterGC = process.memoryUsage()
+      console.log(`💨 Memory after forced GC:`, {
+        rss: formatMB(afterGC.rss),
+        heapUsed: formatMB(afterGC.heapUsed),
+        freed: `${Math.round((usage.heapUsed - afterGC.heapUsed) / 1024 / 1024)} MB`
+      })
+    }
+  }
+}
+
+// Track recently completed transactions to avoid duplicate processing
+const recentlyCompletedTxs = new Map<string, number>() // txId -> timestamp
+
+function isRecentlyCompleted(txId: string): boolean {
+  const completedTime = recentlyCompletedTxs.get(txId)
+  if (!completedTime) return false
+  
+  const now = Date.now()
+  const maxAge = 10 * 60 * 1000 // 10 minutes
+  
+  if (now - completedTime > maxAge) {
+    recentlyCompletedTxs.delete(txId)
+    return false
+  }
+  
+  return true
+}
+
+function markTransactionCompleted(txId: string) {
+  recentlyCompletedTxs.set(txId, Date.now())
+  
+  // Clean up old entries periodically
+  if (recentlyCompletedTxs.size > 1000) {
+    const now = Date.now()
+    const maxAge = 10 * 60 * 1000
+    
+    for (const [id, timestamp] of recentlyCompletedTxs.entries()) {
+      if (now - timestamp > maxAge) {
+        recentlyCompletedTxs.delete(id)
+      }
+    }
+  }
+}
+
+// Add emergency cleanup function for when queues get too large
+function emergencyCleanup() {
+  const now = Date.now()
+  let removedCount = 0
+  let backupCount = 0
+  
+  console.log('🚨 Running emergency cleanup due to large queue size')
+  
+  // First, backup the current queue state to persistent storage
+  console.log('💾 Backing up queue state before emergency cleanup...')
+  saveQueueToFile(ourParty.idx)
+  
+  // Create an additional emergency backup with timestamp
+  const emergencyBackupPath = path.join(KEYSTORE_DIR, `emergency_backup_party_${ourParty.idx}_${now}.json`)
+  const backupData = {
+    timestamp: now,
+    reason: 'emergency_cleanup',
+    originalSize: txQueueMap.size,
+    queue: txQueue,
+    map: Array.from(txQueueMap.entries()),
+  }
+  
+  try {
+    fs.writeFileSync(emergencyBackupPath, JSON.stringify(backupData, null, 2))
+    console.log(`💾 Emergency backup created: ${emergencyBackupPath}`)
+  } catch (error) {
+    console.error('❌ Failed to create emergency backup:', error)
+    // Don't proceed with cleanup if we can't backup
+    console.error('🛑 Aborting emergency cleanup due to backup failure')
+    return
+  }
+  
+  // Count pending transactions before cleanup for reporting
+  for (const [txId, txData] of txQueueMap.entries()) {
+    if (txData.status === 'pending') {
+      backupCount++
+    }
+  }
+  
+  // More aggressive cleanup - remove anything older than 1 hour regardless of status
+  for (const [txId, txData] of txQueueMap.entries()) {
+    const txAge = now - (txData.timestamp || serverStartTime)
+    const oneHour = 60 * 60 * 1000
+    
+    if (txAge > oneHour) {
+      txQueueMap.delete(txId)
+      processingTransactionIds.delete(txId)
+      removedCount++
+    }
+  }
+  
+  console.log(`🚨 Emergency cleanup removed ${removedCount} old transactions`)
+  console.log(`💾 Backed up ${backupCount} pending transactions to: ${emergencyBackupPath}`)
+  
+  // Update the regular queue file after cleanup
+  saveQueueToFile(ourParty.idx)
+  
+  // Force GC after emergency cleanup
+  if (global.gc) {
+    global.gc()
+    console.log('🗑️ Forced garbage collection after emergency cleanup')
+  }
+}
+
+// Add function to clean up stuck transactions
+function cleanupStuckTransactions() {
+  const now = Date.now()
+  const stuckThreshold = 5 * 60 * 1000 // 5 minutes
+  let cleanedCount = 0
+  
+  console.log('🔧 Cleaning up stuck transactions in processing set')
+  
+  for (const txId of processingTransactionIds) {
+    const txData = txQueueMap.get(txId)
+    
+    if (!txData) {
+      // Remove from processing set if not in map
+      processingTransactionIds.delete(txId)
+      cleanedCount++
+      continue
+    }
+    
+    const txAge = now - (txData.timestamp || 0)
+    
+    // If transaction has been processing for too long, consider it stuck
+    if (txData.status === 'processing' && txAge > stuckThreshold) {
+      console.warn(`⚠️ Found stuck transaction ${txId}, removing from processing set`)
+      processingTransactionIds.delete(txId)
+      
+      // Update status to failed
+      txData.status = 'failed'
+      txData.timestamp = now
+      
+      cleanedCount++
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    console.log(`🔧 Cleaned up ${cleanedCount} stuck transactions`)
   }
 }
 
@@ -1577,16 +1888,19 @@ function subscribeEthereumTransactions() {
 
 async function main(): Promise<void> {
   // Show help if no valid operation flag is provided
-  if (!generateKeystore && !verifyKeystores && !process.argv[3]) {
-    console.log('\nUsage: ts-node scripts/tss-party.ts <party_index> <operation>')
+  if (!generateKeystore && !verifyKeystores && !recoverFromBackup && !process.argv[3]) {
+    console.log('\nUsage: ts-node scripts/tss-party.ts <party_index> <operation> [options]')
     console.log('\nOperations:')
     console.log('  --keygen  : Generate new keystores for all supported chains (pure key generation)')
     console.log('  --verify  : Verify and test existing keystores, display EOA addresses')
+    console.log('  --recover : Recover transaction queue from emergency backup [timestamp]')
     console.log('  (none)    : Start normal TSS party operation (requires existing keystores)')
     console.log('\nExamples:')
-    console.log('  ts-node scripts/tss-party.ts 1 --keygen   # Generate keystores for party 1')
-    console.log('  ts-node scripts/tss-party.ts 1 --verify   # Verify keystores for party 1')
-    console.log('  ts-node scripts/tss-party.ts 1            # Start party 1 for TSS operations')
+    console.log('  ts-node scripts/tss-party.ts 1 --keygen       # Generate keystores for party 1')
+    console.log('  ts-node scripts/tss-party.ts 1 --verify       # Verify keystores for party 1')
+    console.log('  ts-node scripts/tss-party.ts 1 --recover      # Recover from latest emergency backup')
+    console.log('  ts-node scripts/tss-party.ts 1 --recover 1234 # Recover from specific backup timestamp')
+    console.log('  ts-node scripts/tss-party.ts 1                # Start party 1 for TSS operations')
     console.log('')
   }
 
@@ -1605,6 +1919,24 @@ async function main(): Promise<void> {
       console.error('Error generating key shares:', e)
       process.exit(1)
     }
+  }
+
+  if (recoverFromBackup) {
+    // Recovery mode - restore from emergency backup
+    const partyIdx = ourParty.idx
+    const timestamp = recoveryTimestamp ? parseInt(recoveryTimestamp) : undefined
+    
+    console.log(`Recovering transaction queue for party ${partyIdx}...`)
+    
+    const success = recoverFromEmergencyBackup(partyIdx, timestamp)
+    if (success) {
+      console.log('✅ Emergency recovery completed successfully')
+      console.log('You can now start the TSS party normally')
+    } else {
+      console.log('❌ Emergency recovery failed')
+      console.log('Check if emergency backup files exist in the keystores directory')
+    }
+    process.exit(success ? 0 : 1)
   }
 
   if (verifyKeystores) {
@@ -1704,9 +2036,40 @@ async function main(): Promise<void> {
   // Legacy compatibility
   if (loadExistingQueue) loadQueueFromFile(ourParty.idx)
 
+  // One-time cleanup of any existing transactions that might not have timestamps
+  console.log('🧹 Running one-time cleanup of existing transactions...')
+  let fixedCount = 0
+  for (const [txId, txData] of txQueueMap.entries()) {
+    if (!txData.timestamp) {
+      txData.timestamp = Date.now() - (24 * 60 * 60 * 1000) // Set to 24 hours ago so they get cleaned up
+      fixedCount++
+    }
+  }
+  if (fixedCount > 0) {
+    console.log(`🔧 Fixed ${fixedCount} transactions without timestamps`)
+    // Run immediate cleanup
+    cleanupOldTransactions()
+  }
+
   async function processTransaction(validTx: any): Promise<void> {
     const {txId} = validTx
     const startTime = Date.now()
+    
+    // Check if this transaction was recently completed to avoid duplicate processing
+    if (isRecentlyCompleted(txId)) {
+      console.log(`⏩ Transaction ${txId} was recently completed, skipping duplicate processing`)
+      txQueueMap.set(txId, {
+        status: 'completed',
+        from: validTx.from,
+        value: validTx.amount,
+        txId: validTx.txId,
+        chainId: validTx.chainId,
+        timestamp: Date.now(),
+      })
+      processingTransactionIds.delete(txId)
+      return
+    }
+    
     try {
       let promises: Promise<any>[] = []
       if (validTx.type === 'coinToToken') {
@@ -1745,29 +2108,77 @@ async function main(): Promise<void> {
         value: validTx.amount,
         txId: validTx.txId,
         chainId: validTx.chainId,
+        timestamp: Date.now(), // Add timestamp for cleanup
       })
       console.log('Transaction processed successfully:', validTx)
+      
+      // Mark transaction as completed to prevent duplicate processing
+      markTransactionCompleted(validTx.txId)
+      
+      // Check memory usage after successful transaction
+      checkPostTransactionMemory(validTx.txId, 'transaction-success')
+      
+      // Force cleanup after successful transaction processing
+      if (global.gc) {
+        global.gc()
+      }
     } catch (error: any) {
       if (error.message === enoughPartyError) {
-        // todo: check if the tx is actually signed by enough parties and injected properly
-        console.log('Transaction already signed by enough parties, skipping:', validTx)
+        // Handle the "enough party" error - this means other parties already completed the signing
+        console.log('Transaction already signed by enough parties, marking as completed:', validTx)
         txQueueMap.set(validTx.txId, {
           status: 'completed',
           from: validTx.from,
           value: validTx.amount,
           txId: validTx.txId,
           chainId: validTx.chainId,
+          timestamp: Date.now(), // Add timestamp for cleanup
         })
-      } else {
-        // todo: find better way to handle errors
-        // txQueue.push(validTx);
+        
+        // Mark transaction as completed to prevent duplicate processing
+        markTransactionCompleted(validTx.txId)
+        
+        // Additional cleanup for "enough party" scenarios to prevent memory leaks
+        console.log('🧹 Performing cleanup after "enough party" error')
+        checkPostTransactionMemory(validTx.txId, 'enough-party-error')
+        if (global.gc) {
+          global.gc()
+        }
+      } else if (error.message === 'Transaction processing timed out') {
+        // Handle timeout errors more gracefully
+        console.warn('⏱️ Transaction timed out, marking as failed and cleaning up:', validTx.txId)
+        checkPostTransactionMemory(validTx.txId, 'timeout-error')
         txQueueMap.set(validTx.txId, {
           status: 'failed',
           from: validTx.from,
           value: validTx.amount,
           txId: validTx.txId,
           chainId: validTx.chainId,
+          timestamp: Date.now(),
+          error: 'timeout'
         })
+        
+        // Force cleanup after timeout
+        if (global.gc) {
+          global.gc()
+        }
+      } else {
+        // Handle other errors
+        console.error('❌ Error processing transaction:', error)
+        txQueueMap.set(validTx.txId, {
+          status: 'failed',
+          from: validTx.from,
+          value: validTx.amount,
+          txId: validTx.txId,
+          chainId: validTx.chainId,
+          timestamp: Date.now(), // Add timestamp for cleanup
+          error: error.message
+        })
+        
+        // Force cleanup after any error
+        if (global.gc) {
+          global.gc()
+        }
       }
       saveQueueToFile(ourParty.idx)
       console.error('Error processing transaction:', error)
@@ -1796,7 +2207,11 @@ async function main(): Promise<void> {
       const validTx = txQueue.shift()!
 
       // Update transaction status to processing
-      txQueueMap.set(validTx.txId, {status: 'processing', ...validTx})
+      txQueueMap.set(validTx.txId, {
+        status: 'processing', 
+        ...validTx,
+        timestamp: Date.now() // Update timestamp when moving to processing
+      })
       saveQueueToFile(ourParty.idx)
 
       // Add to processing set
@@ -1871,9 +2286,11 @@ async function main(): Promise<void> {
   startDriftResistantScheduler(handleTransactionQueue, txQueueProcessingInterval)
   startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
   // Add memory management and monitoring schedulers
-  startDriftResistantScheduler(cleanupOldTransactions, 60 * 60 * 1000) // Every hour
+  startDriftResistantScheduler(cleanupOldTransactions, 10 * 60 * 1000) // Every 10 minutes (more frequent)
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
   startDriftResistantScheduler(monitorWebSocketHealth, 5 * 60 * 1000) // Every 5 minutes
+  // Additional cleanup scheduler for stuck transactions
+  startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
   // startDriftResistantScheduler(monitorEthereumTransactions, ethereumTxMonitorInterval);
   subscribeEthereumTransactions()
 }
