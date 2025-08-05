@@ -311,16 +311,24 @@ app.post(
   "/transaction/status",
   async (req: Request<{}, {}, TxStatusData>, res: Response<Result<null>>) => {
     try {
-      const { txId, status, receipt, reason } = req.body;
+      const { txId, status, receipt, reason, party } = req.body;
       // Validate request data [TODO - add more validation]
       if (
         !txId ||
         !TransactionDB.isTransactionStatus(status) ||
         !receipt ||
-        typeof reason !== "string"
+        typeof reason !== "string" ||
+        !party
       ) {
         console.error("Invalid transaction status data:", req.body);
         return res.status(400).json({ Err: "Invalid transaction status data" });
+      }
+
+      // If the transaction status is failed, console log the reason
+      if (status === TransactionDB.TransactionStatus.FAILED) {
+        console.log(
+          `Transaction failed: ${txId}, party: ${party}, reason: ${reason}`
+        );
       }
 
       // Update transaction status
