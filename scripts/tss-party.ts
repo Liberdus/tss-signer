@@ -58,6 +58,7 @@ interface TxQueueMapValue {
   value: ethers.BigNumber | bigint
   txId: string
   chainId?: number // Add chainId to track which chain this transaction belongs to
+  timestamp?: number // Add timestamp for cleanup purposes
   [key: string]: any
 }
 
@@ -240,6 +241,35 @@ const MAX_CONCURRENT_TXS = 1
 const processingTransactionIds = new Set<string>()
 
 const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+// Add this cleanup function for memory management
+function cleanupOldTransactions() {
+  const now = Date.now()
+  const maxAge = 24 * 60 * 60 * 1000 // 24 hours
+  let removedCount = 0
+  
+  for (const [txId, txData] of txQueueMap.entries()) {
+    if (txData.status === 'completed' || txData.status === 'failed') {
+      // Remove completed/failed transactions older than maxAge
+      const txAge = now - (txData.timestamp || 0)
+      if (txAge > maxAge) {
+        txQueueMap.delete(txId)
+        processingTransactionIds.delete(txId)
+        removedCount++
+      }
+    }
+  }
+  
+  if (verboseLogs && removedCount > 0) {
+    console.log(`🧹 Cleanup complete. Removed ${removedCount} old transactions. txQueueMap size: ${txQueueMap.size}`)
+  }
+  
+  // Force garbage collection if available and memory usage is high
+  if (global.gc && process.memoryUsage().heapUsed > 512 * 1024 * 1024) { // 512MB threshold
+    global.gc()
+    console.log('🗑️ Forced garbage collection due to high memory usage')
+  }
+}
 
 function loadParams(): Params {
   const data = fs.readFileSync(path.join(__dirname, '../', 'params.json'), 'utf8')
@@ -687,6 +717,7 @@ async function monitorEthereumTransactions(): Promise<void> {
             value: validTx.amount,
             txId: validTx.txId,
             chainId: chainId,
+            timestamp: Date.now(), // Add timestamp for cleanup
           })
           saveQueueToFile(ourParty.idx)
           if (verboseLogs) {
@@ -768,6 +799,7 @@ async function monitorLiberdusTransactions(): Promise<void> {
               value: validateResult.value,
               txId: validateResult.txId,
               chainId: validateResult.targetChainId,
+              timestamp: Date.now(), // Add timestamp for cleanup
             })
             saveQueueToFile(ourParty.idx)
             if (verboseLogs) {
@@ -1206,9 +1238,19 @@ async function retryOperation<T>(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await operation()
+      const result = await operation()
+      
+      // Clear any error references for garbage collection
+      lastError = null as any
+      
+      return result
     } catch (error) {
       lastError = error as Error
+
+      // Force garbage collection of error objects on final attempt
+      if (global.gc && attempt === maxRetries) {
+        global.gc()
+      }
 
       if (!shouldRetry(lastError) || attempt === maxRetries) {
         console.log(
@@ -1230,6 +1272,45 @@ async function retryOperation<T>(
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Add memory monitoring function
+function logMemoryUsage() {
+  const usage = process.memoryUsage()
+  const formatMB = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`
+  
+  console.log('📊 Memory Usage:', {
+    rss: formatMB(usage.rss),
+    heapTotal: formatMB(usage.heapTotal),
+    heapUsed: formatMB(usage.heapUsed),
+    external: formatMB(usage.external),
+    txQueueMapSize: txQueueMap.size,
+    processingSetSize: processingTransactionIds.size,
+    txQueueLength: txQueue.length
+  })
+  
+  // Force garbage collection if memory usage is high
+  const heapUsedMB = usage.heapUsed / 1024 / 1024
+  if (heapUsedMB > 800 && global.gc) { // 800MB threshold
+    console.log('⚠️ High memory usage detected, forcing garbage collection')
+    global.gc()
+    
+    // Log memory after GC
+    const afterGC = process.memoryUsage()
+    console.log('🗑️ Memory after GC:', {
+      heapUsed: formatMB(afterGC.heapUsed),
+      freed: `${Math.round((usage.heapUsed - afterGC.heapUsed) / 1024 / 1024)} MB`
+    })
+  }
+  
+  // Warn about potential memory leaks
+  if (txQueueMap.size > 1000) {
+    console.warn(`⚠️ Large txQueueMap detected: ${txQueueMap.size} entries. Consider cleanup.`)
+  }
+  
+  if (processingTransactionIds.size > 50) {
+    console.warn(`⚠️ Large processing set detected: ${processingTransactionIds.size} entries. Potential stuck transactions.`)
+  }
 }
 
 async function confirmFutureTimestamp(operationId: string, timestamp: number): Promise<number> {
@@ -1302,6 +1383,162 @@ function calculateChatId(from: string, to: string): string {
   return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
 }
 
+// Add connection health monitoring
+function monitorWebSocketHealth() {
+  for (const [chainId, chainProvider] of chainProviders.entries()) {
+    if (chainProvider.wsProvider) {
+      const ws = chainProvider.wsProvider
+      
+      try {
+        // Test connection by getting network
+        ws.getNetwork().catch((error) => {
+          console.warn(`⚠️ WebSocket for ${chainProvider.config.name} connection issue, reconnecting...`, error.message)
+          
+          try {
+            // Clean up old connection
+            ws.removeAllListeners()
+            
+            // Recreate WebSocket connection
+            const wsUrl = chainProvider.config.wsUrl.includes('infura.io') 
+              ? `${chainProvider.config.wsUrl}${ourInfurKey}` 
+              : chainProvider.config.wsUrl
+            
+            chainProvider.wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
+            
+            // Add error handlers to new connection
+            chainProvider.wsProvider.on('error', (error) => {
+              console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error);
+            });
+
+            chainProvider.wsProvider.on('close', () => {
+              console.warn(`⚠️ WebSocket connection closed for ${chainProvider.config.name}`);
+            });
+
+            chainProvider.wsProvider.on('open', () => {
+              console.log(`🟢 WebSocket connection reopened for ${chainProvider.config.name}`);
+            });
+            
+            console.log(`🔄 WebSocket reconnected for ${chainProvider.config.name}`)
+            
+            // Re-subscribe to events after reconnection
+            subscribeToChainEvents(chainId)
+          } catch (reconnectError) {
+            console.error(`❌ Failed to reconnect WebSocket for ${chainProvider.config.name}:`, reconnectError)
+          }
+        })
+      } catch (error) {
+        console.error(`❌ Error monitoring WebSocket for ${chainProvider.config.name}:`, error)
+      }
+    }
+  }
+}
+
+function subscribeToChainEvents(chainId: number) {
+  const chainProvider = chainProviders.get(chainId)
+  if (!chainProvider || !chainProvider.wsProvider) return
+  
+  const bridgeInterface = new ethersUtils.Interface([
+    'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
+  ])
+  
+  const contract = new ethers.Contract(
+    chainProvider.config.contractAddress,
+    bridgeInterface,
+    chainProvider.wsProvider,
+  )
+  const chainName = chainProvider.config.name
+
+  contract.on(
+    'BridgedOut',
+    async (
+      from: string,
+      amount: ethers.BigNumber,
+      targetAddress: string,
+      parsedChainId: ethers.BigNumber,
+      timestamp: ethers.BigNumber,
+      event: any,
+    ) => {
+      try {
+        if (verboseLogs) {
+          console.log(`BridgedOut event received from ${chainName}:`, {
+            from,
+            amount: amount.toString(),
+            targetAddress,
+            chainId: parsedChainId.toString(),
+            txHash: event.transactionHash,
+          })
+        }
+
+        // Debug: Log all event details for analysis
+        console.log(`🔍 BridgedOut event analysis for ${chainName}:`, {
+          eventChainId: parsedChainId.toNumber(),
+          currentChainId: chainId,
+          shouldProcess: parsedChainId.toNumber() === chainId,
+          eventData: {
+            from,
+            targetAddress,
+            amount: amount.toString(),
+            timestamp: timestamp.toString(),
+            blockNumber: event.blockNumber,
+            txHash: event.transactionHash
+          }
+        });
+
+        // Only process events from the current chain (for replay protection)
+        if (parsedChainId.toNumber() !== chainId) {
+          console.log(`❌ Skipping event: chainId mismatch (event: ${parsedChainId.toNumber()}, current: ${chainId}) on ${chainName}`)
+          return
+        }
+
+        console.log(`✅ Processing valid bridge event on ${chainName}`);
+
+        // Validate block number if needed
+        if (!addOldTxToQueue && event.blockNumber < chainProvider.lastCheckedBlockNumber) {
+          if (verboseLogs)
+            console.log(`Event is older than the server start block for ${chainName}, skipping`)
+          return
+        }
+
+        // Check if already in queue
+        if (txQueueMap.has(event.transactionHash)) return
+
+        // Add to queue
+        const validTx: BridgeOutEvent = {
+          from,
+          amount,
+          targetAddress,
+          chainId: parsedChainId.toNumber(),
+          txId: event.transactionHash,
+        }
+        const txData: TransactionQueueItem = {
+          receipt: validTx,
+          from: validTx.targetAddress,
+          value: validTx.amount,
+          txId: validTx.txId,
+          type: 'tokenToCoin',
+          chainId: chainId, // Source chain where the event originated
+        }
+        txQueue.push(txData)
+        txQueueMap.set(validTx.txId, {
+          status: 'pending',
+          from: validTx.from,
+          value: validTx.amount,
+          txId: validTx.txId,
+          chainId: chainId,
+          timestamp: Date.now(), // Add timestamp for cleanup
+        })
+        saveQueueToFile(ourParty.idx)
+        if (verboseLogs) {
+          console.log(`BridgedOut event added to queue from ${chainName}:`, validTx)
+        }
+        sendTxDataToCoordinator(txData, timestamp.toNumber() * 1000)
+      } catch (err) {
+        console.error(`Error processing BridgedOut event from ${chainName}:`, err)
+      }
+    },
+  )
+}
+
 function subscribeEthereumTransactions() {
   const bridgeInterface = new ethersUtils.Interface([
     'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
@@ -1309,123 +1546,29 @@ function subscribeEthereumTransactions() {
 
   // Subscribe to events from all supported chains
   for (const [chainId, chainProvider] of chainProviders.entries()) {
-    const contract = new ethers.Contract(
-      chainProvider.config.contractAddress,
-      bridgeInterface,
-      chainProvider.wsProvider,
-    )
-    const chainName = chainProvider.config.name
-
-    contract.on(
-      'BridgedOut',
-      async (
-        from: string,
-        amount: ethers.BigNumber,
-        targetAddress: string,
-        parsedChainId: ethers.BigNumber,
-        timestamp: ethers.BigNumber,
-        event: any,
-      ) => {
-        try {
-          if (verboseLogs) {
-            console.log(`BridgedOut event received from ${chainName}:`, {
-              from,
-              amount: amount.toString(),
-              targetAddress,
-              chainId: parsedChainId.toString(),
-              txHash: event.transactionHash,
-            })
-          }
-
-          // Debug: Log all event details for analysis
-          console.log(`🔍 BridgedOut event analysis for ${chainName}:`, {
-            eventChainId: parsedChainId.toNumber(),
-            currentChainId: chainId,
-            shouldProcess: parsedChainId.toNumber() === chainId,
-            eventData: {
-              from,
-              targetAddress,
-              amount: amount.toString(),
-              timestamp: timestamp.toString(),
-              blockNumber: event.blockNumber,
-              txHash: event.transactionHash
-            }
-          });
-
-          // Only process events from the current chain (for replay protection)
-          // The chainId in the event should match the current EVM chain ID
-          if (parsedChainId.toNumber() !== chainId) {
-            console.log(`❌ Skipping event: chainId mismatch (event: ${parsedChainId.toNumber()}, current: ${chainId}) on ${chainName}`)
-            return
-          }
-
-          console.log(`✅ Processing valid bridge event on ${chainName}`);
-
-          // Check if target chain is Liberdus (we might need to define a special chainId for Liberdus)
-          // For now, accept any chainId that's different from the source chain
-
-          // Validate block number if needed
-          if (!addOldTxToQueue && event.blockNumber < chainProvider.lastCheckedBlockNumber) {
-            if (verboseLogs)
-              console.log(`Event is older than the server start block for ${chainName}, skipping`)
-            return
-          }
-
-          // Check if already in queue
-          if (txQueueMap.has(event.transactionHash)) return
-
-          // Add to queue
-          const validTx: BridgeOutEvent = {
-            from,
-            amount,
-            targetAddress,
-            chainId: parsedChainId.toNumber(),
-            txId: event.transactionHash,
-          }
-          const txData: TransactionQueueItem = {
-            receipt: validTx,
-            from: validTx.targetAddress,
-            value: validTx.amount,
-            txId: validTx.txId,
-            type: 'tokenToCoin',
-            chainId: chainId, // Source chain where the event originated
-          }
-          txQueue.push(txData)
-          txQueueMap.set(validTx.txId, {
-            status: 'pending',
-            from: validTx.from,
-            value: validTx.amount,
-            txId: validTx.txId,
-            chainId: chainId,
-          })
-          saveQueueToFile(ourParty.idx)
-          if (verboseLogs) {
-            console.log(`BridgedOut event added to queue from ${chainName}:`, validTx)
-          }
-          sendTxDataToCoordinator(txData, timestamp.toNumber() * 1000)
-        } catch (err) {
-          console.error(`Error processing BridgedOut event from ${chainName}:`, err)
-        }
-      },
-    )
-
-    // Add WebSocket error handling and monitoring
-    if (chainProvider.wsProvider) {
-      chainProvider.wsProvider.on('error', (error) => {
-        console.error(`❌ WebSocket error for ${chainName}:`, error);
-      });
-
-      chainProvider.wsProvider.on('close', () => {
-        console.warn(`⚠️ WebSocket connection closed for ${chainName}`);
-      });
-
-      chainProvider.wsProvider.on('open', () => {
-        console.log(`🟢 WebSocket connection opened for ${chainName}`);
-      });
+    if (!chainProvider.wsProvider) {
+      console.warn(`⚠️ No WebSocket provider available for ${chainProvider.config.name}, skipping event subscription`)
+      continue
     }
 
+    // Add WebSocket error handling and monitoring
+    chainProvider.wsProvider.on('error', (error) => {
+      console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error);
+    });
+
+    chainProvider.wsProvider.on('close', () => {
+      console.warn(`⚠️ WebSocket connection closed for ${chainProvider.config.name}`);
+    });
+
+    chainProvider.wsProvider.on('open', () => {
+      console.log(`🟢 WebSocket connection opened for ${chainProvider.config.name}`);
+    });
+
+    // Subscribe to events for this chain
+    subscribeToChainEvents(chainId)
+
     if (verboseLogs) {
-      console.log(`📡 Subscribed to BridgedOut events from ${chainName} via WebSocket`)
+      console.log(`📡 Subscribed to BridgedOut events from ${chainProvider.config.name} via WebSocket`)
       console.log(`📋 Contract address: ${chainProvider.config.contractAddress}`)
       console.log(`🔗 WebSocket URL: ${chainProvider.config.wsUrl}`)
     }
@@ -1727,6 +1870,10 @@ async function main(): Promise<void> {
 
   startDriftResistantScheduler(handleTransactionQueue, txQueueProcessingInterval)
   startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
+  // Add memory management and monitoring schedulers
+  startDriftResistantScheduler(cleanupOldTransactions, 60 * 60 * 1000) // Every hour
+  startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
+  startDriftResistantScheduler(monitorWebSocketHealth, 5 * 60 * 1000) // Every 5 minutes
   // startDriftResistantScheduler(monitorEthereumTransactions, ethereumTxMonitorInterval);
   subscribeEthereumTransactions()
 }
