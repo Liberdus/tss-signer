@@ -394,11 +394,10 @@ app.get(
         return;
       }
       if (sender) {
-        if (
-          sender.length !== 64 &&
-          !(sender.startsWith("0x") && sender.length === 42)
-        ) {
-          return res.status(400).json({ Err: "Invalid sender" });
+        if (!isEthereumAddress(sender)) {
+          return res
+            .status(400)
+            .json({ Err: "Invalid ethereum address format" });
         }
         // Normalize to lowercase
         sender = sender.toLowerCase();
@@ -418,7 +417,7 @@ app.get(
         status = parsedStatus;
       }
       totalTranactions = await TransactionDB.getTotalTransactions({
-        sender: sender?.toLowerCase(),
+        sender: sender,
         type,
         status,
       });
