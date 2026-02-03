@@ -490,8 +490,12 @@ const extractPublicKeyFromKeystore = (keystoreJson: string): { publicKey: string
       throw new Error('Invalid keystore structure: public key not found at index 5')
     }
     
-    const publicKeyX = publicKeyData.x
-    const publicKeyY = publicKeyData.y
+    let publicKeyX = publicKeyData.x
+    let publicKeyY = publicKeyData.y
+    
+    // Ensure even length hex strings
+    if (publicKeyX.length % 2 !== 0) publicKeyX = '0' + publicKeyX
+    if (publicKeyY.length % 2 !== 0) publicKeyY = '0' + publicKeyY
     
     // Convert the uncompressed public key to the format expected by ethers
     // Ethereum uses uncompressed public keys: 0x04 + x + y
@@ -2299,4 +2303,6 @@ main()
   .then(() => {
   })
   .catch((error) => {
+    console.error('Fatal error in main:', error)
+    process.exit(1)
   })
