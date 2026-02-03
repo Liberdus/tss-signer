@@ -11,7 +11,8 @@
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
-      }
+      },
+      "supportsBridgeChainId": false
     },
     "11155111": {
       "name": "Ethereum Sepolia",
@@ -24,7 +25,8 @@
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [10, 20, 30, 40, 50, 60]
-      }
+      },
+      "supportsBridgeChainId": false
     },
     "97": {
       "name": "BSC Testnet",
@@ -37,7 +39,8 @@
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
-      }
+      },
+      "supportsBridgeChainId": false
     }
   },
   "defaultChain": 80002,
