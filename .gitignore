@@ -2,6 +2,7 @@ target/
 .idea/
 .DS_Store
 node_modules
+dist
 keystores
 yarn-error.log
 package-lock.json

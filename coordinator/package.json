@@ -2,14 +2,14 @@
   "name": "coordinator",
   "version": "1.0.0",
   "description": "TSS Coordinator Node implementation for secure threshold signature communication",
-  "main": "dist/simple_server.js",
+  "main": "dist/server.js",
   "directories": {
     "test": "tests"
   },
   "scripts": {
-    "start": "node dist/simple_server.js",
+    "start": "node dist/server.js",
     "build": "tsc",
-    "dev": "nodemon --exec ts-node src/simple_server.ts",
+    "dev": "nodemon --exec ts-node src/server.ts",
     "test": "jest",
     "test:watch": "jest --watch",
     "lint": "eslint . --ext .ts"
