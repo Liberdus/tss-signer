@@ -1,5 +1,8 @@
 import SQLiteManager from "./sqliteManager";
 
+// Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
+export const LIBERDUS_CHAIN_ID = 0;
+
 // Define the interface for a transaction
 export interface Transaction {
   txId: string;
@@ -8,6 +11,7 @@ export interface Transaction {
   type: TransactionType;
   txTimestamp: number;
   chainId: number;
+  bridgeChainId: number; // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
   status: TransactionStatus;
   receipt: string;
   reason?: string | null; // Optional field for error reason
@@ -57,6 +61,7 @@ export async function initializeTransactionsDatabase(): Promise<void> {
     txTimestamp: "BIGINT NOT NULL", // assume this is from blockchain or external source
     receipt: "TEXT NOT NULL",
     chainId: "INTEGER NOT NULL",
+    bridgeChainId: `INTEGER NOT NULL DEFAULT ${LIBERDUS_CHAIN_ID}`,
     status: "INTEGER NOT NULL",
     reason: "TEXT",
     createdAt: "INTEGER DEFAULT (strftime('%s','now'))",
