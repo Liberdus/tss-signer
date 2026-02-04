@@ -34,6 +34,7 @@ interface ChainConfig {
 interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
   defaultChain: number
+  enableLiberdusNetwork: boolean
   liberdusNetworkId: string
 }
 
@@ -49,7 +50,7 @@ interface TransactionQueueItem {
   from: string
   value: ethers.BigNumber | bigint
   txId: string
-  type: 'tokenToCoin' | 'coinToToken'
+  type: 'tokenToCoin' | 'coinToToken' | 'tokenToToken'
   chainId: number // Add chainId to track which chain this transaction belongs to
   bridgeChainId: number // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
 }
@@ -73,6 +74,10 @@ interface KeyShare {
 
 // Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
 const LIBERDUS_CHAIN_ID = 0
+
+// Default chain ID to use if not specified (e.g LIBERDUS_CHAIN_ID or another supported chain)
+const DEFAULT_CHAIN_ID = LIBERDUS_CHAIN_ID
+
 
 interface BridgeOutEvent {
   from: string
@@ -153,6 +158,7 @@ export enum TransactionStatus {
 export enum TransactionType {
   BRIDGE_IN = 0, // COIN to TOKEN
   BRIDGE_OUT = 1, // TOKEN to COIN
+  BRIDGE_CROSS = 2, // TOKEN to TOKEN (EVM cross-chain)
 }
 
 const parsedIdx = process.argv[2]
@@ -627,9 +633,13 @@ async function validateTokenToCoinTx(
   const amount = parsedLog.args.amount
   const targetAddress = parsedLog.args.targetAddress
   const parsedChainId = parsedLog.args.chainId.toNumber()
-  const bridgeChainId = parsedLog.args.destinationChainId
+  let bridgeChainId = parsedLog.args.destinationChainId
     ? parsedLog.args.destinationChainId.toNumber()
     : LIBERDUS_CHAIN_ID
+  // If Liberdus Network is not enabled, we bridge to the default chain
+  if (!chainConfigs.enableLiberdusNetwork && bridgeChainId === LIBERDUS_CHAIN_ID) {
+    bridgeChainId = DEFAULT_CHAIN_ID
+  }
   console.log('BridgedOut event data:', {
     from,
     amount: amount.toString(),
@@ -835,14 +845,35 @@ async function monitorEthereumTransactions(): Promise<void> {
 
         for (const validTx of validTransactions) {
           if (txQueueMap.has(validTx.txId)) continue
+
+          // Determine bridge type based on bridgeChainId
+          let bridgeType: TransactionQueueItem['type'] = 'tokenToCoin'
+          let effectiveBridgeChainId = validTx.bridgeChainId
+          if (validTx.bridgeChainId !== LIBERDUS_CHAIN_ID) {
+            const destChainConfig = chainConfigs.supportedChains[validTx.bridgeChainId.toString()]
+            if (destChainConfig) {
+              bridgeType = 'tokenToToken'
+              console.log(
+                `Bridge routing: EVM-to-EVM from ${chainProvider.config.name} (${chainId}) to ${destChainConfig.name} (${validTx.bridgeChainId})`,
+              )
+            } else {
+              // Unsupported destination chain, inject back to source chain
+              bridgeType = 'tokenToToken'
+              effectiveBridgeChainId = chainId
+              console.log(
+                `Bridge routing: bridgeChainId ${validTx.bridgeChainId} is not a supported chain, injecting back to source chain ${chainProvider.config.name} (${chainId})`,
+              )
+            }
+          }
+
           const txData: TransactionQueueItem = {
             receipt: validTx,
             from: validTx.targetAddress,
             value: validTx.amount,
             txId: validTx.txId,
-            type: 'tokenToCoin',
+            type: bridgeType,
             chainId: chainId,
-            bridgeChainId: validTx.bridgeChainId,
+            bridgeChainId: effectiveBridgeChainId,
           }
           txQueue.push(txData)
           txQueueMap.set(validTx.txId, {
@@ -851,7 +882,7 @@ async function monitorEthereumTransactions(): Promise<void> {
             value: validTx.amount,
             txId: validTx.txId,
             chainId: chainId,
-            bridgeChainId: validTx.bridgeChainId,
+            bridgeChainId: effectiveBridgeChainId,
             timestamp: Date.now(), // Add timestamp for cleanup
           })
           saveQueueToFile(ourParty.idx)
@@ -970,7 +1001,11 @@ async function sendTxDataToCoordinator(
     txId: txData.txId,
     sender: toEthereumAddress(txData.from),
     value: ethersUtils.hexValue(txData.value),
-    type: txData.type === 'coinToToken' ? TransactionType.BRIDGE_IN : TransactionType.BRIDGE_OUT,
+    type: txData.type === 'coinToToken'
+      ? TransactionType.BRIDGE_IN
+      : txData.type === 'tokenToToken'
+        ? TransactionType.BRIDGE_CROSS
+        : TransactionType.BRIDGE_OUT,
     txTimestamp: timestamp,
     status: TransactionStatus.PENDING,
     receipt: '',
@@ -1291,6 +1326,133 @@ async function processCoinToToken(
       res.reason,
     )
     // Send tx status to coordinator
+    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+  }
+}
+
+async function processTokenToToken(
+  to: string,
+  value: ethers.BigNumber,
+  txId: string,
+  sourceChainId: number,
+  destinationChainId: number,
+): Promise<void> {
+  console.log('Processing token to token (EVM-to-EVM) transaction', {
+    to,
+    value: value.toString(),
+    sourceChainId,
+    destinationChainId,
+  })
+
+  const sourceChainProvider = chainProviders.get(sourceChainId)
+  if (!sourceChainProvider) {
+    console.error(`Source chain provider not found for chainId ${sourceChainId}`)
+    return
+  }
+
+  const destChainProvider = chainProviders.get(destinationChainId)
+  if (!destChainProvider) {
+    console.error(`Destination chain provider not found for chainId ${destinationChainId}`)
+    return
+  }
+
+  const sourceChainName = sourceChainProvider.config.name
+  const destChainName = destChainProvider.config.name
+  console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName}`)
+
+  const senderNonce = await destChainProvider.provider.getTransactionCount(
+    destChainProvider.config.tssSenderAddress,
+  )
+  let currentGasPrice = await destChainProvider.provider.getGasPrice()
+
+  // Apply gas price logic based on destination chain configuration
+  const gasTiers = destChainProvider.config.gasConfig.gasPriceTiers
+  for (let i = 0; i < gasTiers.length; i++) {
+    const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
+    if (currentGasPrice.lt(tierGwei)) {
+      currentGasPrice = tierGwei
+      break
+    }
+  }
+
+  // EVM txId is already 0x-prefixed, use directly as bytes32
+  const txIdBytes32 = txId
+  let data: string
+  if (destChainProvider.config.supportsBridgeChainId) {
+    // New 5-param bridgeIn with explicit sourceChainId
+    const bridgeInterface = new ethersUtils.Interface([
+      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
+    ])
+    data = bridgeInterface.encodeFunctionData('bridgeIn', [
+      to, // Already an Ethereum address from BridgedOut event
+      value,
+      destinationChainId,
+      txIdBytes32,
+      sourceChainId,
+    ])
+  } else {
+    // Old 4-param bridgeIn for contracts without bridgeChainId support
+    const bridgeInterface = new ethersUtils.Interface([
+      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+    ])
+    data = bridgeInterface.encodeFunctionData('bridgeIn', [
+      to, // Already an Ethereum address
+      value,
+      destinationChainId,
+      txIdBytes32,
+    ])
+  }
+
+  const tx = {
+    to: destChainProvider.config.contractAddress,
+    value: 0,
+    data,
+    nonce: senderNonce,
+    gasLimit: destChainProvider.config.gasConfig.gasLimit,
+    gasPrice: currentGasPrice,
+    chainId: destChainProvider.config.chainId,
+  }
+  console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
+  const unsignedTx = ethersUtils.serializeTransaction(tx)
+  let digest = ethersUtils.keccak256(unsignedTx)
+
+  // Use destination chain's keystore for signing
+  let keyShare = await DKG(ourParty, destinationChainId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest)
+  if (!signedTx) {
+    console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
+    return
+  }
+  // precompute tx hash from signedTx
+  const txHash = ethersUtils.keccak256(signedTx as string)
+  const signerBalance = await destChainProvider.provider.getBalance(destChainProvider.config.tssSenderAddress)
+  console.log(`Signer ${destChainProvider.config.tssSenderAddress} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
+  console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
+  let res: { success: boolean; reason?: string }
+  // Retry injection with linear delay progression
+  try {
+    res = await retryOperation(() => injectEthereumTx(txHash, signedTx, destChainProvider.provider), {
+      txId: txHash,
+      maxRetries: 3,
+    })
+    console.log(`EVM-to-EVM transaction injected on ${destChainName}`, txHash, res)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : (error as string)
+    console.error(`Failed to inject EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
+    res = {success: false, reason}
+  }
+
+  const receipt = await destChainProvider.provider.getTransactionReceipt(txHash)
+  if (receipt && receipt.status === 1) {
+    console.log(
+      `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+    )
+    sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+  } else {
+    console.log(
+      `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+      res.reason,
+    )
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
   }
 }
@@ -1817,9 +1979,13 @@ function subscribeToChainEvents(chainId: number) {
       ...args: any[]
     ) => {
       // For new ABI: args = [destinationChainId, event], for old ABI: args = [event]
-      const destinationChainId = chainProvider.config.supportsBridgeChainId
+      let destinationChainId = chainProvider.config.supportsBridgeChainId
         ? (args[0] as ethers.BigNumber).toNumber()
         : LIBERDUS_CHAIN_ID
+      // If Liberdus Network is not enabled, we bridge to the default chain
+      if (!chainConfigs.enableLiberdusNetwork && destinationChainId === LIBERDUS_CHAIN_ID) {
+        destinationChainId = DEFAULT_CHAIN_ID
+      }
       const event = chainProvider.config.supportsBridgeChainId ? args[1] : args[0]
 
       try {
@@ -1877,14 +2043,34 @@ function subscribeToChainEvents(chainId: number) {
           bridgeChainId: destinationChainId,
           txId: event.transactionHash,
         }
+        // Determine bridge type based on destinationChainId
+        let bridgeType: TransactionQueueItem['type'] = 'tokenToCoin'
+        let effectiveBridgeChainId = validTx.bridgeChainId
+        if (validTx.bridgeChainId !== LIBERDUS_CHAIN_ID) {
+          const destChainConfig = chainConfigs.supportedChains[validTx.bridgeChainId.toString()]
+          if (destChainConfig) {
+            bridgeType = 'tokenToToken'
+            console.log(
+              `Bridge routing: EVM-to-EVM from ${chainName} (${chainId}) to ${destChainConfig.name} (${validTx.bridgeChainId})`,
+            )
+          } else {
+            // Unsupported destination chain, inject back to source chain
+            bridgeType = 'tokenToToken'
+            effectiveBridgeChainId = chainId
+            console.log(
+              `Bridge routing: bridgeChainId ${validTx.bridgeChainId} is not a supported chain, injecting back to source chain ${chainName} (${chainId})`,
+            )
+          }
+        }
+
         const txData: TransactionQueueItem = {
           receipt: validTx,
           from: validTx.targetAddress,
           value: validTx.amount,
           txId: validTx.txId,
-          type: 'tokenToCoin',
+          type: bridgeType,
           chainId: chainId, // Source chain where the event originated
-          bridgeChainId: validTx.bridgeChainId,
+          bridgeChainId: effectiveBridgeChainId,
         }
         txQueue.push(txData)
         txQueueMap.set(validTx.txId, {
@@ -2147,6 +2333,17 @@ async function main(): Promise<void> {
             validTx.chainId || chainConfigs.defaultChain,
           ),
         )
+      } else if (validTx.type === 'tokenToToken') {
+        console.log('Processing token to token (EVM-to-EVM) transaction', validTx)
+        promises.push(
+          processTokenToToken(
+            validTx.from,
+            validTx.value as ethers.BigNumber,
+            validTx.txId,
+            validTx.chainId || chainConfigs.defaultChain,
+            validTx.bridgeChainId,
+          ),
+        )
       }
       const threeMinPromise = 1000 * 60 * 1.5
       const failPromise = new Promise((resolve, reject) => {
@@ -2340,7 +2537,7 @@ async function main(): Promise<void> {
   }
 
   startDriftResistantScheduler(handleTransactionQueue, txQueueProcessingInterval)
-  startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
+  if (chainConfigs.enableLiberdusNetwork) startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
   // Add memory management and monitoring schedulers
   startDriftResistantScheduler(cleanupOldTransactions, 10 * 60 * 1000) // Every 10 minutes (more frequent)
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes

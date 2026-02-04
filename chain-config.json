@@ -40,9 +40,10 @@
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "supportsBridgeChainId": false
+      "supportsBridgeChainId": true
     }
   },
   "defaultChain": 80002,
+  "enableLiberdusNetwork": false,
   "liberdusNetworkId": "7440f5161ffc77eed9ee91d6fbb406083192d1fe4d7e64b2f0814c0e067dcab4"
 }
