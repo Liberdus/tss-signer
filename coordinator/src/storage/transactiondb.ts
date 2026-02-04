@@ -29,11 +29,14 @@ export enum TransactionStatus {
 export enum TransactionType {
   BRIDGE_IN = 0, // COIN to TOKEN
   BRIDGE_OUT = 1, // TOKEN to COIN
+  BRIDGE_CROSS = 2, // TOKEN to TOKEN (EVM cross-chain)
 }
 
 export function isTransactionType(value: any): value is TransactionType {
   return (
-    value === TransactionType.BRIDGE_IN || value === TransactionType.BRIDGE_OUT
+    value === TransactionType.BRIDGE_IN ||
+    value === TransactionType.BRIDGE_OUT ||
+    value === TransactionType.BRIDGE_CROSS
   );
 }
 
