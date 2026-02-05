@@ -223,7 +223,7 @@ app.post(
         value,
         type,
         txTimestamp,
-        receipt,
+        receiptId,
         chainId,
         bridgeChainId,
         status,
@@ -238,7 +238,7 @@ app.post(
         !value ||
         !TransactionDB.isTransactionType(type) ||
         !txTimestamp ||
-        receipt !== "" ||
+        receiptId !== "" ||
         !chainId || // [TODO] Add proper chainId validation
         bridgeChainId === undefined || bridgeChainId === null ||
         !TransactionDB.isTransactionStatus(status) ||
@@ -263,7 +263,7 @@ app.post(
             value,
             type,
             txTimestamp,
-            receipt: receipt.toLowerCase(),
+            receiptId: receiptId.toLowerCase(),
             chainId,
             bridgeChainId,
             status,
@@ -315,12 +315,12 @@ app.post(
   "/transaction/status",
   async (req: Request<{}, {}, TxStatusData>, res: Response<Result<null>>) => {
     try {
-      const { txId, status, receipt, reason, party } = req.body;
+      const { txId, status, receiptId, reason, party } = req.body;
       // Validate request data [TODO - add more validation]
       if (
         !txId ||
         !TransactionDB.isTransactionStatus(status) ||
-        !receipt ||
+        !receiptId ||
         typeof reason !== "string" ||
         !party
       ) {
@@ -339,7 +339,7 @@ app.post(
       await TransactionDB.updateTransactionStatus(
         txId,
         status,
-        receipt,
+        receiptId,
         reason
       );
 

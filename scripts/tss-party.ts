@@ -122,7 +122,7 @@ export interface Transaction {
   chainId: number
   bridgeChainId: number // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
   status: TransactionStatus
-  receipt: string
+  receiptId: string;
   reason?: string | null; // Optional field for error reason
   createdAt?: string
   updatedAt?: string
@@ -1008,7 +1008,7 @@ async function sendTxDataToCoordinator(
         : TransactionType.BRIDGE_OUT,
     txTimestamp: timestamp,
     status: TransactionStatus.PENDING,
-    receipt: '',
+    receiptId: '',
     party: ourParty.idx,
     chainId: txData.chainId, // Include chain information
     bridgeChainId: txData.bridgeChainId, // The chain on the other side of the bridge
@@ -1035,12 +1035,12 @@ async function sendTxDataToCoordinator(
 async function sendTxStatusToCoordinator(
   txId: string,
   status: TransactionStatus,
-  receipt: string,
+  receiptId: string,
   failedReason = '',
 ): Promise<void> {
   try {
     const url = `${coordinatorUrl}/transaction/status`
-    const data: TxStatusData = {txId, status, receipt, reason: failedReason, party: ourParty.idx}
+    const data: TxStatusData = {txId, status, receiptId, reason: failedReason, party: ourParty.idx}
     const response = await axios.post(url, data)
     if (response.status !== 202 && response.status !== 200) {
       console.error('Failed to update transaction status to coordinator:', response.data)
