@@ -13,7 +13,7 @@ export interface Transaction {
   chainId: number;
   bridgeChainId: number; // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
   status: TransactionStatus;
-  receipt: string;
+  receiptId: string;
   reason?: string | null; // Optional field for error reason
   createdAt?: string;
   updatedAt?: string;
@@ -62,7 +62,7 @@ export async function initializeTransactionsDatabase(): Promise<void> {
     value: "TEXT NOT NULL",
     type: "INTEGER NOT NULL",
     txTimestamp: "BIGINT NOT NULL", // assume this is from blockchain or external source
-    receipt: "TEXT NOT NULL",
+    receiptId: "TEXT NOT NULL",
     chainId: "INTEGER NOT NULL",
     bridgeChainId: `INTEGER NOT NULL DEFAULT ${LIBERDUS_CHAIN_ID}`,
     status: "INTEGER NOT NULL",
@@ -98,14 +98,14 @@ export async function saveTransaction(transaction: Transaction): Promise<void> {
 export async function updateTransactionStatus(
   txId: string,
   status: TransactionStatus,
-  receipt: string,
+  receiptId: string,
   reason: string | null
 ): Promise<void> {
   if (reason !== "") {
-    await db.update("transactions", { status, receipt, reason }, "txId = ?", [txId]);
+    await db.update("transactions", { status, receiptId, reason }, "txId = ?", [txId]);
     return;
   } else {
-    await db.update("transactions", { status, receipt }, "txId = ?", [txId]);
+    await db.update("transactions", { status, receiptId }, "txId = ?", [txId]);
   }
 }
 
