@@ -1314,12 +1314,19 @@ async function processCoinToToken(
   }
 
   const receipt = await chainProvider.provider.getTransactionReceipt(txHash)
-  if (receipt && receipt.status === 1) {
-    console.log(
-      `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
-    )
-    // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+  if (receipt) {
+    if (receipt.status === 1) {
+      console.log(
+        `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+      )
+      // Send tx status to coordinator
+      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+    } else {
+      console.log(
+        `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+      )
+      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
+    }
   } else {
     console.log(
       `Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
@@ -1443,11 +1450,18 @@ async function processTokenToToken(
   }
 
   const receipt = await destChainProvider.provider.getTransactionReceipt(txHash)
-  if (receipt && receipt.status === 1) {
-    console.log(
-      `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
-    )
-    sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+  if (receipt) {
+    if (receipt.status === 1) {
+      console.log(
+        `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+      )
+      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+    } else {
+      console.log(
+        `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+      )
+      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
+    }
   } else {
     console.log(
       `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
