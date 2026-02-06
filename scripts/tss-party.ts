@@ -34,6 +34,7 @@ interface ChainConfig {
 interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
   defaultChain: number
+  secondaryChain: number // While the Liberdus Mainnet is not live, the default chainId to be bridged to
   enableLiberdusNetwork: boolean
   liberdusNetworkId: string
 }
@@ -71,12 +72,6 @@ interface KeyShare {
   res: string
   chainId?: number // Add chainId to identify which chain this keystore is for
 }
-
-// Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
-const LIBERDUS_CHAIN_ID = 0
-
-// Default chain ID to use if not specified (e.g LIBERDUS_CHAIN_ID or another supported chain)
-const DEFAULT_CHAIN_ID = LIBERDUS_CHAIN_ID
 
 
 interface BridgeOutEvent {
@@ -178,6 +173,12 @@ let params: Params = loadParams()
 let chainConfigs: ChainConfigs = loadChainConfigs()
 let t = params.threshold
 let n = params.parties
+
+// Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
+const LIBERDUS_CHAIN_ID = 0
+
+// Default chain ID to use if not specified (e.g LIBERDUS_CHAIN_ID or another supported chain)
+const DEFAULT_CHAIN_ID = chainConfigs.enableLiberdusNetwork ? LIBERDUS_CHAIN_ID : chainConfigs.secondaryChain
 
 const infuraKeys = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'),
