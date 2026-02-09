@@ -29,6 +29,7 @@ interface ChainConfig {
     gasPriceTiers: number[]
   }
   supportsBridgeChainId?: boolean // Whether the contract supports bridgeChainId param in bridgeIn/bridgeOut
+  deploymentBlock?: number // Block number when the contract was deployed (used as starting point for historical scan)
 }
 
 interface ChainConfigs {
@@ -44,6 +45,7 @@ interface ChainProviders {
   wsProvider: ethers.providers.WebSocketProvider
   config: ChainConfig
   lastCheckedBlockNumber: number
+  contract?: ethers.Contract
 }
 
 interface TransactionQueueItem {
@@ -165,7 +167,8 @@ const verifyKeystores = operationFlag === '--verify'
 const recoverFromBackup = operationFlag === '--recover'
 const loadExistingQueue = true
 const verboseLogs = true
-const addOldTxToQueue = false
+const addOldTxToQueue = true
+const useQueryFilter = true // Use queryFilter for efficient event scanning (vs block-by-block getBlockWithTransactions)
 
 const serverStartTime = Date.now()
 
@@ -437,6 +440,25 @@ const loadQueueFromFile = (partyIdx: number): void => {
     })
     console.log(`Queue for party ${party} loaded from ${filePath}`)
   }
+}
+
+const saveBlockState = (partyIdx: number): void => {
+  const party = partyIdx === undefined ? 'all' : String(partyIdx)
+  const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
+  const state: Record<string, number> = {}
+  for (const [chainId, cp] of chainProviders.entries()) {
+    state[chainId.toString()] = cp.lastCheckedBlockNumber
+  }
+  fs.writeFileSync(filePath, JSON.stringify(state))
+}
+
+const loadBlockState = (partyIdx: number): Record<string, number> | null => {
+  const party = partyIdx === undefined ? 'all' : String(partyIdx)
+  const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
+  if (fs.existsSync(filePath)) {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  }
+  return null
 }
 
 // Function to recover from emergency backup if needed
@@ -805,7 +827,7 @@ async function monitorEthereumTransactions(): Promise<void> {
         `Monitoring Ethereum transactions for bridgeOut calls on ${chainProvider.config.name}...`,
       )
       const newestBlockNumber = await chainProvider.provider.getBlockNumber()
-      console.log(`Newest block number for ${chainProvider.config.name}:`, newestBlockNumber)
+      if (verboseLogs) console.log(`Newest block number for ${chainProvider.config.name}:`, newestBlockNumber)
 
       if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
         console.log(
@@ -818,8 +840,8 @@ async function monitorEthereumTransactions(): Promise<void> {
 
       for (let i = chainProvider.lastCheckedBlockNumber + 1; i <= newestBlockNumber; i++) {
         const block = await chainProvider.provider.getBlockWithTransactions(i)
-        console.log(`Processing block ${i} on ${chainProvider.config.name}`, block.number)
-        console.log('Found block with transactions:', block.transactions.length)
+        if (verboseLogs) console.log(`Processing block ${i} on ${chainProvider.config.name}`, block.number)
+        if (verboseLogs) console.log('Found block with transactions:', block.transactions.length)
 
         const transactions = block.transactions.filter(
           (tx: any) =>
@@ -896,6 +918,7 @@ async function monitorEthereumTransactions(): Promise<void> {
           sendTxDataToCoordinator(txData, block.timestamp * 1000)
         }
         chainProvider.lastCheckedBlockNumber = i
+        saveBlockState(ourParty.idx)
       }
     } catch (error) {
       console.error(
@@ -903,6 +926,202 @@ async function monitorEthereumTransactions(): Promise<void> {
         error,
       )
     }
+  }
+}
+
+// Concurrency guard — prevents overlapping invocations from the scheduler
+let isQueryFilterRunning = false
+
+// Persistent adaptive batch size per chain (survives across scheduler invocations)
+const chainBatchSizes: Map<number, number> = new Map()
+const INITIAL_BATCH_SIZE = 1000
+const MIN_BATCH_SIZE = 100
+const BASE_DELAY_MS = 500
+const MAX_RETRY_DELAY_MS = 30000
+const MAX_RETRIES_PER_BATCH = 5
+
+async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
+  if (isQueryFilterRunning) {
+    if (verboseLogs) console.log('[queryFilter] Previous invocation still running, skipping this interval')
+    return
+  }
+  isQueryFilterRunning = true
+
+  try {
+    for (const [chainId, chainProvider] of chainProviders.entries()) {
+      try {
+        const chainName = chainProvider.config.name
+        const newestBlockNumber = await chainProvider.provider.getBlockNumber()
+
+        if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
+          if (verboseLogs) console.log(`Already up to date for ${chainName}, skipping...`)
+          continue
+        }
+
+        const fromBlock = chainProvider.lastCheckedBlockNumber + 1
+        const toBlock = newestBlockNumber
+        console.log(`[queryFilter] Scanning ${chainName} from block ${fromBlock} to ${toBlock} (${toBlock - fromBlock + 1} blocks)`)
+
+        const bridgeInterface = new ethersUtils.Interface([
+          chainProvider.config.supportsBridgeChainId
+            ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
+            : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
+        ])
+
+        const contract = new ethers.Contract(
+          chainProvider.config.contractAddress,
+          bridgeInterface,
+          chainProvider.provider,
+        )
+
+        // Use persistent batch size for this chain (remembers across invocations)
+        let batchSize = chainBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE
+        let cursor = fromBlock
+        let retryCount = 0
+        let retryDelay = BASE_DELAY_MS
+
+        while (cursor <= toBlock) {
+          const batchEnd = Math.min(cursor + batchSize - 1, toBlock)
+          if (verboseLogs) console.log(`[queryFilter] Batch: ${chainName} blocks ${cursor}-${batchEnd} (size: ${batchSize})`)
+
+          let events: ethers.Event[]
+          try {
+            events = await contract.queryFilter(
+              contract.filters.BridgedOut(),
+              cursor,
+              batchEnd,
+            )
+            // Reset retry state on success
+            retryCount = 0
+            retryDelay = BASE_DELAY_MS
+          } catch (error: any) {
+            // Check for RPC limit exceeded error (-32005) and handle with backoff
+            if (error?.error?.code === -32005 || error?.code === -32005 || error?.message?.includes('limit exceeded')) {
+              // First try reducing batch size
+              if (batchSize > MIN_BATCH_SIZE) {
+                batchSize = Math.max(Math.floor(batchSize / 2), MIN_BATCH_SIZE)
+                chainBatchSizes.set(chainId, batchSize) // Persist reduced batch size
+                console.warn(`[queryFilter] RPC limit exceeded for ${chainName}, reducing batch size to ${batchSize}`)
+                await delay_ms(retryDelay)
+                continue // Retry same cursor with smaller batch
+              }
+              // At min batch size — use exponential backoff instead of skipping
+              retryCount++
+              if (retryCount <= MAX_RETRIES_PER_BATCH) {
+                retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS)
+                console.warn(`[queryFilter] Rate limited on ${chainName} at min batch size, retry ${retryCount}/${MAX_RETRIES_PER_BATCH} after ${retryDelay}ms delay`)
+                await delay_ms(retryDelay)
+                continue // Retry same cursor after delay
+              }
+              // Exhausted retries — stop processing this chain for now and let the next scheduler interval resume
+              console.error(`[queryFilter] Rate limit retries exhausted for ${chainName} at block ${cursor}, will resume next interval`)
+              break
+            }
+            throw error // Re-throw non-limit errors
+          }
+
+          if (events.length > 0) {
+            console.log(`[queryFilter] Found ${events.length} BridgedOut events on ${chainName} in blocks ${cursor}-${batchEnd}`)
+          }
+
+          for (const event of events) {
+            if (!event.args) continue
+
+            const eventFrom = event.args.from as string
+            const amount = event.args.amount as ethers.BigNumber
+            const targetAddress = event.args.targetAddress as string
+            const parsedChainId = (event.args.chainId as ethers.BigNumber).toNumber()
+            const eventTimestamp = event.args.timestamp as ethers.BigNumber
+            let destinationChainId = chainProvider.config.supportsBridgeChainId && event.args.destinationChainId
+              ? (event.args.destinationChainId as ethers.BigNumber).toNumber()
+              : LIBERDUS_CHAIN_ID
+            if (!chainConfigs.enableLiberdusNetwork && destinationChainId === LIBERDUS_CHAIN_ID) {
+              destinationChainId = DEFAULT_CHAIN_ID
+            }
+
+            // Only process events from the current chain (replay protection)
+            if (parsedChainId !== chainId) continue
+
+            // Dedup check
+            if (txQueueMap.has(event.transactionHash)) continue
+
+            const validTx: BridgeOutEvent = {
+              from: eventFrom,
+              amount,
+              targetAddress,
+              chainId: parsedChainId,
+              bridgeChainId: destinationChainId,
+              txId: event.transactionHash,
+            }
+
+            // Determine bridge type
+            let bridgeType: TransactionQueueItem['type'] = 'tokenToCoin'
+            let effectiveBridgeChainId = validTx.bridgeChainId
+            if (validTx.bridgeChainId !== LIBERDUS_CHAIN_ID) {
+              const destChainConfig = chainConfigs.supportedChains[validTx.bridgeChainId.toString()]
+              if (destChainConfig) {
+                bridgeType = 'tokenToToken'
+                console.log(`Bridge routing: EVM-to-EVM from ${chainName} (${chainId}) to ${destChainConfig.name} (${validTx.bridgeChainId})`)
+              } else {
+                bridgeType = 'tokenToToken'
+                effectiveBridgeChainId = chainId
+                console.log(`Bridge routing: bridgeChainId ${validTx.bridgeChainId} not supported, injecting back to ${chainName} (${chainId})`)
+              }
+            }
+
+            if (txQueue.length >= txQueueSize) {
+              console.warn(`Transaction queue full, stopping scan for ${chainName} at block ${event.blockNumber}`)
+              break
+            }
+
+            const txData: TransactionQueueItem = {
+              receipt: validTx,
+              from: validTx.targetAddress,
+              value: validTx.amount,
+              txId: validTx.txId,
+              type: bridgeType,
+              chainId: chainId,
+              bridgeChainId: effectiveBridgeChainId,
+            }
+            txQueue.push(txData)
+            txQueueMap.set(validTx.txId, {
+              status: 'pending',
+              from: validTx.from,
+              value: validTx.amount,
+              txId: validTx.txId,
+              chainId: chainId,
+              bridgeChainId: effectiveBridgeChainId,
+              timestamp: Date.now(),
+            })
+            saveQueueToFile(ourParty.idx)
+            if (verboseLogs) {
+              console.log(`[queryFilter] BridgedOut event added to queue from ${chainName}:`, validTx.txId)
+            }
+            sendTxDataToCoordinator(txData, eventTimestamp.toNumber() * 1000)
+          }
+
+          // Batch succeeded — advance cursor and try growing batch size back
+          cursor = batchEnd + 1
+          chainProvider.lastCheckedBlockNumber = batchEnd
+          saveBlockState(ourParty.idx)
+
+          // Gradually increase batch size back up after success (up to initial)
+          if (batchSize < INITIAL_BATCH_SIZE) {
+            batchSize = Math.min(batchSize * 2, INITIAL_BATCH_SIZE)
+            chainBatchSizes.set(chainId, batchSize)
+          }
+
+          // Add delay between batches to avoid triggering rate limits
+          if (cursor <= toBlock) {
+            await delay_ms(BASE_DELAY_MS)
+          }
+        }
+      } catch (error) {
+        console.error(`Error in queryFilter monitoring for ${chainProvider.config.name}:`, error)
+      }
+    }
+  } finally {
+    isQueryFilterRunning = false
   }
 }
 
@@ -1052,6 +1271,21 @@ async function sendTxStatusToCoordinator(
     }
   } catch (error) {
     console.error('Error updating transaction status to coordinator:', error)
+  }
+}
+
+async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionStatus | null> {
+  try {
+    const url = `${coordinatorUrl}/transaction?txId=${encodeURIComponent(txId)}`
+    const response = await axios.get(url)
+    const transactions = response.data?.Ok?.transactions
+    if (transactions && transactions.length > 0) {
+      return transactions[0].status as TransactionStatus
+    }
+    return null
+  } catch (error) {
+    console.error(`Error checking tx status from coordinator for ${txId}:`, error)
+    return null
   }
 }
 
@@ -1916,52 +2150,105 @@ function calculateChatId(from: string, to: string): string {
   return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
 }
 
-// Add connection health monitoring
+// Track which chains are currently reconnecting to prevent concurrent reconnects
+const reconnectingChains: Set<number> = new Set()
+
+function reconnectWebSocket(chainId: number) {
+  const chainProvider = chainProviders.get(chainId)
+  if (!chainProvider) return
+
+  if (reconnectingChains.has(chainId)) return
+  reconnectingChains.add(chainId)
+
+  try {
+    // Clean up old contract listeners
+    if (chainProvider.contract) {
+      chainProvider.contract.removeAllListeners('BridgedOut')
+    }
+
+    // Clean up old provider listeners
+    if (chainProvider.wsProvider) {
+      chainProvider.wsProvider.removeAllListeners()
+      // @ts-ignore access raw websocket to clear low-level listeners
+      if (chainProvider.wsProvider._websocket) {
+        chainProvider.wsProvider._websocket.removeAllListeners?.()
+        chainProvider.wsProvider._websocket.close?.()
+      }
+    }
+
+    const wsUrl = chainProvider.config.wsUrl.includes('infura.io')
+      ? `${chainProvider.config.wsUrl}${ourInfurKey}`
+      : chainProvider.config.wsUrl
+
+    const newWsProvider = new ethers.providers.WebSocketProvider(wsUrl)
+    chainProvider.wsProvider = newWsProvider
+
+    // Attach low-level error/close handlers to trigger further reconnects
+    newWsProvider.on('error', (error) => {
+      console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error)
+      reconnectWebSocket(chainId)
+    })
+    newWsProvider.on('close', () => {
+      console.warn(`⚠️ WebSocket closed for ${chainProvider.config.name}, reconnecting...`)
+      reconnectWebSocket(chainId)
+    })
+    newWsProvider.on('open', () => {
+      console.log(`🟢 WebSocket connection opened for ${chainProvider.config.name}`)
+    })
+
+    console.log(`🔄 WebSocket reconnected for ${chainProvider.config.name}`)
+
+    // Re-subscribe to events on the new provider
+    subscribeToChainEvents(chainId)
+  } catch (reconnectError) {
+    console.error(`❌ Failed to reconnect WebSocket for ${chainProvider.config.name}:`, reconnectError)
+  } finally {
+    reconnectingChains.delete(chainId)
+  }
+}
+
+// Add connection health monitoring with ping/pong keepalive
 function monitorWebSocketHealth() {
   for (const [chainId, chainProvider] of chainProviders.entries()) {
-    if (chainProvider.wsProvider) {
-      const ws = chainProvider.wsProvider
-      
-      try {
-        // Test connection by getting network
-        ws.getNetwork().catch((error) => {
-          console.warn(`⚠️ WebSocket for ${chainProvider.config.name} connection issue, reconnecting...`, error.message)
-          
-          try {
-            // Clean up old connection
-            ws.removeAllListeners()
-            
-            // Recreate WebSocket connection
-            const wsUrl = chainProvider.config.wsUrl.includes('infura.io') 
-              ? `${chainProvider.config.wsUrl}${ourInfurKey}` 
-              : chainProvider.config.wsUrl
-            
-            chainProvider.wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
-            
-            // Add error handlers to new connection
-            chainProvider.wsProvider.on('error', (error) => {
-              console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error);
-            });
+    if (!chainProvider.wsProvider) continue
 
-            chainProvider.wsProvider.on('close', () => {
-              console.warn(`⚠️ WebSocket connection closed for ${chainProvider.config.name}`);
-            });
-
-            chainProvider.wsProvider.on('open', () => {
-              console.log(`🟢 WebSocket connection reopened for ${chainProvider.config.name}`);
-            });
-            
-            console.log(`🔄 WebSocket reconnected for ${chainProvider.config.name}`)
-            
-            // Re-subscribe to events after reconnection
-            subscribeToChainEvents(chainId)
-          } catch (reconnectError) {
-            console.error(`❌ Failed to reconnect WebSocket for ${chainProvider.config.name}:`, reconnectError)
-          }
-        })
-      } catch (error) {
-        console.error(`❌ Error monitoring WebSocket for ${chainProvider.config.name}:`, error)
+    try {
+      // @ts-ignore access raw websocket for state check
+      const rawWs = chainProvider.wsProvider._websocket
+      if (rawWs && rawWs.readyState !== 1) {
+        // readyState 1 = OPEN; anything else means dead/closing/connecting
+        console.warn(`⚠️ WebSocket for ${chainProvider.config.name} not open (state: ${rawWs.readyState}), reconnecting...`)
+        reconnectWebSocket(chainId)
+        continue
       }
+
+      // Send a ping to detect silent connection drops.
+      // If the pong doesn't come back in 10s, the connection is stale.
+      if (rawWs && typeof rawWs.ping === 'function') {
+        let pongReceived = false
+        const pongHandler = () => { pongReceived = true }
+        rawWs.once('pong', pongHandler)
+        rawWs.ping()
+
+        setTimeout(() => {
+          rawWs.removeListener('pong', pongHandler)
+          if (!pongReceived) {
+            console.warn(`⚠️ WebSocket for ${chainProvider.config.name} ping timeout, reconnecting...`)
+            reconnectWebSocket(chainId)
+          }
+        }, 10000)
+      } else {
+        // Fallback: test via RPC call with a timeout
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 10000)
+        )
+        Promise.race([chainProvider.wsProvider.getBlockNumber(), timeout]).catch((error) => {
+          console.warn(`⚠️ WebSocket for ${chainProvider.config.name} health check failed: ${error.message}, reconnecting...`)
+          reconnectWebSocket(chainId)
+        })
+      }
+    } catch (error) {
+      console.error(`❌ Error monitoring WebSocket for ${chainProvider.config.name}:`, error)
     }
   }
 }
@@ -1969,6 +2256,11 @@ function monitorWebSocketHealth() {
 function subscribeToChainEvents(chainId: number) {
   const chainProvider = chainProviders.get(chainId)
   if (!chainProvider || !chainProvider.wsProvider) return
+
+  // Clean up old contract listeners to avoid duplicates after reconnection
+  if (chainProvider.contract) {
+    chainProvider.contract.removeAllListeners('BridgedOut')
+  }
 
   const bridgeInterface = new ethersUtils.Interface([
     chainProvider.config.supportsBridgeChainId
@@ -1981,6 +2273,7 @@ function subscribeToChainEvents(chainId: number) {
     bridgeInterface,
     chainProvider.wsProvider,
   )
+  chainProvider.contract = contract
   const chainName = chainProvider.config.name
 
   contract.on(
@@ -2118,17 +2411,19 @@ function subscribeEthereumTransactions() {
       continue
     }
 
-    // Add WebSocket error handling and monitoring
+    // Add WebSocket error handling and monitoring with reconnect
     chainProvider.wsProvider.on('error', (error) => {
-      console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error);
+      console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error)
+      reconnectWebSocket(chainId)
     });
 
     chainProvider.wsProvider.on('close', () => {
-      console.warn(`⚠️ WebSocket connection closed for ${chainProvider.config.name}`);
+      console.warn(`⚠️ WebSocket connection closed for ${chainProvider.config.name}`)
+      reconnectWebSocket(chainId)
     });
 
     chainProvider.wsProvider.on('open', () => {
-      console.log(`🟢 WebSocket connection opened for ${chainProvider.config.name}`);
+      console.log(`🟢 WebSocket connection opened for ${chainProvider.config.name}`)
     });
 
     // Subscribe to events for this chain
@@ -2278,12 +2573,25 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  // set starting block number for all chains
+  // set starting block number for all chains, resuming from saved state if available
+  const savedBlockState = loadBlockState(ourParty.idx)
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
       const currentBlock = await chainProvider.provider.getBlockNumber()
-      chainProvider.lastCheckedBlockNumber = currentBlock
-      console.log(`Starting block for ${chainProvider.config.name}: ${currentBlock}`)
+      const savedBlock = savedBlockState?.[chainId.toString()]
+      if (savedBlock != null && savedBlock < currentBlock) {
+        chainProvider.lastCheckedBlockNumber = savedBlock
+        console.log(`Resuming ${chainProvider.config.name} from saved block ${savedBlock} (current: ${currentBlock})`)
+      } else if (savedBlockState != null) {
+        // Saved state exists but block is at or ahead of current — start at current
+        chainProvider.lastCheckedBlockNumber = currentBlock
+        console.log(`Starting ${chainProvider.config.name} at current block ${currentBlock}`)
+      } else {
+        // No saved state at all — start from contract deployment block (or 0 if not configured)
+        const deploymentBlock = chainProvider.config.deploymentBlock || 0
+        chainProvider.lastCheckedBlockNumber = deploymentBlock
+        console.log(`No saved block state for ${chainProvider.config.name}, starting from deployment block ${deploymentBlock} (current: ${currentBlock})`)
+      }
     } catch (error) {
       console.error(`Failed to get starting block for ${chainProvider.config.name}:`, error)
     }
@@ -2325,7 +2633,26 @@ async function main(): Promise<void> {
       processingTransactionIds.delete(txId)
       return
     }
-    
+
+    // Verify with coordinator that this tx hasn't already been completed/is being processed
+    const coordinatorStatus = await checkTxStatusFromCoordinator(txId)
+    if (coordinatorStatus === TransactionStatus.COMPLETED || coordinatorStatus === TransactionStatus.PROCESSING) {
+      console.log(`⏩ Transaction ${txId} already has status ${coordinatorStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'PROCESSING'} on coordinator, skipping`)
+      txQueueMap.set(txId, {
+        status: coordinatorStatus === TransactionStatus.COMPLETED ? 'completed' : 'processing',
+        from: validTx.from,
+        value: validTx.amount,
+        txId: validTx.txId,
+        chainId: validTx.chainId,
+        timestamp: Date.now(),
+      })
+      processingTransactionIds.delete(txId)
+      if (coordinatorStatus === TransactionStatus.COMPLETED) {
+        markTransactionCompleted(txId)
+      }
+      return
+    }
+
     try {
       let promises: Promise<any>[] = []
       if (validTx.type === 'coinToToken') {
@@ -2556,10 +2883,11 @@ async function main(): Promise<void> {
   // Add memory management and monitoring schedulers
   startDriftResistantScheduler(cleanupOldTransactions, 10 * 60 * 1000) // Every 10 minutes (more frequent)
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
-  startDriftResistantScheduler(monitorWebSocketHealth, 5 * 60 * 1000) // Every 5 minutes
+  startDriftResistantScheduler(monitorWebSocketHealth, 2 * 60 * 1000) // Every 5 minutes
   // Additional cleanup scheduler for stuck transactions
   startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
-  // startDriftResistantScheduler(monitorEthereumTransactions, ethereumTxMonitorInterval);
+  const ethMonitorFn = useQueryFilter ? monitorEthereumTransactionsQueryFilter : monitorEthereumTransactions
+  startDriftResistantScheduler(ethMonitorFn, ethereumTxMonitorInterval)
   subscribeEthereumTransactions()
 }
 
