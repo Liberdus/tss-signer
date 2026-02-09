@@ -12,7 +12,8 @@
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
-      "supportsBridgeChainId": false
+      "supportsBridgeChainId": false,
+      "deploymentBlock": 0
     },
     "11155111": {
       "name": "Ethereum Sepolia",
@@ -26,12 +27,13 @@
         "gasLimit": 200000,
         "gasPriceTiers": [10, 20, 30, 40, 50, 60]
       },
-      "supportsBridgeChainId": false
+      "supportsBridgeChainId": false,
+      "deploymentBlock": 0
     },
     "97": {
       "name": "BSC Testnet",
       "chainId": 97,
-      "rpcUrl": "https://data-seed-prebsc-1-s1.binance.org:8545",
+      "rpcUrl": "https://bsc-testnet.infura.io/v3/",
       "wsUrl": "wss://bsc-testnet.publicnode.com",
       "contractAddress": "0xCA832C69007f0Abd57164d4244AF2132FB44293D",
       "tssSenderAddress": "0x79309245d2BEd1cc8EFcA12F3Dbd2e64aB9591c0",
@@ -40,7 +42,8 @@
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "supportsBridgeChainId": true
+      "supportsBridgeChainId": true,
+      "deploymentBlock": 0
     }
   },
   "defaultChain": 80002,
