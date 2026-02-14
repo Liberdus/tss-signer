@@ -255,18 +255,28 @@ pub fn check_sig(r: &Scalar, s: &Scalar, msg: &BigInt, pk: &Point) -> Result<boo
     let s_vec = BigInt::to_vec(&s.to_big_int());
 
     let mut signature_a = [0u8; 64];
-    for i in 0..32 {
-        signature_a[i] = r_vec[i];
+    // Pad r_vec to 32 bytes (BigInt::to_vec may strip leading zeros)
+    let r_offset = 32 - r_vec.len();
+    for i in 0..r_vec.len() {
+        signature_a[r_offset + i] = r_vec[i];
     }
-    for i in 0..32 {
-        signature_a[i + 32] = s_vec[i];
+    // Pad s_vec to 32 bytes (BigInt::to_vec may strip leading zeros)
+    let s_offset = 32 + (32 - s_vec.len());
+    for i in 0..s_vec.len() {
+        signature_a[s_offset + i] = s_vec[i];
     }
 
     let signature = secp256k1::Signature::parse(&signature_a);
 
     let msg_vec = BigInt::to_vec(msg);
+    // Pad msg_vec to 32 bytes (BigInt::to_vec may strip leading zeros)
+    let mut msg_bytes = [0u8; 32];
+    let msg_offset = 32 - msg_vec.len();
+    for i in 0..msg_vec.len() {
+        msg_bytes[msg_offset + i] = msg_vec[i];
+    }
 
-    let message = secp256k1::Message::parse(&msg_vec.try_into().unwrap());
+    let message = secp256k1::Message::parse(&msg_bytes);
 
     let pubkey_a = pk.get_element().serialize();
 
