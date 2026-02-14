@@ -1813,10 +1813,27 @@ async function retryOperation<T>(
   const {
     txId,
     maxRetries = 3,
-    shouldRetry = (error: Error) =>
-      !error.message.includes('invalid signature') &&
-      !error.message.includes('Nonce too low') &&
-      !error.message.includes('Transaction Failed'),
+    shouldRetry = (error: Error) => {
+      const msg = error.message
+      // Never retry these errors — they will fail again with the same result
+      const nonRetryablePatterns = [
+        // Signature / auth errors
+        'invalid signature',
+        // Nonce errors (nonce already consumed by this or another server)
+        'Nonce too low',
+        'nonce has already been used',
+        'NONCE_EXPIRED',
+        // Contract reverts (execution failed, retrying won't help)
+        'reverted with reason string',
+        'execution reverted',
+        'CALL_EXCEPTION',
+        'Transaction Failed',
+        // Insufficient funds for gas
+        'insufficient funds',
+        'INSUFFICIENT_FUNDS',
+      ]
+      return !nonRetryablePatterns.some((pattern) => msg.includes(pattern))
+    },
   } = options
 
   let lastError: Error
