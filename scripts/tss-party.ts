@@ -46,6 +46,10 @@ interface ChainProviders {
   config: ChainConfig
   lastCheckedBlockNumber: number
   contract?: ethers.Contract
+  // Bridge contract state (fetched on startup, refreshed on revert)
+  bridgeInCooldown: number         // seconds
+  maxBridgeInAmount: ethers.BigNumber
+  lastBridgeInTime: number         // unix timestamp in seconds
 }
 
 interface TransactionQueueItem {
@@ -227,9 +231,48 @@ for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains))
     wsProvider: wsProvider!,
     config,
     lastCheckedBlockNumber: 0,
+    bridgeInCooldown: 0,
+    maxBridgeInAmount: ethers.BigNumber.from(0),
+    lastBridgeInTime: 0,
   })
 
   console.log(`HTTP provider initialized for ${config.name} (Chain ID: ${chainId})`)
+}
+
+// Fetch bridge contract state (cooldown, maxAmount, lastBridgeInTime) for a chain
+async function fetchBridgeState(chainId: number): Promise<void> {
+  const chainProvider = chainProviders.get(chainId)
+  if (!chainProvider) return
+
+  const iface = new ethersUtils.Interface([
+    'function bridgeInCooldown() view returns (uint256)',
+    'function maxBridgeInAmount() view returns (uint256)',
+    'function lastBridgeInTime() view returns (uint256)',
+  ])
+
+  const contractAddr = chainProvider.config.contractAddress
+  try {
+    const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
+      chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('bridgeInCooldown') }),
+      chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('maxBridgeInAmount') }),
+      chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('lastBridgeInTime') }),
+    ])
+
+    chainProvider.bridgeInCooldown = iface.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+    chainProvider.maxBridgeInAmount = iface.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
+    chainProvider.lastBridgeInTime = iface.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+
+    console.log(`Bridge state fetched for chain ${chainId}: cooldown=${chainProvider.bridgeInCooldown}s, maxAmount=${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)}, lastBridgeInTime=${chainProvider.lastBridgeInTime}`)
+  } catch (error) {
+    console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
+  }
+}
+
+// Fetch bridge state for all chains on startup
+for (const [chainIdStr] of Object.entries(chainConfigs.supportedChains)) {
+  fetchBridgeState(parseInt(chainIdStr)).catch((err) =>
+    console.warn(`Failed to fetch bridge state for chain ${chainIdStr}:`, err)
+  )
 }
 
 // Legacy variables for backward compatibility (using default chain)
@@ -1470,6 +1513,25 @@ async function processCoinToToken(
   const targetChainName = chainProvider.config.name
   console.log(`Processing transaction on ${targetChainName}`)
 
+  // Check max bridge-in amount
+  if (!chainProvider.maxBridgeInAmount.isZero() && value.gt(chainProvider.maxBridgeInAmount)) {
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${targetChainName}`
+    console.error(reason)
+    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
+    return
+  }
+
+  // Wait for bridge-in cooldown if needed
+  if (chainProvider.bridgeInCooldown > 0 && chainProvider.lastBridgeInTime > 0) {
+    const now = Math.floor(Date.now() / 1000)
+    const cooldownEnd = chainProvider.lastBridgeInTime + chainProvider.bridgeInCooldown
+    if (now < cooldownEnd) {
+      const waitSec = cooldownEnd - now
+      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName}`)
+      await sleep(waitSec * 1000)
+    }
+  }
+
   const senderNonce = await chainProvider.provider.getTransactionCount(
     chainProvider.config.tssSenderAddress,
   )
@@ -1546,6 +1608,10 @@ async function processCoinToToken(
     const reason = error instanceof Error ? error.message : (error as string)
     console.error(`Failed to inject ethereum transaction on ${targetChainName}: ${txHash}`, reason)
     res = {success: false, reason}
+    if (reason && (reason.includes('Bridge-in cooldown not met') || reason.includes('Amount exceeds bridge-in limit'))) {
+      console.log(`Refreshing bridge state for chain ${targetChainId} due to revert: ${reason}`)
+      await fetchBridgeState(targetChainId)
+    }
   }
 
   const receipt = await chainProvider.provider.getTransactionReceipt(txHash)
@@ -1554,6 +1620,8 @@ async function processCoinToToken(
       console.log(
         `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
+      const block = await chainProvider.provider.getBlock(receipt.blockNumber)
+      chainProvider.lastBridgeInTime = block.timestamp
       // Send tx status to coordinator
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
     } else {
@@ -1601,6 +1669,25 @@ async function processTokenToToken(
   const sourceChainName = sourceChainProvider.config.name
   const destChainName = destChainProvider.config.name
   console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName}`)
+
+  // Check max bridge-in amount
+  if (!destChainProvider.maxBridgeInAmount.isZero() && value.gt(destChainProvider.maxBridgeInAmount)) {
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainProvider.maxBridgeInAmount)} on ${destChainName}`
+    console.error(reason)
+    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
+    return
+  }
+
+  // Wait for bridge-in cooldown if needed
+  if (destChainProvider.bridgeInCooldown > 0 && destChainProvider.lastBridgeInTime > 0) {
+    const now = Math.floor(Date.now() / 1000)
+    const cooldownEnd = destChainProvider.lastBridgeInTime + destChainProvider.bridgeInCooldown
+    if (now < cooldownEnd) {
+      const waitSec = cooldownEnd - now
+      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${destChainName}`)
+      await sleep(waitSec * 1000)
+    }
+  }
 
   const senderNonce = await destChainProvider.provider.getTransactionCount(
     destChainProvider.config.tssSenderAddress,
@@ -1682,6 +1769,10 @@ async function processTokenToToken(
     const reason = error instanceof Error ? error.message : (error as string)
     console.error(`Failed to inject EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
     res = {success: false, reason}
+    if (reason && (reason.includes('Bridge-in cooldown not met') || reason.includes('Amount exceeds bridge-in limit'))) {
+      console.log(`Refreshing bridge state for chain ${destinationChainId} due to revert: ${reason}`)
+      await fetchBridgeState(destinationChainId)
+    }
   }
 
   const receipt = await destChainProvider.provider.getTransactionReceipt(txHash)
@@ -1690,6 +1781,8 @@ async function processTokenToToken(
       console.log(
         `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
+      const block = await destChainProvider.provider.getBlock(receipt.blockNumber)
+      destChainProvider.lastBridgeInTime = block.timestamp
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
     } else {
       console.log(
