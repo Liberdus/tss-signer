@@ -30,6 +30,8 @@ interface ChainConfig {
   }
   supportsBridgeChainId?: boolean // Whether the contract supports bridgeChainId param in bridgeIn/bridgeOut
   deploymentBlock?: number // Block number when the contract was deployed (used as starting point for historical scan)
+  useBridgeVault?: boolean // Whether this chain uses a Vault contract for bridging
+  vaultContractAddress?: string // Vault contract address (required when useBridgeVault is true)
 }
 
 interface ChainConfigs {
@@ -46,7 +48,7 @@ interface ChainProviders {
   config: ChainConfig
   lastCheckedBlockNumber: number
   contract?: ethers.Contract
-  // Bridge contract state (fetched on startup, refreshed on revert)
+  // Bridge contract state (fetched from vault contract when useBridgeVault is enabled)
   bridgeInCooldown: number         // seconds
   maxBridgeInAmount: ethers.BigNumber
   lastBridgeInTime: number         // unix timestamp in seconds
@@ -250,7 +252,10 @@ async function fetchBridgeState(chainId: number): Promise<void> {
     'function lastBridgeInTime() view returns (uint256)',
   ])
 
-  const contractAddr = chainProvider.config.contractAddress
+  // When useBridgeVault is enabled, fetch state from the Vault contract; otherwise from the main bridge contract
+  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
+  const contractAddr = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+  const contractLabel = useVault ? 'vault' : 'bridge'
   try {
     const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
       chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('bridgeInCooldown') }),
@@ -262,9 +267,9 @@ async function fetchBridgeState(chainId: number): Promise<void> {
     chainProvider.maxBridgeInAmount = iface.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
     chainProvider.lastBridgeInTime = iface.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
 
-    console.log(`Bridge state fetched for chain ${chainId}: cooldown=${chainProvider.bridgeInCooldown}s, maxAmount=${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)}, lastBridgeInTime=${chainProvider.lastBridgeInTime}`)
+    console.log(`Bridge state fetched for chain ${chainId} (${contractLabel}): cooldown=${chainProvider.bridgeInCooldown}s, maxAmount=${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)}, lastBridgeInTime=${chainProvider.lastBridgeInTime}`)
   } catch (error) {
-    console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
+    console.warn(`Failed to fetch bridge state for chain ${chainId} (${contractLabel}):`, error)
   }
 }
 
@@ -669,19 +674,25 @@ async function validateTokenToCoinTx(
     console.log('Transaction is not successful')
     return false
   }
-  if (receipt.to?.toLowerCase() !== chainProvider.config.contractAddress.toLowerCase()) {
-    console.log(`Transaction is not for the ${chainProvider.config.name} contract address`)
+  // When useBridgeVault is enabled, validate against the Vault contract; otherwise the main bridge contract
+  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
+  const expectedContract = useVault ? chainProvider.config.vaultContractAddress!.toLowerCase() : chainProvider.config.contractAddress.toLowerCase()
+  if (receipt.to?.toLowerCase() !== expectedContract) {
+    console.log(`Transaction is not for the ${chainProvider.config.name} ${useVault ? 'vault' : 'bridge'} contract address`)
     return false
   }
+
+  // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
+  const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
   const bridgeInterface = new ethersUtils.Interface([
-    chainProvider.config.supportsBridgeChainId
+    hasDestChainId
       ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
       : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
   ])
 
   const bridgeOutLog = receipt.logs.find((log: any) => {
     try {
-      if (log.address.toLowerCase() !== chainProvider.config.contractAddress.toLowerCase())
+      if (log.address.toLowerCase() !== expectedContract)
         return false
       const parsedLog = bridgeInterface.parseLog(log)
       return parsedLog.name === 'BridgedOut'
@@ -1005,14 +1016,20 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
         const toBlock = newestBlockNumber
         console.log(`[queryFilter] Scanning ${chainName} from block ${fromBlock} to ${toBlock} (${toBlock - fromBlock + 1} blocks)`)
 
+        // When useBridgeVault is enabled, scan only the Vault contract; otherwise the main bridge contract
+        const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
+        const contractAddress = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+        // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
+        const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
+
         const bridgeInterface = new ethersUtils.Interface([
-          chainProvider.config.supportsBridgeChainId
+          hasDestChainId
             ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
             : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
         ])
 
         const contract = new ethers.Contract(
-          chainProvider.config.contractAddress,
+          contractAddress,
           bridgeInterface,
           chainProvider.provider,
         )
@@ -1075,7 +1092,7 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
             const targetAddress = event.args.targetAddress as string
             const parsedChainId = (event.args.chainId as ethers.BigNumber).toNumber()
             const eventTimestamp = event.args.timestamp as ethers.BigNumber
-            let destinationChainId = chainProvider.config.supportsBridgeChainId && event.args.destinationChainId
+            let destinationChainId = hasDestChainId && event.args.destinationChainId
               ? (event.args.destinationChainId as ethers.BigNumber).toNumber()
               : LIBERDUS_CHAIN_ID
             if (!chainConfigs.enableLiberdusNetwork && destinationChainId === LIBERDUS_CHAIN_ID) {
@@ -1511,11 +1528,13 @@ async function processCoinToToken(
   }
 
   const targetChainName = chainProvider.config.name
-  console.log(`Processing transaction on ${targetChainName}`)
+  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
+  const contractLabel = useVault ? 'vault' : 'bridge'
+  console.log(`Processing transaction on ${targetChainName} (${contractLabel})`)
 
-  // Check max bridge-in amount
+  // Check max bridge-in amount (state is already fetched from the correct contract in fetchBridgeState)
   if (!chainProvider.maxBridgeInAmount.isZero() && value.gt(chainProvider.maxBridgeInAmount)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${targetChainName}`
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${targetChainName} (${contractLabel})`
     console.error(reason)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
     return
@@ -1527,7 +1546,7 @@ async function processCoinToToken(
     const cooldownEnd = chainProvider.lastBridgeInTime + chainProvider.bridgeInCooldown
     if (now < cooldownEnd) {
       const waitSec = cooldownEnd - now
-      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName}`)
+      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName} (${contractLabel})`)
       await sleep(waitSec * 1000)
     }
   }
@@ -1549,8 +1568,8 @@ async function processCoinToToken(
 
   const txIdBytes32 = '0x' + txId
   let data: string
-  if (chainProvider.config.supportsBridgeChainId) {
-    // New 5-param bridgeIn with explicit sourceChainId
+  if (useVault || chainProvider.config.supportsBridgeChainId) {
+    // Vault always uses 5-param bridgeIn; main contract uses it when supportsBridgeChainId is true
     const bridgeInterface = new ethersUtils.Interface([
       'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
     ])
@@ -1573,8 +1592,9 @@ async function processCoinToToken(
       txIdBytes32,
     ])
   }
+  const bridgeInContractAddress = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
   const tx = {
-    to: chainProvider.config.contractAddress,
+    to: bridgeInContractAddress,
     value: 0,
     data,
     nonce: senderNonce,
@@ -1668,11 +1688,13 @@ async function processTokenToToken(
 
   const sourceChainName = sourceChainProvider.config.name
   const destChainName = destChainProvider.config.name
-  console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName}`)
+  const useVault = !!destChainProvider.config.useBridgeVault && !!destChainProvider.config.vaultContractAddress
+  const contractLabel = useVault ? 'vault' : 'bridge'
+  console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName} (${contractLabel})`)
 
-  // Check max bridge-in amount
+  // Check max bridge-in amount (state is already fetched from the correct contract in fetchBridgeState)
   if (!destChainProvider.maxBridgeInAmount.isZero() && value.gt(destChainProvider.maxBridgeInAmount)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainProvider.maxBridgeInAmount)} on ${destChainName}`
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainProvider.maxBridgeInAmount)} on ${destChainName} (${contractLabel})`
     console.error(reason)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
     return
@@ -1684,7 +1706,7 @@ async function processTokenToToken(
     const cooldownEnd = destChainProvider.lastBridgeInTime + destChainProvider.bridgeInCooldown
     if (now < cooldownEnd) {
       const waitSec = cooldownEnd - now
-      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${destChainName}`)
+      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${destChainName} (${contractLabel})`)
       await sleep(waitSec * 1000)
     }
   }
@@ -1707,8 +1729,8 @@ async function processTokenToToken(
   // EVM txId is already 0x-prefixed, use directly as bytes32
   const txIdBytes32 = txId
   let data: string
-  if (destChainProvider.config.supportsBridgeChainId) {
-    // New 5-param bridgeIn with explicit sourceChainId
+  if (useVault || destChainProvider.config.supportsBridgeChainId) {
+    // Vault always uses 5-param bridgeIn; main contract uses it when supportsBridgeChainId is true
     const bridgeInterface = new ethersUtils.Interface([
       'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
     ])
@@ -1732,8 +1754,9 @@ async function processTokenToToken(
     ])
   }
 
+  const bridgeInContractAddress = useVault ? destChainProvider.config.vaultContractAddress! : destChainProvider.config.contractAddress
   const tx = {
-    to: destChainProvider.config.contractAddress,
+    to: bridgeInContractAddress,
     value: 0,
     data,
     nonce: senderNonce,
@@ -2372,14 +2395,20 @@ function subscribeToChainEvents(chainId: number) {
     chainProvider.contract.removeAllListeners('BridgedOut')
   }
 
+  // When useBridgeVault is enabled, listen only to the Vault contract; otherwise the main bridge contract
+  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
+  const contractAddress = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+  // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
+  const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
+
   const bridgeInterface = new ethersUtils.Interface([
-    chainProvider.config.supportsBridgeChainId
+    hasDestChainId
       ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
       : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
   ])
 
   const contract = new ethers.Contract(
-    chainProvider.config.contractAddress,
+    contractAddress,
     bridgeInterface,
     chainProvider.wsProvider,
   )
@@ -2397,14 +2426,14 @@ function subscribeToChainEvents(chainId: number) {
       ...args: any[]
     ) => {
       // For new ABI: args = [destinationChainId, event], for old ABI: args = [event]
-      let destinationChainId = chainProvider.config.supportsBridgeChainId
+      let destinationChainId = hasDestChainId
         ? (args[0] as ethers.BigNumber).toNumber()
         : LIBERDUS_CHAIN_ID
       // If Liberdus Network is not enabled, we bridge to the default chain
       if (!chainConfigs.enableLiberdusNetwork && destinationChainId === LIBERDUS_CHAIN_ID) {
         destinationChainId = DEFAULT_CHAIN_ID
       }
-      const event = chainProvider.config.supportsBridgeChainId ? args[1] : args[0]
+      const event = hasDestChainId ? args[1] : args[0]
 
       try {
         if (verboseLogs) {
@@ -2510,6 +2539,8 @@ function subscribeToChainEvents(chainId: number) {
       }
     },
   )
+
+  console.log(`📡 Subscribed to BridgedOut events on ${chainName} (${useVault ? 'vault' : 'bridge'}) at ${contractAddress}`)
 }
 
 function subscribeEthereumTransactions() {

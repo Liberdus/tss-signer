@@ -13,7 +13,9 @@
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
       "supportsBridgeChainId": false,
-      "deploymentBlock": 0
+      "deploymentBlock": 0,
+      "useBridgeVault": true,
+      "vaultContractAddress": ""
     },
     "11155111": {
       "name": "Ethereum Sepolia",
