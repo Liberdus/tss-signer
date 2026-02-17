@@ -5,6 +5,9 @@ import axios, {AxiosResponse} from 'axios'
 import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
+import * as rpcUrls from './lib/rpcUrls'
+import {withHttpProviderRetry} from './lib/httpProviderHelper'
+import {createWebSocketProvider} from './lib/wsProviderHelper'
 
 const {BigNumber, utils: ethersUtils, providers} = ethers
 
@@ -41,7 +44,6 @@ interface ChainConfigs {
 }
 
 interface ChainProviders {
-  provider: ethers.providers.JsonRpcProvider
   wsProvider: ethers.providers.WebSocketProvider
   config: ChainConfig
   lastCheckedBlockNumber: number
@@ -197,44 +199,61 @@ const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''}
 
 const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1]
 
-// Initialize providers for all supported chains
+// Initialize per-chain HTTP/WS URL lists from config, then merge from chainlist (hourly)
+rpcUrls.initFromConfig(chainConfigs.supportedChains, ourInfurKey)
+const supportedChainIds = Object.keys(chainConfigs.supportedChains).map((id) => parseInt(id, 10))
+rpcUrls.startHourlyChainlistFetch(supportedChainIds, ourInfurKey)
+
+// Initialize chain state: one active WebSocket per chain; HTTP uses helper per request
 const chainProviders: Map<number, ChainProviders> = new Map()
 
-// Setup providers for each supported chain
+function pickRandomWsUrl(chainId: number): string | null {
+  const urls = rpcUrls.getWsUrls(chainId)
+  if (urls.length === 0) return null
+  return urls[Math.floor(Math.random() * urls.length)]
+}
+
 for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains)) {
   const chainId = parseInt(chainIdStr)
-  const rpcUrl = config.rpcUrl.includes('infura.io')
-    ? `${config.rpcUrl}${ourInfurKey}`
-    : config.rpcUrl
-
-  const provider = new providers.JsonRpcProvider(rpcUrl)
-
-  // Only create WebSocket provider if not in keygen mode and URL is valid
   let wsProvider: ethers.providers.WebSocketProvider | null = null
   if (!generateKeystore) {
+    const wsUrl = pickRandomWsUrl(chainId) ?? (config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl)
     try {
-      const wsUrl = config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl
-      wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
+      wsProvider = createWebSocketProvider(wsUrl, chainId, (error) => {
+        console.error(`WebSocket connection error for ${config.name} (Chain ID: ${chainId}): ${error.message}`)
+      })
       console.log(`WebSocket provider initialized for ${config.name} (Chain ID: ${chainId})`)
     } catch (error) {
       console.warn(`Failed to initialize WebSocket provider for ${config.name}: ${error}`)
-      console.log(`Will use HTTP provider only for ${config.name}`)
     }
   }
 
   chainProviders.set(chainId, {
-    provider,
     wsProvider: wsProvider!,
     config,
     lastCheckedBlockNumber: 0,
   })
-
-  console.log(`HTTP provider initialized for ${config.name} (Chain ID: ${chainId})`)
 }
 
-// Legacy variables for backward compatibility (using default chain)
-const defaultChainProvider = chainProviders.get(chainConfigs.defaultChain)!
-const provider = defaultChainProvider.provider
+/** Options for HTTP provider helper (random RPC + retry) for a given chain */
+function getHttpOptionsForChain(chainId: number): {
+  httpUrls: string[]
+  fallbackRpcUrl?: string
+  chainId: number
+} {
+  const config = chainConfigs.supportedChains[chainId.toString()]
+  const fallback = config
+    ? config.rpcUrl.includes('infura.io')
+      ? `${config.rpcUrl}${ourInfurKey}`
+      : config.rpcUrl
+    : undefined
+  return {
+    httpUrls: rpcUrls.getHttpUrls(chainId),
+    fallbackRpcUrl: fallback,
+    chainId,
+  }
+}
+
 let lastCheckedTimestamp = serverStartTime
 
 const cryptoInitKey = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc'
@@ -611,7 +630,12 @@ async function validateTokenToCoinTx(
     return false
   }
 
-  const receipt = await chainProvider.provider.getTransactionReceipt(tx.hash)
+  const opts = getHttpOptionsForChain(targetChainId)
+  const receipt = await withHttpProviderRetry(
+    opts.httpUrls,
+    (provider) => provider.getTransactionReceipt(tx.hash),
+    { ...opts, maxRetries: 3 },
+  )
   console.log('receipt', receipt)
   console.log(`Starting block: ${chainProvider.lastCheckedBlockNumber}`)
   console.log(`Transaction block number: ${receipt.blockNumber}`)
@@ -820,26 +844,29 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
 }
 
 async function monitorEthereumTransactions(): Promise<void> {
-  // Monitor all supported EVM chains
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
-      console.log(
-        `Monitoring Ethereum transactions for bridgeOut calls on ${chainProvider.config.name}...`,
-      )
-      const newestBlockNumber = await chainProvider.provider.getBlockNumber()
-      if (verboseLogs) console.log(`Newest block number for ${chainProvider.config.name}:`, newestBlockNumber)
+      const opts = getHttpOptionsForChain(chainId)
+      await withHttpProviderRetry(
+        opts.httpUrls,
+        async (provider) => {
+          console.log(
+            `Monitoring Ethereum transactions for bridgeOut calls on ${chainProvider.config.name}...`,
+          )
+          const newestBlockNumber = await provider.getBlockNumber()
+          if (verboseLogs) console.log(`Newest block number for ${chainProvider.config.name}:`, newestBlockNumber)
 
-      if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
-        console.log(
-          `This block has already been checked for ${chainProvider.config.name}, skipping...`,
-          chainProvider.lastCheckedBlockNumber,
-          newestBlockNumber,
-        )
-        continue
-      }
+          if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
+            console.log(
+              `This block has already been checked for ${chainProvider.config.name}, skipping...`,
+              chainProvider.lastCheckedBlockNumber,
+              newestBlockNumber,
+            )
+            return
+          }
 
-      for (let i = chainProvider.lastCheckedBlockNumber + 1; i <= newestBlockNumber; i++) {
-        const block = await chainProvider.provider.getBlockWithTransactions(i)
+          for (let i = chainProvider.lastCheckedBlockNumber + 1; i <= newestBlockNumber; i++) {
+            const block = await provider.getBlockWithTransactions(i)
         if (verboseLogs) console.log(`Processing block ${i} on ${chainProvider.config.name}`, block.number)
         if (verboseLogs) console.log('Found block with transactions:', block.transactions.length)
 
@@ -919,7 +946,10 @@ async function monitorEthereumTransactions(): Promise<void> {
         }
         chainProvider.lastCheckedBlockNumber = i
         saveBlockState(ourParty.idx)
-      }
+          }
+        },
+        { ...opts, maxRetries: 3 },
+      )
     } catch (error) {
       console.error(
         `Error monitoring Ethereum transactions on ${chainProvider.config.name}:`,
@@ -950,12 +980,16 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
   try {
     for (const [chainId, chainProvider] of chainProviders.entries()) {
       try {
+        const opts = getHttpOptionsForChain(chainId)
+        await withHttpProviderRetry(
+          opts.httpUrls,
+          async (provider) => {
         const chainName = chainProvider.config.name
-        const newestBlockNumber = await chainProvider.provider.getBlockNumber()
+        const newestBlockNumber = await provider.getBlockNumber()
 
         if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
           if (verboseLogs) console.log(`Already up to date for ${chainName}, skipping...`)
-          continue
+          return
         }
 
         const fromBlock = chainProvider.lastCheckedBlockNumber + 1
@@ -971,7 +1005,7 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
         const contract = new ethers.Contract(
           chainProvider.config.contractAddress,
           bridgeInterface,
-          chainProvider.provider,
+          provider,
         )
 
         // Use persistent batch size for this chain (remembers across invocations)
@@ -1116,6 +1150,9 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
             await delay_ms(BASE_DELAY_MS)
           }
         }
+          },
+          { ...opts, maxRetries: 3 },
+        )
       } catch (error) {
         console.error(`Error in queryFilter monitoring for ${chainProvider.config.name}:`, error)
       }
@@ -1398,11 +1435,10 @@ async function signLiberdusTransaction(
 async function injectEthereumTx(
   txHash: string,
   signedTx: string,
-  targetProvider?: ethers.providers.JsonRpcProvider,
+  targetProvider: ethers.providers.JsonRpcProvider,
 ): Promise<{ success: boolean; reason?: string }> {
-  const providerToUse = targetProvider || provider
   try {
-    const txResponse = await providerToUse.sendTransaction(signedTx)
+    const txResponse = await targetProvider.sendTransaction(signedTx)
     const receipt = await txResponse.wait()
     console.log('Receipt', txHash, receipt)
     if (receipt.status !== 1) throw new Error('Transaction failed')
@@ -1470,106 +1506,106 @@ async function processCoinToToken(
   const targetChainName = chainProvider.config.name
   console.log(`Processing transaction on ${targetChainName}`)
 
-  const senderNonce = await chainProvider.provider.getTransactionCount(
-    chainProvider.config.tssSenderAddress,
+  const opts = getHttpOptionsForChain(targetChainId)
+  await withHttpProviderRetry(
+    opts.httpUrls,
+    async (provider) => {
+      const senderNonce = await provider.getTransactionCount(
+        chainProvider.config.tssSenderAddress,
+      )
+      let currentGasPrice = await provider.getGasPrice()
+
+      // Apply gas price logic based on chain configuration
+      const gasTiers = chainProvider.config.gasConfig.gasPriceTiers
+      for (let i = 0; i < gasTiers.length; i++) {
+        const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
+        if (currentGasPrice.lt(tierGwei)) {
+          currentGasPrice = tierGwei
+          break
+        }
+      }
+
+      const txIdBytes32 = '0x' + txId
+      let data: string
+      if (chainProvider.config.supportsBridgeChainId) {
+        const bridgeInterface = new ethersUtils.Interface([
+          'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
+        ])
+        data = bridgeInterface.encodeFunctionData('bridgeIn', [
+          '0x' + to.slice(0, 40),
+          value,
+          targetChainId,
+          txIdBytes32,
+          bridgeChainId,
+        ])
+      } else {
+        const bridgeInterface = new ethersUtils.Interface([
+          'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+        ])
+        data = bridgeInterface.encodeFunctionData('bridgeIn', [
+          '0x' + to.slice(0, 40),
+          value,
+          targetChainId,
+          txIdBytes32,
+        ])
+      }
+      const tx = {
+        to: chainProvider.config.contractAddress,
+        value: 0,
+        data,
+        nonce: senderNonce,
+        gasLimit: chainProvider.config.gasConfig.gasLimit,
+        gasPrice: currentGasPrice,
+        chainId: targetChainId,
+      }
+      console.log(`eth tx to sign on ${targetChainName}`, tx)
+      const unsignedTx = ethersUtils.serializeTransaction(tx)
+      let digest = ethersUtils.keccak256(unsignedTx)
+
+      let keyShare = await DKG(ourParty, targetChainId)
+      const signedTx = await signEthereumTransaction(keyShare, tx, digest)
+      if (!signedTx) {
+        console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
+        return
+      }
+      const txHash = ethersUtils.keccak256(signedTx as string)
+      console.log(`Injecting ethereum transaction on ${targetChainName}`, txHash)
+      let res: { success: boolean; reason?: string }
+      try {
+        res = await retryOperation(() => injectEthereumTx(txHash, signedTx, provider), {
+          txId: txHash,
+          maxRetries: 3,
+        })
+        console.log(`Ethereum transaction injected on ${targetChainName}`, txHash, res)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : (error as string)
+        console.error(`Failed to inject ethereum transaction on ${targetChainName}: ${txHash}`, reason)
+        res = {success: false, reason}
+      }
+
+      const receipt = await provider.getTransactionReceipt(txHash)
+      if (receipt) {
+        if (receipt.status === 1) {
+          console.log(
+            `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+          )
+          sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+        } else {
+          console.log(
+            `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+          )
+          sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
+        }
+      } else {
+        console.log(
+          `Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+          res.reason,
+        )
+        sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+      }
+    },
+    { ...opts, maxRetries: 3 },
   )
-  let currentGasPrice = await chainProvider.provider.getGasPrice()
-
-  // Apply gas price logic based on chain configuration
-  const gasTiers = chainProvider.config.gasConfig.gasPriceTiers
-  for (let i = 0; i < gasTiers.length; i++) {
-    const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
-    if (currentGasPrice.lt(tierGwei)) {
-      currentGasPrice = tierGwei
-      break
-    }
-  }
-
-  const txIdBytes32 = '0x' + txId
-  let data: string
-  if (chainProvider.config.supportsBridgeChainId) {
-    // New 5-param bridgeIn with explicit sourceChainId
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      '0x' + to.slice(0, 40),
-      value,
-      targetChainId,
-      txIdBytes32,
-      bridgeChainId,
-    ])
-  } else {
-    // Old 4-param bridgeIn for contracts without bridgeChainId support
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      '0x' + to.slice(0, 40),
-      value,
-      targetChainId,
-      txIdBytes32,
-    ])
-  }
-  const tx = {
-    to: chainProvider.config.contractAddress,
-    value: 0,
-    data,
-    nonce: senderNonce,
-    gasLimit: chainProvider.config.gasConfig.gasLimit,
-    gasPrice: currentGasPrice,
-    chainId: targetChainId,
-  }
-  console.log(`eth tx to sign on ${targetChainName}`, tx)
-  const unsignedTx = ethersUtils.serializeTransaction(tx)
-  let digest = ethersUtils.keccak256(unsignedTx)
-
-  // Use chain-specific keystore for signing
-  let keyShare = await DKG(ourParty, targetChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest)
-  if (!signedTx) {
-    console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
-    return
-  }
-  // precompute tx hash from signedTx
-  const txHash = ethersUtils.keccak256(signedTx as string)
-  console.log(`Injecting ethereum transaction on ${targetChainName}`, txHash)
-  let res: { success: boolean; reason?: string }
-  // Retry injection with linear delay progression
-  try {
-    res = await retryOperation(() => injectEthereumTx(txHash, signedTx, chainProvider.provider), {
-      txId: txHash,
-      maxRetries: 3,
-    })
-    console.log(`Ethereum transaction injected on ${targetChainName}`, txHash, res)
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : (error as string)
-    console.error(`Failed to inject ethereum transaction on ${targetChainName}: ${txHash}`, reason)
-    res = {success: false, reason}
-  }
-
-  const receipt = await chainProvider.provider.getTransactionReceipt(txHash)
-  if (receipt) {
-    if (receipt.status === 1) {
-      console.log(
-        `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
-      )
-      // Send tx status to coordinator
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
-    } else {
-      console.log(
-        `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
-      )
-      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
-    }
-  } else {
-    console.log(
-      `Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
-      res.reason,
-    )
-    // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
-  }
 }
 
 async function processTokenToToken(
@@ -1602,108 +1638,108 @@ async function processTokenToToken(
   const destChainName = destChainProvider.config.name
   console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName}`)
 
-  const senderNonce = await destChainProvider.provider.getTransactionCount(
-    destChainProvider.config.tssSenderAddress,
+  const opts = getHttpOptionsForChain(destinationChainId)
+  await withHttpProviderRetry(
+    opts.httpUrls,
+    async (provider) => {
+      const senderNonce = await provider.getTransactionCount(
+        destChainProvider.config.tssSenderAddress,
+      )
+      let currentGasPrice = await provider.getGasPrice()
+
+      const gasTiers = destChainProvider.config.gasConfig.gasPriceTiers
+      for (let i = 0; i < gasTiers.length; i++) {
+        const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
+        if (currentGasPrice.lt(tierGwei)) {
+          currentGasPrice = tierGwei
+          break
+        }
+      }
+
+      const txIdBytes32 = txId
+      let data: string
+      if (destChainProvider.config.supportsBridgeChainId) {
+        const bridgeInterface = new ethersUtils.Interface([
+          'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
+        ])
+        data = bridgeInterface.encodeFunctionData('bridgeIn', [
+          to,
+          value,
+          destinationChainId,
+          txIdBytes32,
+          sourceChainId,
+        ])
+      } else {
+        const bridgeInterface = new ethersUtils.Interface([
+          'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+        ])
+        data = bridgeInterface.encodeFunctionData('bridgeIn', [
+          to,
+          value,
+          destinationChainId,
+          txIdBytes32,
+        ])
+      }
+
+      const tx = {
+        to: destChainProvider.config.contractAddress,
+        value: 0,
+        data,
+        nonce: senderNonce,
+        gasLimit: destChainProvider.config.gasConfig.gasLimit,
+        gasPrice: currentGasPrice,
+        chainId: destChainProvider.config.chainId,
+      }
+      console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
+      const unsignedTx = ethersUtils.serializeTransaction(tx)
+      let digest = ethersUtils.keccak256(unsignedTx)
+
+      let keyShare = await DKG(ourParty, destinationChainId)
+      const signedTx = await signEthereumTransaction(keyShare, tx, digest)
+      if (!signedTx) {
+        console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
+        return
+      }
+      const txHash = ethersUtils.keccak256(signedTx as string)
+      const signerBalance = await provider.getBalance(destChainProvider.config.tssSenderAddress)
+      console.log(`Signer ${destChainProvider.config.tssSenderAddress} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
+      console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
+      let res: { success: boolean; reason?: string }
+      try {
+        res = await retryOperation(() => injectEthereumTx(txHash, signedTx, provider), {
+          txId: txHash,
+          maxRetries: 3,
+        })
+        console.log(`EVM-to-EVM transaction injected on ${destChainName}`, txHash, res)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : (error as string)
+        console.error(`Failed to inject EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
+        res = {success: false, reason}
+      }
+
+      const receipt = await provider.getTransactionReceipt(txHash)
+      if (receipt) {
+        if (receipt.status === 1) {
+          console.log(
+            `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+          )
+          sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+        } else {
+          console.log(
+            `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+          )
+          sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
+        }
+      } else {
+        console.log(
+          `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+          res.reason,
+        )
+        sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+      }
+    },
+    { ...opts, maxRetries: 3 },
   )
-  let currentGasPrice = await destChainProvider.provider.getGasPrice()
-
-  // Apply gas price logic based on destination chain configuration
-  const gasTiers = destChainProvider.config.gasConfig.gasPriceTiers
-  for (let i = 0; i < gasTiers.length; i++) {
-    const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
-    if (currentGasPrice.lt(tierGwei)) {
-      currentGasPrice = tierGwei
-      break
-    }
-  }
-
-  // EVM txId is already 0x-prefixed, use directly as bytes32
-  const txIdBytes32 = txId
-  let data: string
-  if (destChainProvider.config.supportsBridgeChainId) {
-    // New 5-param bridgeIn with explicit sourceChainId
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      to, // Already an Ethereum address from BridgedOut event
-      value,
-      destinationChainId,
-      txIdBytes32,
-      sourceChainId,
-    ])
-  } else {
-    // Old 4-param bridgeIn for contracts without bridgeChainId support
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      to, // Already an Ethereum address
-      value,
-      destinationChainId,
-      txIdBytes32,
-    ])
-  }
-
-  const tx = {
-    to: destChainProvider.config.contractAddress,
-    value: 0,
-    data,
-    nonce: senderNonce,
-    gasLimit: destChainProvider.config.gasConfig.gasLimit,
-    gasPrice: currentGasPrice,
-    chainId: destChainProvider.config.chainId,
-  }
-  console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
-  const unsignedTx = ethersUtils.serializeTransaction(tx)
-  let digest = ethersUtils.keccak256(unsignedTx)
-
-  // Use destination chain's keystore for signing
-  let keyShare = await DKG(ourParty, destinationChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest)
-  if (!signedTx) {
-    console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
-    return
-  }
-  // precompute tx hash from signedTx
-  const txHash = ethersUtils.keccak256(signedTx as string)
-  const signerBalance = await destChainProvider.provider.getBalance(destChainProvider.config.tssSenderAddress)
-  console.log(`Signer ${destChainProvider.config.tssSenderAddress} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
-  console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
-  let res: { success: boolean; reason?: string }
-  // Retry injection with linear delay progression
-  try {
-    res = await retryOperation(() => injectEthereumTx(txHash, signedTx, destChainProvider.provider), {
-      txId: txHash,
-      maxRetries: 3,
-    })
-    console.log(`EVM-to-EVM transaction injected on ${destChainName}`, txHash, res)
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : (error as string)
-    console.error(`Failed to inject EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
-    res = {success: false, reason}
-  }
-
-  const receipt = await destChainProvider.provider.getTransactionReceipt(txHash)
-  if (receipt) {
-    if (receipt.status === 1) {
-      console.log(
-        `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
-      )
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
-    } else {
-      console.log(
-        `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
-      )
-      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
-    }
-  } else {
-    console.log(
-      `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
-      res.reason,
-    )
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
-  }
 }
 
 async function processTokenToCoin(
@@ -2176,11 +2212,19 @@ function reconnectWebSocket(chainId: number) {
       }
     }
 
-    const wsUrl = chainProvider.config.wsUrl.includes('infura.io')
-      ? `${chainProvider.config.wsUrl}${ourInfurKey}`
-      : chainProvider.config.wsUrl
+    const wsUrl =
+      pickRandomWsUrl(chainId) ??
+      (chainProvider.config.wsUrl.includes('infura.io')
+        ? `${chainProvider.config.wsUrl}${ourInfurKey}`
+        : chainProvider.config.wsUrl)
 
-    const newWsProvider = new ethers.providers.WebSocketProvider(wsUrl)
+    const newWsProvider = createWebSocketProvider(wsUrl, chainId, (error) => {
+      // Socket-level error caught (crash prevented); schedule reconnect as fallback
+      setTimeout(() => {
+        console.warn(`⚠️ Reconnecting after socket error for ${chainProvider.config.name}...`)
+        reconnectWebSocket(chainId)
+      }, 3000)
+    })
     chainProvider.wsProvider = newWsProvider
 
     // Attach low-level error/close handlers to trigger further reconnects
@@ -2577,7 +2621,12 @@ async function main(): Promise<void> {
   const savedBlockState = loadBlockState(ourParty.idx)
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
-      const currentBlock = await chainProvider.provider.getBlockNumber()
+      const opts = getHttpOptionsForChain(chainId)
+      const currentBlock = await withHttpProviderRetry(
+        opts.httpUrls,
+        (provider) => provider.getBlockNumber(),
+        { ...opts, maxRetries: 3 },
+      )
       const savedBlock = savedBlockState?.[chainId.toString()]
       if (savedBlock != null && savedBlock < currentBlock) {
         chainProvider.lastCheckedBlockNumber = savedBlock
