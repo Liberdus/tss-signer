@@ -48,6 +48,10 @@ interface ChainProviders {
   config: ChainConfig
   lastCheckedBlockNumber: number
   contract?: ethers.Contract
+  // Vault flag: true only when Liberdus network is disabled and useBridgeVault + vaultContractAddress are set
+  useVault: boolean
+  // Effective contract address to listen to / call (vault or main bridge depending on useVault)
+  bridgeContractAddress: string
   // Bridge contract state (fetched from vault contract when useBridgeVault is enabled)
   bridgeInCooldown: number         // seconds
   maxBridgeInAmount: ethers.BigNumber
@@ -228,11 +232,14 @@ for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains))
     }
   }
 
+  const useVault = !chainConfigs.enableLiberdusNetwork && !!config.useBridgeVault && !!config.vaultContractAddress
   chainProviders.set(chainId, {
     provider,
     wsProvider: wsProvider!,
     config,
     lastCheckedBlockNumber: 0,
+    useVault,
+    bridgeContractAddress: useVault ? config.vaultContractAddress! : config.contractAddress,
     bridgeInCooldown: 0,
     maxBridgeInAmount: ethers.BigNumber.from(0),
     lastBridgeInTime: 0,
@@ -252,9 +259,7 @@ async function fetchBridgeState(chainId: number): Promise<void> {
     'function lastBridgeInTime() view returns (uint256)',
   ])
 
-  // When useBridgeVault is enabled, fetch state from the Vault contract; otherwise from the main bridge contract
-  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
-  const contractAddr = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+  const { useVault, bridgeContractAddress: contractAddr } = chainProvider
   const contractLabel = useVault ? 'vault' : 'bridge'
   try {
     const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
@@ -267,7 +272,18 @@ async function fetchBridgeState(chainId: number): Promise<void> {
     chainProvider.maxBridgeInAmount = iface.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
     chainProvider.lastBridgeInTime = iface.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
 
-    console.log(`Bridge state fetched for chain ${chainId} (${contractLabel}): cooldown=${chainProvider.bridgeInCooldown}s, maxAmount=${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)}, lastBridgeInTime=${chainProvider.lastBridgeInTime}`)
+    const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
+      ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
+      : 'never'
+    const maxAmountStr = chainProvider.maxBridgeInAmount.isZero()
+      ? 'unlimited'
+      : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
+    console.log(
+      `Bridge state fetched for ${chainProvider.config.name} (${contractLabel}): ` +
+      `cooldown=${chainProvider.bridgeInCooldown}s, ` +
+      `maxBridgeInAmount=${maxAmountStr}, ` +
+      `lastBridgeInTime=${lastBridgeInStr}`
+    )
   } catch (error) {
     console.warn(`Failed to fetch bridge state for chain ${chainId} (${contractLabel}):`, error)
   }
@@ -674,9 +690,8 @@ async function validateTokenToCoinTx(
     console.log('Transaction is not successful')
     return false
   }
-  // When useBridgeVault is enabled, validate against the Vault contract; otherwise the main bridge contract
-  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
-  const expectedContract = useVault ? chainProvider.config.vaultContractAddress!.toLowerCase() : chainProvider.config.contractAddress.toLowerCase()
+  const { useVault } = chainProvider
+  const expectedContract = chainProvider.bridgeContractAddress.toLowerCase()
   if (receipt.to?.toLowerCase() !== expectedContract) {
     console.log(`Transaction is not for the ${chainProvider.config.name} ${useVault ? 'vault' : 'bridge'} contract address`)
     return false
@@ -1016,9 +1031,7 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
         const toBlock = newestBlockNumber
         console.log(`[queryFilter] Scanning ${chainName} from block ${fromBlock} to ${toBlock} (${toBlock - fromBlock + 1} blocks)`)
 
-        // When useBridgeVault is enabled, scan only the Vault contract; otherwise the main bridge contract
-        const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
-        const contractAddress = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+        const { useVault, bridgeContractAddress: contractAddress } = chainProvider
         // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
         const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
 
@@ -1514,6 +1527,7 @@ async function processCoinToToken(
   targetChainId: number,
   bridgeChainId: number,
 ): Promise<void> {
+  value = ethers.BigNumber.from(value)
   console.log('Processing coin to token transaction', {
     to,
     value: value.toString(),
@@ -1528,7 +1542,7 @@ async function processCoinToToken(
   }
 
   const targetChainName = chainProvider.config.name
-  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
+  const { useVault } = chainProvider
   const contractLabel = useVault ? 'vault' : 'bridge'
   console.log(`Processing transaction on ${targetChainName} (${contractLabel})`)
 
@@ -1542,11 +1556,19 @@ async function processCoinToToken(
 
   // Wait for bridge-in cooldown if needed
   if (chainProvider.bridgeInCooldown > 0 && chainProvider.lastBridgeInTime > 0) {
-    const now = Math.floor(Date.now() / 1000)
+    // Use the chain's latest block timestamp as "now" to avoid wall-clock drift on local nodes
+    const latestBlock = await chainProvider.provider.getBlock('latest')
+    const now = latestBlock.timestamp
     const cooldownEnd = chainProvider.lastBridgeInTime + chainProvider.bridgeInCooldown
     if (now < cooldownEnd) {
       const waitSec = cooldownEnd - now
-      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName} (${contractLabel})`)
+      console.log(
+        `Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName} (${contractLabel}): ` +
+        `lastBridgeInTime=${new Date(chainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
+        `cooldown=${chainProvider.bridgeInCooldown}s, ` +
+        `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
+        `chainNow=${new Date(now * 1000).toISOString()}`
+      )
       await sleep(waitSec * 1000)
     }
   }
@@ -1592,7 +1614,7 @@ async function processCoinToToken(
       txIdBytes32,
     ])
   }
-  const bridgeInContractAddress = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+  const bridgeInContractAddress = chainProvider.bridgeContractAddress
   const tx = {
     to: bridgeInContractAddress,
     value: 0,
@@ -1667,6 +1689,7 @@ async function processTokenToToken(
   sourceChainId: number,
   destinationChainId: number,
 ): Promise<void> {
+  value = ethers.BigNumber.from(value)
   console.log('Processing token to token (EVM-to-EVM) transaction', {
     to,
     value: value.toString(),
@@ -1688,7 +1711,7 @@ async function processTokenToToken(
 
   const sourceChainName = sourceChainProvider.config.name
   const destChainName = destChainProvider.config.name
-  const useVault = !!destChainProvider.config.useBridgeVault && !!destChainProvider.config.vaultContractAddress
+  const { useVault } = destChainProvider
   const contractLabel = useVault ? 'vault' : 'bridge'
   console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName} (${contractLabel})`)
 
@@ -1702,11 +1725,19 @@ async function processTokenToToken(
 
   // Wait for bridge-in cooldown if needed
   if (destChainProvider.bridgeInCooldown > 0 && destChainProvider.lastBridgeInTime > 0) {
-    const now = Math.floor(Date.now() / 1000)
+    // Use the destination chain's latest block timestamp as "now" to avoid wall-clock drift on local nodes
+    const latestBlock = await destChainProvider.provider.getBlock('latest')
+    const now = latestBlock.timestamp
     const cooldownEnd = destChainProvider.lastBridgeInTime + destChainProvider.bridgeInCooldown
     if (now < cooldownEnd) {
       const waitSec = cooldownEnd - now
-      console.log(`Waiting ${waitSec}s for bridge-in cooldown on ${destChainName} (${contractLabel})`)
+      console.log(
+        `Waiting ${waitSec}s for bridge-in cooldown on ${destChainName} (${contractLabel}): ` +
+        `lastBridgeInTime=${new Date(destChainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
+        `cooldown=${destChainProvider.bridgeInCooldown}s, ` +
+        `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
+        `chainNow=${new Date(now * 1000).toISOString()}`
+      )
       await sleep(waitSec * 1000)
     }
   }
@@ -1754,7 +1785,7 @@ async function processTokenToToken(
     ])
   }
 
-  const bridgeInContractAddress = useVault ? destChainProvider.config.vaultContractAddress! : destChainProvider.config.contractAddress
+  const bridgeInContractAddress = destChainProvider.bridgeContractAddress
   const tx = {
     to: bridgeInContractAddress,
     value: 0,
@@ -2395,9 +2426,7 @@ function subscribeToChainEvents(chainId: number) {
     chainProvider.contract.removeAllListeners('BridgedOut')
   }
 
-  // When useBridgeVault is enabled, listen only to the Vault contract; otherwise the main bridge contract
-  const useVault = !!chainProvider.config.useBridgeVault && !!chainProvider.config.vaultContractAddress
-  const contractAddress = useVault ? chainProvider.config.vaultContractAddress! : chainProvider.config.contractAddress
+  const { useVault, bridgeContractAddress: contractAddress } = chainProvider
   // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
   const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
 
@@ -2572,7 +2601,7 @@ function subscribeEthereumTransactions() {
 
     if (verboseLogs) {
       console.log(`📡 Subscribed to BridgedOut events from ${chainProvider.config.name} via WebSocket`)
-      console.log(`📋 Contract address: ${chainProvider.config.contractAddress}`)
+      console.log(`📋 Contract address: ${chainProvider.bridgeContractAddress}${chainProvider.useVault ? ' (vault)' : ''}`)
       console.log(`🔗 WebSocket URL: ${chainProvider.config.wsUrl}`)
     }
   }
