@@ -5,47 +5,33 @@
       "chainId": 80002,
       "rpcUrl": "https://polygon-amoy.infura.io/v3/",
       "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
-      "contractAddress": "0x4EA46e5dD276eeB5D423465b4aFf646AC3f7bd74",
-      "tssSenderAddress": "0x22443e34ed93D88cAA380f76d8e072998990D221",
+      "contractAddress": "0x5b599Dbd52658a0Bd52BB8f1Ee52c4dB81c9Bf54",
+      "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
       "bridgeAddress": "22443e34ed93d88caa380f76d8e072998990d221000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
       "supportsBridgeChainId": false,
-      "deploymentBlock": 0,
+      "deploymentBlock": 34049083,
       "useBridgeVault": true,
-      "vaultContractAddress": ""
-    },
-    "11155111": {
-      "name": "Ethereum Sepolia",
-      "chainId": 11155111,
-      "rpcUrl": "https://sepolia.infura.io/v3/",
-      "wsUrl": "wss://sepolia.infura.io/ws/v3/",
-      "contractAddress": "0x41f1C8231f369DF894506294841F8836d8320E3c",
-      "tssSenderAddress": "0xa3267d5cdf6087Ed14BB8c8A158622156b4Bdb12",
-      "bridgeAddress": "a3267d5cdf6087ed14bb8c8a158622156b4bdb12000000000000000000000000",
-      "gasConfig": {
-        "gasLimit": 200000,
-        "gasPriceTiers": [10, 20, 30, 40, 50, 60]
-      },
-      "supportsBridgeChainId": false,
-      "deploymentBlock": 0
+      "vaultContractAddress": "0x356e3B2561A2A097EBC362cf85cE9F9166B3D0aE",
+      "vaultDeploymentBlock": 34049182
     },
     "97": {
       "name": "BSC Testnet",
       "chainId": 97,
       "rpcUrl": "https://bsc-testnet.infura.io/v3/",
       "wsUrl": "wss://bsc-testnet.publicnode.com",
-      "contractAddress": "0xCA832C69007f0Abd57164d4244AF2132FB44293D",
-      "tssSenderAddress": "0x79309245d2BEd1cc8EFcA12F3Dbd2e64aB9591c0",
+      "contractAddress": "0xaA8454C65A6d9431d746268F012220c94c717bbc",
+      "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
       "bridgeAddress": "79309245d2bed1cc8efca12f3dbd2e64ab9591c0000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
       "supportsBridgeChainId": true,
-      "deploymentBlock": 0
+      "deploymentBlock": 90883088
     }
   },
   "defaultChain": 80002,
