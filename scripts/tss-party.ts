@@ -29,9 +29,10 @@ interface ChainConfig {
     gasPriceTiers: number[]
   }
   supportsBridgeChainId?: boolean // Whether the contract supports bridgeChainId param in bridgeIn/bridgeOut
-  deploymentBlock?: number // Block number when the contract was deployed (used as starting point for historical scan)
+  deploymentBlock?: number // Block number when the main bridge contract was deployed (used as starting point for historical scan)
   useBridgeVault?: boolean // Whether this chain uses a Vault contract for bridging
   vaultContractAddress?: string // Vault contract address (required when useBridgeVault is true)
+  vaultDeploymentBlock?: number // Block number when the vault contract was deployed (used as starting point when useVault is true)
 }
 
 interface ChainConfigs {
@@ -506,17 +507,30 @@ const loadQueueFromFile = (partyIdx: number): void => {
   }
 }
 
+interface BlockStateFile {
+  vault?: Record<string, number>
+  [chainId: string]: number | Record<string, number> | undefined
+}
+
 const saveBlockState = (partyIdx: number): void => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
-  const state: Record<string, number> = {}
+  const state: BlockStateFile = {}
+  const vaultState: Record<string, number> = {}
   for (const [chainId, cp] of chainProviders.entries()) {
-    state[chainId.toString()] = cp.lastCheckedBlockNumber
+    if (cp.useVault) {
+      vaultState[chainId.toString()] = cp.lastCheckedBlockNumber
+    } else {
+      state[chainId.toString()] = cp.lastCheckedBlockNumber
+    }
+  }
+  if (Object.keys(vaultState).length > 0) {
+    state['vault'] = vaultState
   }
   fs.writeFileSync(filePath, JSON.stringify(state))
 }
 
-const loadBlockState = (partyIdx: number): Record<string, number> | null => {
+const loadBlockState = (partyIdx: number): BlockStateFile | null => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
   if (fs.existsSync(filePath)) {
@@ -2748,17 +2762,22 @@ async function main(): Promise<void> {
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
       const currentBlock = await chainProvider.provider.getBlockNumber()
-      const savedBlock = savedBlockState?.[chainId.toString()]
+      // Vault chains are tracked under the "vault" sub-key; bridge chains at the top level
+      const savedBlock: number | undefined = chainProvider.useVault
+        ? savedBlockState?.vault?.[chainId.toString()]
+        : (savedBlockState?.[chainId.toString()] as number | undefined)
       if (savedBlock != null && savedBlock < currentBlock) {
         chainProvider.lastCheckedBlockNumber = savedBlock
         console.log(`Resuming ${chainProvider.config.name} from saved block ${savedBlock} (current: ${currentBlock})`)
-      } else if (savedBlockState != null) {
+      } else if (savedBlock != null) {
         // Saved state exists but block is at or ahead of current — start at current
         chainProvider.lastCheckedBlockNumber = currentBlock
         console.log(`Starting ${chainProvider.config.name} at current block ${currentBlock}`)
       } else {
-        // No saved state at all — start from contract deployment block (or 0 if not configured)
-        const deploymentBlock = chainProvider.config.deploymentBlock || 0
+        // No saved state for this chain — start from the appropriate deployment block
+        const deploymentBlock = chainProvider.useVault
+          ? (chainProvider.config.vaultDeploymentBlock || chainProvider.config.deploymentBlock || 0)
+          : (chainProvider.config.deploymentBlock || 0)
         chainProvider.lastCheckedBlockNumber = deploymentBlock
         console.log(`No saved block state for ${chainProvider.config.name}, starting from deployment block ${deploymentBlock} (current: ${currentBlock})`)
       }
