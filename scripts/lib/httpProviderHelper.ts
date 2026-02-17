@@ -37,6 +37,8 @@ export function getHttpProviderForChain(
 
 export interface WithRetryOptions extends GetProviderOptions {
   maxRetries?: number
+  /** When true, log the HTTP RPC URL used for the request */
+  logUrl?: boolean
 }
 
 /**
@@ -61,6 +63,10 @@ export async function withHttpProviderRetry<T>(
       fallbackRpcUrl: fallback,
       chainId: options.chainId,
     })
+    if (options.logUrl) {
+      const url = (provider as any).connection?.url ?? (provider as any).connection
+      if (url) console.log(`🔗 HTTP RPC URL: ${url}`)
+    }
     try {
       return await fn(provider)
     } catch (e) {

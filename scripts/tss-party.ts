@@ -218,6 +218,8 @@ for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains))
   let wsProvider: ethers.providers.WebSocketProvider | null = null
   if (!generateKeystore) {
     const wsUrl = pickRandomWsUrl(chainId) ?? (config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl)
+    const displayWsUrl = wsUrl.replace(/\/[a-f0-9-]+$/i, '/…')
+    console.log(`[startup] WS url selected chainId=${chainId} url=${displayWsUrl}`)
     try {
       wsProvider = createWebSocketProvider(wsUrl, chainId, (error) => {
         console.error(`WebSocket connection error for ${config.name} (Chain ID: ${chainId}): ${error.message}`)
@@ -240,6 +242,7 @@ function getHttpOptionsForChain(chainId: number): {
   httpUrls: string[]
   fallbackRpcUrl?: string
   chainId: number
+  logUrl?: boolean
 } {
   const config = chainConfigs.supportedChains[chainId.toString()]
   const fallback = config
@@ -251,6 +254,7 @@ function getHttpOptionsForChain(chainId: number): {
     httpUrls: rpcUrls.getHttpUrls(chainId),
     fallbackRpcUrl: fallback,
     chainId,
+    logUrl: verboseLogs,
   }
 }
 
@@ -2218,6 +2222,9 @@ function reconnectWebSocket(chainId: number) {
         ? `${chainProvider.config.wsUrl}${ourInfurKey}`
         : chainProvider.config.wsUrl)
 
+    const displayWsUrl = wsUrl.replace(/\/[a-f0-9-]+$/i, '/…')
+    console.log(`[reconnectWebSocket] WS url selected chainId=${chainId} url=${displayWsUrl}`)
+
     const newWsProvider = createWebSocketProvider(wsUrl, chainId, (error) => {
       // Socket-level error caught (crash prevented); schedule reconnect as fallback
       setTimeout(() => {
@@ -2476,7 +2483,6 @@ function subscribeEthereumTransactions() {
     if (verboseLogs) {
       console.log(`📡 Subscribed to BridgedOut events from ${chainProvider.config.name} via WebSocket`)
       console.log(`📋 Contract address: ${chainProvider.config.contractAddress}`)
-      console.log(`🔗 WebSocket URL: ${chainProvider.config.wsUrl}`)
     }
   }
 }
