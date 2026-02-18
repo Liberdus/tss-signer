@@ -14,10 +14,10 @@
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
       "supportsBridgeChainId": false,
-      "deploymentBlock": 34049083,
+      "deploymentBlock": 34134604,
       "useBridgeVault": true,
       "vaultContractAddress": "0x72F14632718FC4CFD016F744ACAf276230eB3080",
-      "vaultDeploymentBlock": 34049182
+      "vaultDeploymentBlock": 34134630
     },
     "97": {
       "name": "BSC Testnet",
@@ -32,7 +32,7 @@
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
       "supportsBridgeChainId": true,
-      "deploymentBlock": 90883088
+      "deploymentBlock": 91072449
     }
   },
   "defaultChain": 80002,
