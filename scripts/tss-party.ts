@@ -198,8 +198,7 @@ const infuraKeys = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'),
 )
 
-const coordinatorUrl =
-  chainConfigs.coordinatorUrl || process.env.COORDINATOR_URL || 'http://127.0.0.1:8000'
+const coordinatorUrl = process.env.COORDINATOR_URL || chainConfigs.coordinatorUrl;
 const collectorHost = 'http://127.0.0.1:6001'
 const proxyServerHost = 'https://dev.liberdus.com:3030'
 
