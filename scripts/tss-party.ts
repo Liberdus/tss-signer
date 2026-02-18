@@ -37,6 +37,7 @@ interface ChainConfigs {
   secondaryChainConfig?: ChainConfig // Vault destination chain config (used when enableLiberdusNetwork=false)
   enableLiberdusNetwork: boolean
   liberdusNetworkId: string
+  coordinatorUrl?: string // Coordinator server URL (default: http://127.0.0.1:8000)
 }
 
 interface ChainProviders {
@@ -197,7 +198,8 @@ const infuraKeys = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'),
 )
 
-const coordinatorUrl = 'http://127.0.0.1:8000'
+const coordinatorUrl =
+  chainConfigs.coordinatorUrl || process.env.COORDINATOR_URL || 'http://127.0.0.1:8000'
 const collectorHost = 'http://127.0.0.1:6001'
 const proxyServerHost = 'https://dev.liberdus.com:3030'
 
