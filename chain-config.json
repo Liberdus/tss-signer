@@ -1,4 +1,5 @@
 {
+  "coordinatorUrl": "http://127.0.0.1:8000",
   "vaultChain": {
     "name": "Polygon Amoy Testnet",
     "chainId": 80002,
