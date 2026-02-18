@@ -15,6 +15,7 @@
     "build_node": "wasm-pack build --target nodejs --release",
     "test": "wasm-pack test --node",
     "compile-tss": "tsc scripts/tss-party.ts --target ES2020 --module CommonJS --outDir dist --esModuleInterop --skipLibCheck --moduleResolution node --resolveJsonModule --allowJs --strict false --downlevelIteration",
+    "tss-party": "npm run compile-tss && node dist/tss-party.js",
     "start-tss": "pm2 start ecosystem.config.js",
     "stop-tss": "pm2 stop ecosystem.config.js",
     "restart-tss": "pm2 restart ecosystem.config.js",
