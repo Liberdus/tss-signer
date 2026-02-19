@@ -6,7 +6,7 @@ import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
 import * as rpcUrls from './lib/rpcUrls'
-import {withHttpProviderRetry} from './lib/httpProviderHelper'
+import {withCachedHttpProvider, invalidateCachedProvider} from './lib/httpProviderHelper'
 import {createWebSocketProvider} from './lib/wsProviderHelper'
 
 const {BigNumber, utils: ethersUtils, providers} = ethers
@@ -291,7 +291,8 @@ async function fetchBridgeState(chainId: number): Promise<void> {
   const contractLabel = useVault ? 'vault' : 'bridge'
   const opts = getHttpOptionsForChain(chainId)
   try {
-    const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await withHttpProviderRetry(
+    const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await withCachedHttpProvider(
+      chainId,
       opts.httpUrls,
       (provider) => Promise.all([
         provider.call({ to: contractAddr, data: iface.encodeFunctionData('bridgeInCooldown') }),
@@ -719,7 +720,8 @@ async function validateTokenToCoinTx(
   }
 
   const opts = getHttpOptionsForChain(targetChainId)
-  const receipt = await withHttpProviderRetry(
+  const receipt = await withCachedHttpProvider(
+    targetChainId,
     opts.httpUrls,
     (provider) => provider.getTransactionReceipt(tx.hash),
     { ...opts, maxRetries: 3 },
@@ -940,7 +942,8 @@ async function monitorEthereumTransactions(): Promise<void> {
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
       const opts = getHttpOptionsForChain(chainId)
-      await withHttpProviderRetry(
+      await withCachedHttpProvider(
+        chainId,
         opts.httpUrls,
         async (provider) => {
           console.log(
@@ -1074,7 +1077,8 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
     for (const [chainId, chainProvider] of chainProviders.entries()) {
       try {
         const opts = getHttpOptionsForChain(chainId)
-        await withHttpProviderRetry(
+        await withCachedHttpProvider(
+          chainId,
           opts.httpUrls,
           async (provider) => {
         const chainName = chainProvider.config.name
@@ -1144,8 +1148,9 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
                 await delay_ms(retryDelay)
                 continue // Retry same cursor after delay
               }
-              // Exhausted retries — stop processing this chain for now and let the next scheduler interval resume
+              // Exhausted retries — invalidate cached provider so next run tries a different URL
               console.error(`[queryFilter] Rate limit retries exhausted for ${chainName} at block ${cursor}, will resume next interval`)
+              invalidateCachedProvider(chainId)
               break
             }
             throw error // Re-throw non-limit errors
@@ -1615,7 +1620,8 @@ async function processCoinToToken(
   }
 
   const opts = getHttpOptionsForChain(targetChainId)
-  await withHttpProviderRetry(
+  await withCachedHttpProvider(
+    targetChainId,
     opts.httpUrls,
     async (provider) => {
   // Wait for bridge-in cooldown if needed
@@ -1791,7 +1797,8 @@ async function processTokenToToken(
   }
 
   const opts = getHttpOptionsForChain(destinationChainId)
-  await withHttpProviderRetry(
+  await withCachedHttpProvider(
+    destinationChainId,
     opts.httpUrls,
     async (provider) => {
   // Wait for bridge-in cooldown if needed
@@ -2101,7 +2108,9 @@ async function sleep(ms: number): Promise<void> {
 function logMemoryUsage() {
   const usage = process.memoryUsage()
   const formatMB = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`
-  
+  const heapUsedMB = usage.heapUsed / 1024 / 1024
+  const rssMB = usage.rss / 1024 / 1024
+
   console.log('📊 Memory Usage:', {
     rss: formatMB(usage.rss),
     heapTotal: formatMB(usage.heapTotal),
@@ -2112,18 +2121,12 @@ function logMemoryUsage() {
     txQueueLength: txQueue.length,
     recentlyCompletedSize: recentlyCompletedTxs.size
   })
-  
-  // More aggressive memory management thresholds
-  const heapUsedMB = usage.heapUsed / 1024 / 1024
-  const rssMB = usage.rss / 1024 / 1024
-  
-  // Force garbage collection if memory usage is high (lower thresholds)
-  if (heapUsedMB > 40 && global.gc) { // Reduced from 50MB to 40MB
+
+  // Force garbage collection if memory usage is high
+  if (heapUsedMB > 40 && global.gc) {
     console.log('⚠️ High heap usage detected, forcing garbage collection')
     const beforeGC = usage.heapUsed
     global.gc()
-    
-    // Log memory after GC
     const afterGC = process.memoryUsage()
     const freedMB = Math.round((beforeGC - afterGC.heapUsed) / 1024 / 1024)
     console.log('🗑️ Memory after GC:', {
@@ -2131,9 +2134,9 @@ function logMemoryUsage() {
       freed: `${freedMB} MB`
     })
   }
-  
+
   // Monitor RSS memory growth (resident set size - actual memory usage)
-  if (rssMB > 120) { // Alert if RSS exceeds 120MB
+  if (rssMB > 120) {
     console.warn(`⚠️ High RSS memory usage: ${formatMB(usage.rss)}. Triggering aggressive cleanup.`)
     cleanupOldTransactions()
     if (global.gc) {
@@ -2829,7 +2832,8 @@ async function main(): Promise<void> {
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
       const opts = getHttpOptionsForChain(chainId)
-      const currentBlock = await withHttpProviderRetry(
+      const currentBlock = await withCachedHttpProvider(
+        chainId,
         opts.httpUrls,
         (provider) => provider.getBlockNumber(),
         { ...opts, maxRetries: 3 },
@@ -2967,7 +2971,6 @@ async function main(): Promise<void> {
         timestamp: Date.now(), // Add timestamp for cleanup
       })
       console.log('Transaction processed successfully:', validTx)
-      
       // Mark transaction as completed to prevent duplicate processing
       markTransactionCompleted(validTx.txId)
       

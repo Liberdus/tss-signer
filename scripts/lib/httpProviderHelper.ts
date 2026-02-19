@@ -80,3 +80,75 @@ export async function withHttpProviderRetry<T>(
   }
   throw lastError
 }
+
+/** Per-chain cache: create a new provider only when the cached one fails or doesn't respond. */
+const providerCache = new Map<
+  number,
+  { provider: ethers.providers.JsonRpcProvider; url: string }
+>()
+
+/** Invalidate the cached HTTP provider for a chain. Next use will create a new provider (possibly different URL). Call when rate limited so the next run tries another endpoint. */
+export function invalidateCachedProvider(chainId: number): void {
+  providerCache.delete(chainId)
+}
+
+export interface WithCachedRetryOptions extends WithRetryOptions {
+  /** When true, log when we create a new provider or invalidate cache */
+  logCache?: boolean
+}
+
+/**
+ * Run fn(provider) using a cached HTTP provider per chainId. A new provider is created only when:
+ * - there is no cached provider for this chain, or
+ * - the previous call with the cached provider failed (timeout, error, no response).
+ * On failure we clear the cache for this chain and retry with a new provider (possibly different URL).
+ */
+export async function withCachedHttpProvider<T>(
+  chainId: number,
+  httpUrls: string[],
+  fn: (provider: ethers.providers.JsonRpcProvider) => Promise<T>,
+  options: WithCachedRetryOptions = {},
+): Promise<T> {
+  const maxRetries = Math.max(1, options.maxRetries ?? 3)
+  const fallback = options.fallbackRpcUrl
+  const urls = httpUrls.length > 0 ? httpUrls : fallback ? [fallback] : []
+  const logCache = options.logCache === true
+
+  if (urls.length === 0) {
+    throw new Error('No HTTP RPC URLs available for withCachedHttpProvider')
+  }
+
+  let lastError: unknown
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    let entry = providerCache.get(chainId)
+    if (!entry) {
+      const provider = getHttpProviderForChain(urls, {
+        fallbackRpcUrl: fallback,
+        chainId,
+      })
+      const url =
+        (provider as any).connection?.url ?? (provider as any).connection ?? ''
+      entry = { provider, url }
+      providerCache.set(chainId, entry)
+      if (logCache) console.log(`🔗 [cache] New HTTP provider for chain ${chainId}: ${url}`)
+    }
+    if (options.logUrl && !logCache) {
+      if (entry.url) console.log(`🔗 HTTP RPC URL: ${entry.url}`)
+    }
+    try {
+      const result = await fn(entry.provider)
+      return result
+    } catch (e) {
+      lastError = e
+      providerCache.delete(chainId)
+      if (logCache) {
+        console.warn(`🔗 [cache] Invalidated HTTP provider for chain ${chainId} after error:`, (e as Error)?.message ?? e)
+      }
+      if (attempt < maxRetries - 1) {
+        continue
+      }
+      throw lastError
+    }
+  }
+  throw lastError
+}
