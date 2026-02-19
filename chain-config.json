@@ -1,4 +1,32 @@
 {
+  "vaultChain": {
+    "name": "Polygon Amoy Testnet",
+    "chainId": 80002,
+    "rpcUrl": "https://polygon-amoy.infura.io/v3/",
+    "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
+    "contractAddress": "0x356e3B2561A2A097EBC362cf85cE9F9166B3D0aE",
+    "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
+    "bridgeAddress": "22443e34ed93d88caa380f76d8e072998990d221000000000000000000000000",
+    "gasConfig": {
+      "gasLimit": 200000,
+      "gasPriceTiers": [50, 100, 150, 200, 250, 300]
+    },
+    "deploymentBlock": 34049182
+  },
+  "secondaryChainConfig": {
+    "name": "BSC Testnet",
+    "chainId": 97,
+    "rpcUrl": "https://bsc-testnet.infura.io/v3/",
+    "wsUrl": "wss://bsc-testnet.publicnode.com",
+    "contractAddress": "0xaA8454C65A6d9431d746268F012220c94c717bbc",
+    "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
+    "bridgeAddress": "79309245d2bed1cc8efca12f3dbd2e64ab9591c0000000000000000000000000",
+    "gasConfig": {
+      "gasLimit": 200000,
+      "gasPriceTiers": [5, 10, 15, 20, 25, 30]
+    },
+    "deploymentBlock": 90883088
+  },
   "supportedChains": {
     "80002": {
       "name": "Polygon Amoy Testnet",
@@ -12,11 +40,7 @@
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
-      "supportsBridgeChainId": false,
-      "deploymentBlock": 34049083,
-      "useBridgeVault": true,
-      "vaultContractAddress": "0x356e3B2561A2A097EBC362cf85cE9F9166B3D0aE",
-      "vaultDeploymentBlock": 34049182
+      "deploymentBlock": 34049083
     },
     "97": {
       "name": "BSC Testnet",
@@ -30,12 +54,9 @@
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "supportsBridgeChainId": true,
       "deploymentBlock": 90883088
     }
   },
-  "defaultChain": 80002,
-  "secondaryChain": 97,
   "enableLiberdusNetwork": false,
   "liberdusNetworkId": "7440f5161ffc77eed9ee91d6fbb406083192d1fe4d7e64b2f0814c0e067dcab4"
 }

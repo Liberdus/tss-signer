@@ -55,7 +55,6 @@ interface TxStatusData
     | "type"
     | "txTimestamp"
     | "chainId"
-    | "bridgeChainId"
     | "createdAt"
     | "updatedAt"
   > {
@@ -225,7 +224,6 @@ app.post(
         txTimestamp,
         receiptId,
         chainId,
-        bridgeChainId,
         status,
         party,
       } = req.body;
@@ -240,7 +238,6 @@ app.post(
         !txTimestamp ||
         receiptId !== "" ||
         !chainId || // [TODO] Add proper chainId validation
-        bridgeChainId === undefined || bridgeChainId === null ||
         !TransactionDB.isTransactionStatus(status) ||
         !party
       ) {
@@ -265,7 +262,6 @@ app.post(
             txTimestamp,
             receiptId: receiptId.toLowerCase(),
             chainId,
-            bridgeChainId,
             status,
           },
           timestamp: Date.now(),
