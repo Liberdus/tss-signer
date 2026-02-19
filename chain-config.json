@@ -5,28 +5,28 @@
     "chainId": 80002,
     "rpcUrl": "https://polygon-amoy.infura.io/v3/",
     "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
-    "contractAddress": "0x356e3B2561A2A097EBC362cf85cE9F9166B3D0aE",
+    "contractAddress": "0x1469f20C91da50BF9Cc82d7cFB9A8D9EF1dEe86a",
     "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
     "bridgeAddress": "22443e34ed93d88caa380f76d8e072998990d221000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [50, 100, 150, 200, 250, 300]
     },
-    "deploymentBlock": 34049182
+    "deploymentBlock": 34186958
   },
   "secondaryChainConfig": {
     "name": "BSC Testnet",
     "chainId": 97,
     "rpcUrl": "https://bsc-testnet.infura.io/v3/",
     "wsUrl": "wss://bsc-testnet.publicnode.com",
-    "contractAddress": "0xaA8454C65A6d9431d746268F012220c94c717bbc",
+    "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
     "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
     "bridgeAddress": "79309245d2bed1cc8efca12f3dbd2e64ab9591c0000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [5, 10, 15, 20, 25, 30]
     },
-    "deploymentBlock": 90883088
+    "deploymentBlock": 91260194
   },
   "supportedChains": {
     "80002": {
@@ -48,14 +48,14 @@
       "chainId": 97,
       "rpcUrl": "https://bsc-testnet.infura.io/v3/",
       "wsUrl": "wss://bsc-testnet.publicnode.com",
-      "contractAddress": "0x909f519083594eCf3DD1f7Fbe09e08bB0343BD84",
+      "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
       "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
       "bridgeAddress": "79309245d2bed1cc8efca12f3dbd2e64ab9591c0000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "deploymentBlock": 91072449
+      "deploymentBlock": 91260194
     }
   },
   "enableLiberdusNetwork": false,
