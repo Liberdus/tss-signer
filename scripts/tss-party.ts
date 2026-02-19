@@ -28,17 +28,13 @@ interface ChainConfig {
     gasLimit: number
     gasPriceTiers: number[]
   }
-  supportsBridgeChainId?: boolean // Whether the contract supports bridgeChainId param in bridgeIn/bridgeOut
-  deploymentBlock?: number // Block number when the main bridge contract was deployed (used as starting point for historical scan)
-  useBridgeVault?: boolean // Whether this chain uses a Vault contract for bridging
-  vaultContractAddress?: string // Vault contract address (required when useBridgeVault is true)
-  vaultDeploymentBlock?: number // Block number when the vault contract was deployed (used as starting point when useVault is true)
+  deploymentBlock?: number // Block number when the contract was deployed (used as starting point for historical scan)
 }
 
 interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
-  defaultChain: number
-  secondaryChain: number // While the Liberdus Mainnet is not live, the default chainId to be bridged to
+  vaultChain?: ChainConfig      // Vault source chain config (used when enableLiberdusNetwork=false)
+  secondaryChainConfig?: ChainConfig // Vault destination chain config (used when enableLiberdusNetwork=false)
   enableLiberdusNetwork: boolean
   liberdusNetworkId: string
 }
@@ -49,11 +45,7 @@ interface ChainProviders {
   config: ChainConfig
   lastCheckedBlockNumber: number
   contract?: ethers.Contract
-  // Vault flag: true only when Liberdus network is disabled and useBridgeVault + vaultContractAddress are set
-  useVault: boolean
-  // Effective contract address to listen to / call (vault or main bridge depending on useVault)
-  bridgeContractAddress: string
-  // Bridge contract state (fetched from vault contract when useBridgeVault is enabled)
+  // Bridge contract state (cooldown, max amount, last bridge-in time)
   bridgeInCooldown: number         // seconds
   maxBridgeInAmount: ethers.BigNumber
   lastBridgeInTime: number         // unix timestamp in seconds
@@ -64,9 +56,8 @@ interface TransactionQueueItem {
   from: string
   value: ethers.BigNumber | bigint
   txId: string
-  type: 'tokenToCoin' | 'coinToToken' | 'tokenToToken'
+  type: 'tokenToCoin' | 'coinToToken' | 'vaultBridge'
   chainId: number // Add chainId to track which chain this transaction belongs to
-  bridgeChainId: number // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
 }
 
 interface TxQueueMapValue {
@@ -75,7 +66,6 @@ interface TxQueueMapValue {
   value: ethers.BigNumber | bigint
   txId: string
   chainId?: number // Add chainId to track which chain this transaction belongs to
-  bridgeChainId?: number // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
   timestamp?: number // Add timestamp for cleanup purposes
   [key: string]: any
 }
@@ -92,7 +82,6 @@ interface BridgeOutEvent {
   amount: ethers.BigNumber
   targetAddress: string
   chainId: number
-  bridgeChainId: number // destinationChainId from BridgedOut event (Default: LIBERDUS_CHAIN_ID)
   txId: string
 }
 
@@ -128,7 +117,6 @@ export interface Transaction {
   type: TransactionType
   txTimestamp: number
   chainId: number
-  bridgeChainId: number // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
   status: TransactionStatus
   receiptId: string;
   reason?: string | null; // Optional field for error reason
@@ -138,7 +126,7 @@ export interface Transaction {
 
 // Transaction data sent to the coordinator
 interface TxData extends Omit<Transaction, 'createdAt' | 'updatedAt' | 'reason'> {
-  party: number; 
+  party: number;
 }
 
 interface TxStatusData
@@ -149,7 +137,6 @@ interface TxStatusData
     | "type"
     | "txTimestamp"
     | "chainId"
-    | "bridgeChainId"
     | "createdAt"
     | "updatedAt"
   > {
@@ -164,9 +151,9 @@ export enum TransactionStatus {
 }
 
 export enum TransactionType {
-  BRIDGE_IN = 0, // COIN to TOKEN
-  BRIDGE_OUT = 1, // TOKEN to COIN
-  BRIDGE_CROSS = 2, // TOKEN to TOKEN (EVM cross-chain)
+  BRIDGE_IN = 0,    // COIN to TOKEN (Liberdus → EVM)
+  BRIDGE_OUT = 1,   // TOKEN to COIN (EVM → Liberdus)
+  BRIDGE_VAULT = 2, // VAULT to SECONDARY (vault chain → secondary EVM chain)
 }
 
 const parsedIdx = process.argv[2]
@@ -188,11 +175,23 @@ let chainConfigs: ChainConfigs = loadChainConfigs()
 let t = params.threshold
 let n = params.parties
 
-// Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
-const LIBERDUS_CHAIN_ID = 0
+// Unified BridgedOut event ABI (all contracts use this 5-param signature)
+const BRIDGE_OUT_EVENT_ABI = 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)'
 
-// Default chain ID to use if not specified (e.g LIBERDUS_CHAIN_ID or another supported chain)
-const DEFAULT_CHAIN_ID = chainConfigs.enableLiberdusNetwork ? LIBERDUS_CHAIN_ID : chainConfigs.secondaryChain
+/** Returns chain IDs active in the current mode (vault mode or Liberdus mode) */
+function getEffectiveChainIds(): number[] {
+  if (chainConfigs.enableLiberdusNetwork) {
+    return Object.keys(chainConfigs.supportedChains).map(Number)
+  }
+  return [chainConfigs.vaultChain!.chainId, chainConfigs.secondaryChainConfig!.chainId]
+}
+
+/** Looks up a ChainConfig by chainId across vaultChain, secondaryChainConfig, and supportedChains */
+function getChainConfigById(chainId: number): ChainConfig | undefined {
+  if (chainConfigs.vaultChain?.chainId === chainId) return chainConfigs.vaultChain
+  if (chainConfigs.secondaryChainConfig?.chainId === chainId) return chainConfigs.secondaryChainConfig
+  return chainConfigs.supportedChains[chainId.toString()]
+}
 
 const infuraKeys = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'),
@@ -211,9 +210,13 @@ const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1]
 // Initialize providers for all supported chains
 const chainProviders: Map<number, ChainProviders> = new Map()
 
-// Setup providers for each supported chain
-for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains)) {
-  const chainId = parseInt(chainIdStr)
+// In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
+const chainsToInit: ChainConfig[] = chainConfigs.enableLiberdusNetwork
+  ? Object.values(chainConfigs.supportedChains)
+  : [chainConfigs.vaultChain!, chainConfigs.secondaryChainConfig!]
+
+for (const config of chainsToInit) {
+  const chainId = config.chainId
   const rpcUrl = config.rpcUrl.includes('infura.io')
     ? `${config.rpcUrl}${ourInfurKey}`
     : config.rpcUrl
@@ -233,14 +236,11 @@ for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains))
     }
   }
 
-  const useVault = !chainConfigs.enableLiberdusNetwork && !!config.useBridgeVault && !!config.vaultContractAddress
   chainProviders.set(chainId, {
     provider,
     wsProvider: wsProvider!,
     config,
     lastCheckedBlockNumber: 0,
-    useVault,
-    bridgeContractAddress: useVault ? config.vaultContractAddress! : config.contractAddress,
     bridgeInCooldown: 0,
     maxBridgeInAmount: ethers.BigNumber.from(0),
     lastBridgeInTime: 0,
@@ -260,8 +260,7 @@ async function fetchBridgeState(chainId: number): Promise<void> {
     'function lastBridgeInTime() view returns (uint256)',
   ])
 
-  const { useVault, bridgeContractAddress: contractAddr } = chainProvider
-  const contractLabel = useVault ? 'vault' : 'bridge'
+  const contractAddr = chainProvider.config.contractAddress
   try {
     const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
       chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('bridgeInCooldown') }),
@@ -280,26 +279,25 @@ async function fetchBridgeState(chainId: number): Promise<void> {
       ? 'unlimited'
       : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
     console.log(
-      `Bridge state fetched for ${chainProvider.config.name} (${contractLabel}): ` +
+      `Bridge state fetched for ${chainProvider.config.name}: ` +
       `cooldown=${chainProvider.bridgeInCooldown}s, ` +
       `maxBridgeInAmount=${maxAmountStr}, ` +
       `lastBridgeInTime=${lastBridgeInStr}`
     )
   } catch (error) {
-    console.warn(`Failed to fetch bridge state for chain ${chainId} (${contractLabel}):`, error)
+    console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
   }
 }
 
-// Fetch bridge state for all chains on startup
-for (const [chainIdStr] of Object.entries(chainConfigs.supportedChains)) {
-  fetchBridgeState(parseInt(chainIdStr)).catch((err) =>
-    console.warn(`Failed to fetch bridge state for chain ${chainIdStr}:`, err)
+// Fetch bridge state for all chains on startup (skip vault source chain — we only call bridgeIn on the destination)
+for (const [chainId] of chainProviders.entries()) {
+  if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.vaultChain!.chainId) continue
+  console.log(`Fetching bridge state for chain ${chainId}`)
+  fetchBridgeState(chainId).catch((err) =>
+    console.warn(`Failed to fetch bridge state for chain ${chainId}:`, err)
   )
 }
 
-// Legacy variables for backward compatibility (using default chain)
-const defaultChainProvider = chainProviders.get(chainConfigs.defaultChain)!
-const provider = defaultChainProvider.provider
 let lastCheckedTimestamp = serverStartTime
 
 const cryptoInitKey = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc'
@@ -425,8 +423,7 @@ const getAvailableChainKeystores = (partyIdx: number): number[] => {
   const chainIds: number[] = []
 
   // Check for chain-specific keystores
-  for (const chainIdStr of Object.keys(chainConfigs.supportedChains)) {
-    const chainId = parseInt(chainIdStr)
+  for (const chainId of getEffectiveChainIds()) {
     if (keystoreExists(partyIdx, chainId)) {
       chainIds.push(chainId)
     }
@@ -439,8 +436,7 @@ const getAvailableChainKeystores = (partyIdx: number): number[] => {
 const ensureChainKeystores = async (partyIdx: number): Promise<Map<number, string>> => {
   const keystores = new Map<number, string>()
 
-  for (const chainIdStr of Object.keys(chainConfigs.supportedChains)) {
-    const chainId = parseInt(chainIdStr)
+  for (const chainId of getEffectiveChainIds()) {
 
     if (keystoreExists(partyIdx, chainId)) {
       // Load existing keystore
@@ -508,24 +504,15 @@ const loadQueueFromFile = (partyIdx: number): void => {
 }
 
 interface BlockStateFile {
-  vault?: Record<string, number>
-  [chainId: string]: number | Record<string, number> | undefined
+  [chainId: string]: number | undefined
 }
 
 const saveBlockState = (partyIdx: number): void => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
   const state: BlockStateFile = {}
-  const vaultState: Record<string, number> = {}
   for (const [chainId, cp] of chainProviders.entries()) {
-    if (cp.useVault) {
-      vaultState[chainId.toString()] = cp.lastCheckedBlockNumber
-    } else {
-      state[chainId.toString()] = cp.lastCheckedBlockNumber
-    }
-  }
-  if (Object.keys(vaultState).length > 0) {
-    state['vault'] = vaultState
+    state[chainId.toString()] = cp.lastCheckedBlockNumber
   }
   fs.writeFileSync(filePath, JSON.stringify(state))
 }
@@ -635,7 +622,7 @@ const generatePublicKeyFile = (partyIdx: number, chainId: number): void => {
   try {
     const keystore = getKeystoreForChain(partyIdx, chainId)
     const { publicKey, address } = extractPublicKeyFromKeystore(keystore)
-    const chainConfig = chainConfigs.supportedChains[chainId.toString()]
+    const chainConfig = getChainConfigById(chainId)
     const chainName = chainConfig?.name || `Chain ${chainId}`
     
     const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}_chain_${chainId}.json`)
@@ -704,20 +691,13 @@ async function validateTokenToCoinTx(
     console.log('Transaction is not successful')
     return false
   }
-  const { useVault } = chainProvider
-  const expectedContract = chainProvider.bridgeContractAddress.toLowerCase()
+  const expectedContract = chainProvider.config.contractAddress.toLowerCase()
   if (receipt.to?.toLowerCase() !== expectedContract) {
-    console.log(`Transaction is not for the ${chainProvider.config.name} ${useVault ? 'vault' : 'bridge'} contract address`)
+    console.log(`Transaction is not for the ${chainProvider.config.name} bridge contract address`)
     return false
   }
 
-  // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
-  const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
-  const bridgeInterface = new ethersUtils.Interface([
-    hasDestChainId
-      ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
-      : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
-  ])
+  const bridgeInterface = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
 
   const bridgeOutLog = receipt.logs.find((log: any) => {
     try {
@@ -739,41 +719,26 @@ async function validateTokenToCoinTx(
   const amount = parsedLog.args.amount
   const targetAddress = parsedLog.args.targetAddress
   const parsedChainId = parsedLog.args.chainId.toNumber()
-  let bridgeChainId = parsedLog.args.destinationChainId
-    ? parsedLog.args.destinationChainId.toNumber()
-    : LIBERDUS_CHAIN_ID
-  // If Liberdus Network is not enabled, we bridge to the default chain
-  if (!chainConfigs.enableLiberdusNetwork && bridgeChainId === LIBERDUS_CHAIN_ID) {
-    bridgeChainId = DEFAULT_CHAIN_ID
-  }
-  console.log('BridgedOut event data:', {
-    from,
-    amount: amount.toString(),
-    targetAddress,
-    chainId: parsedChainId,
-    bridgeChainId,
-  })
 
-  // Validate that the chainId in the event matches Liberdus chain (should be a special chainId for Liberdus)
-  // For now, we accept any valid chainId that's not the current EVM chain
+  console.log('BridgedOut event data:', { from, amount: amount.toString(), targetAddress, chainId: parsedChainId })
+
   if (parsedChainId === targetChainId) {
     console.log('Transaction is trying to bridge to the same chain')
     return false
   }
 
   return {
-    from: from,
-    targetAddress: targetAddress,
-    amount: amount,
+    from,
+    targetAddress,
+    amount,
     chainId: parsedChainId,
-    bridgeChainId,
     txId: receipt.transactionHash,
   }
 }
 
 function validateCoinToTokenTx(
   receipt: any,
-): { from: string; value: ethers.BigNumber; txId: string; targetChainId: number; bridgeChainId: number } | false {
+): { from: string; value: ethers.BigNumber; txId: string; targetChainId: number } | false {
   console.log('receipt', receipt)
   const {success, to, from, additionalInfo, type, txId, timestamp} = receipt.data
 
@@ -812,7 +777,7 @@ function validateCoinToTokenTx(
     console.log('Transaction value is less than 1 LIB')
     return false
   }
-  return {from, value: transferAmountInBigInt, txId, targetChainId, bridgeChainId: LIBERDUS_CHAIN_ID}
+  return {from, value: transferAmountInBigInt, txId, targetChainId}
 }
 
 async function keygen(m: any, delay: number, operationId?: string): Promise<string> {
@@ -952,25 +917,9 @@ async function monitorEthereumTransactions(): Promise<void> {
         for (const validTx of validTransactions) {
           if (txQueueMap.has(validTx.txId)) continue
 
-          // Determine bridge type based on bridgeChainId
-          let bridgeType: TransactionQueueItem['type'] = 'tokenToCoin'
-          let effectiveBridgeChainId = validTx.bridgeChainId
-          if (validTx.bridgeChainId !== LIBERDUS_CHAIN_ID) {
-            const destChainConfig = chainConfigs.supportedChains[validTx.bridgeChainId.toString()]
-            if (destChainConfig) {
-              bridgeType = 'tokenToToken'
-              console.log(
-                `Bridge routing: EVM-to-EVM from ${chainProvider.config.name} (${chainId}) to ${destChainConfig.name} (${validTx.bridgeChainId})`,
-              )
-            } else {
-              // Unsupported destination chain, inject back to source chain
-              bridgeType = 'tokenToToken'
-              effectiveBridgeChainId = chainId
-              console.log(
-                `Bridge routing: bridgeChainId ${validTx.bridgeChainId} is not a supported chain, injecting back to source chain ${chainProvider.config.name} (${chainId})`,
-              )
-            }
-          }
+          // In vault mode, events on vaultChain → vaultBridge; in Liberdus mode → tokenToCoin
+          const bridgeType: TransactionQueueItem['type'] =
+            !chainConfigs.enableLiberdusNetwork ? 'vaultBridge' : 'tokenToCoin'
 
           const txData: TransactionQueueItem = {
             receipt: validTx,
@@ -979,7 +928,6 @@ async function monitorEthereumTransactions(): Promise<void> {
             txId: validTx.txId,
             type: bridgeType,
             chainId: chainId,
-            bridgeChainId: effectiveBridgeChainId,
           }
           txQueue.push(txData)
           txQueueMap.set(validTx.txId, {
@@ -988,7 +936,6 @@ async function monitorEthereumTransactions(): Promise<void> {
             value: validTx.amount,
             txId: validTx.txId,
             chainId: chainId,
-            bridgeChainId: effectiveBridgeChainId,
             timestamp: Date.now(), // Add timestamp for cleanup
           })
           saveQueueToFile(ourParty.idx)
@@ -1032,6 +979,9 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
 
   try {
     for (const [chainId, chainProvider] of chainProviders.entries()) {
+      // In vault mode, only vaultChain emits events — skip secondaryChainConfig
+      if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.secondaryChainConfig!.chainId) continue
+
       try {
         const chainName = chainProvider.config.name
         const newestBlockNumber = await chainProvider.provider.getBlockNumber()
@@ -1045,15 +995,11 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
         const toBlock = newestBlockNumber
         console.log(`[queryFilter] Scanning ${chainName} from block ${fromBlock} to ${toBlock} (${toBlock - fromBlock + 1} blocks)`)
 
-        const { useVault, bridgeContractAddress: contractAddress } = chainProvider
-        // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
-        const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
+        const contractAddress = chainProvider.config.contractAddress
 
-        const bridgeInterface = new ethersUtils.Interface([
-          hasDestChainId
-            ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
-            : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
-        ])
+        console.log(`[queryFilter] Contract address: ${contractAddress}`)
+
+        const bridgeInterface = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
 
         const contract = new ethers.Contract(
           contractAddress,
@@ -1078,6 +1024,7 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
               cursor,
               batchEnd,
             )
+            console.log(`[queryFilter] Found ${events.length} events in batch`)
             // Reset retry state on success
             retryCount = 0
             retryDelay = BASE_DELAY_MS
@@ -1119,12 +1066,6 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
             const targetAddress = event.args.targetAddress as string
             const parsedChainId = (event.args.chainId as ethers.BigNumber).toNumber()
             const eventTimestamp = event.args.timestamp as ethers.BigNumber
-            let destinationChainId = hasDestChainId && event.args.destinationChainId
-              ? (event.args.destinationChainId as ethers.BigNumber).toNumber()
-              : LIBERDUS_CHAIN_ID
-            if (!chainConfigs.enableLiberdusNetwork && destinationChainId === LIBERDUS_CHAIN_ID) {
-              destinationChainId = DEFAULT_CHAIN_ID
-            }
 
             // Only process events from the current chain (replay protection)
             if (parsedChainId !== chainId) continue
@@ -1137,24 +1078,12 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
               amount,
               targetAddress,
               chainId: parsedChainId,
-              bridgeChainId: destinationChainId,
               txId: event.transactionHash,
             }
 
-            // Determine bridge type
-            let bridgeType: TransactionQueueItem['type'] = 'tokenToCoin'
-            let effectiveBridgeChainId = validTx.bridgeChainId
-            if (validTx.bridgeChainId !== LIBERDUS_CHAIN_ID) {
-              const destChainConfig = chainConfigs.supportedChains[validTx.bridgeChainId.toString()]
-              if (destChainConfig) {
-                bridgeType = 'tokenToToken'
-                console.log(`Bridge routing: EVM-to-EVM from ${chainName} (${chainId}) to ${destChainConfig.name} (${validTx.bridgeChainId})`)
-              } else {
-                bridgeType = 'tokenToToken'
-                effectiveBridgeChainId = chainId
-                console.log(`Bridge routing: bridgeChainId ${validTx.bridgeChainId} not supported, injecting back to ${chainName} (${chainId})`)
-              }
-            }
+            // In vault mode, events on vaultChain → vaultBridge; in Liberdus mode → tokenToCoin
+            const bridgeType: TransactionQueueItem['type'] =
+              !chainConfigs.enableLiberdusNetwork ? 'vaultBridge' : 'tokenToCoin'
 
             if (txQueue.length >= txQueueSize) {
               console.warn(`Transaction queue full, stopping scan for ${chainName} at block ${event.blockNumber}`)
@@ -1168,7 +1097,6 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
               txId: validTx.txId,
               type: bridgeType,
               chainId: chainId,
-              bridgeChainId: effectiveBridgeChainId,
             }
             txQueue.push(txData)
             txQueueMap.set(validTx.txId, {
@@ -1177,7 +1105,6 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
               value: validTx.amount,
               txId: validTx.txId,
               chainId: chainId,
-              bridgeChainId: effectiveBridgeChainId,
               timestamp: Date.now(),
             })
             saveQueueToFile(ourParty.idx)
@@ -1264,7 +1191,6 @@ async function monitorLiberdusTransactions(): Promise<void> {
               txId: validateResult.txId,
               type: 'coinToToken',
               chainId: validateResult.targetChainId,
-              bridgeChainId: validateResult.bridgeChainId,
             }
             txQueue.push(txData)
             txQueueMap.set(validateResult.txId, {
@@ -1273,14 +1199,11 @@ async function monitorLiberdusTransactions(): Promise<void> {
               value: validateResult.value,
               txId: validateResult.txId,
               chainId: validateResult.targetChainId,
-              bridgeChainId: validateResult.bridgeChainId,
               timestamp: Date.now(), // Add timestamp for cleanup
             })
             saveQueueToFile(ourParty.idx)
             if (verboseLogs) {
-              const targetChainName =
-                chainConfigs.supportedChains[validateResult.targetChainId.toString()]?.name ||
-                'Unknown'
+              const targetChainName = getChainConfigById(validateResult.targetChainId)?.name || 'Unknown'
               console.log(
                 `Liberdus transaction added to queue (target: ${targetChainName}):`,
                 validateResult,
@@ -1310,15 +1233,14 @@ async function sendTxDataToCoordinator(
     value: ethersUtils.hexValue(txData.value),
     type: txData.type === 'coinToToken'
       ? TransactionType.BRIDGE_IN
-      : txData.type === 'tokenToToken'
-        ? TransactionType.BRIDGE_CROSS
+      : txData.type === 'vaultBridge'
+        ? TransactionType.BRIDGE_VAULT
         : TransactionType.BRIDGE_OUT,
     txTimestamp: timestamp,
     status: TransactionStatus.PENDING,
     receiptId: '',
     party: ourParty.idx,
-    chainId: txData.chainId, // Include chain information
-    bridgeChainId: txData.bridgeChainId, // The chain on the other side of the bridge
+    chainId: txData.chainId,
   }
   try {
     const url = `${coordinatorUrl}/transaction`
@@ -1329,9 +1251,7 @@ async function sendTxDataToCoordinator(
       return
     }
     if (verboseLogs) {
-      const chainName = txData.chainId
-        ? chainConfigs.supportedChains[txData.chainId.toString()]?.name || 'Unknown'
-        : 'Legacy'
+      const chainName = getChainConfigById(txData.chainId)?.name || 'Unknown'
       console.log(`Sent txData to coordinator (${chainName}):`, response.data)
     }
   } catch (error) {
@@ -1485,9 +1405,9 @@ async function signLiberdusTransaction(
 async function injectEthereumTx(
   txHash: string,
   signedTx: string,
-  targetProvider?: ethers.providers.JsonRpcProvider,
+  targetProvider: ethers.providers.JsonRpcProvider,
 ): Promise<{ success: boolean; reason?: string }> {
-  const providerToUse = targetProvider || provider
+  const providerToUse = targetProvider
   try {
     const txResponse = await providerToUse.sendTransaction(signedTx)
     const receipt = await txResponse.wait()
@@ -1539,14 +1459,12 @@ async function processCoinToToken(
   value: ethers.BigNumber,
   txId: string,
   targetChainId: number,
-  bridgeChainId: number,
 ): Promise<void> {
   value = ethers.BigNumber.from(value)
   console.log('Processing coin to token transaction', {
     to,
     value: value.toString(),
     targetChainId,
-    bridgeChainId,
   })
 
   const chainProvider = chainProviders.get(targetChainId)
@@ -1556,13 +1474,11 @@ async function processCoinToToken(
   }
 
   const targetChainName = chainProvider.config.name
-  const { useVault } = chainProvider
-  const contractLabel = useVault ? 'vault' : 'bridge'
-  console.log(`Processing transaction on ${targetChainName} (${contractLabel})`)
+  console.log(`Processing transaction on ${targetChainName}`)
 
   // Check max bridge-in amount (state is already fetched from the correct contract in fetchBridgeState)
   if (!chainProvider.maxBridgeInAmount.isZero() && value.gt(chainProvider.maxBridgeInAmount)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${targetChainName} (${contractLabel})`
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${targetChainName}`
     console.error(reason)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
     return
@@ -1577,7 +1493,7 @@ async function processCoinToToken(
     if (now < cooldownEnd) {
       const waitSec = cooldownEnd - now
       console.log(
-        `Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName} (${contractLabel}): ` +
+        `Waiting ${waitSec}s for bridge-in cooldown on ${targetChainName}: ` +
         `lastBridgeInTime=${new Date(chainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
         `cooldown=${chainProvider.bridgeInCooldown}s, ` +
         `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
@@ -1603,32 +1519,16 @@ async function processCoinToToken(
   }
 
   const txIdBytes32 = '0x' + txId
-  let data: string
-  if (useVault || chainProvider.config.supportsBridgeChainId) {
-    // Vault always uses 5-param bridgeIn; main contract uses it when supportsBridgeChainId is true
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      '0x' + to.slice(0, 40),
-      value,
-      targetChainId,
-      txIdBytes32,
-      bridgeChainId,
-    ])
-  } else {
-    // Old 4-param bridgeIn for contracts without bridgeChainId support
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      '0x' + to.slice(0, 40),
-      value,
-      targetChainId,
-      txIdBytes32,
-    ])
-  }
-  const bridgeInContractAddress = chainProvider.bridgeContractAddress
+  const bridgeInterface = new ethersUtils.Interface([
+    'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+  ])
+  const data = bridgeInterface.encodeFunctionData('bridgeIn', [
+    '0x' + to.slice(0, 40),
+    value,
+    targetChainId,
+    txIdBytes32,
+  ])
+  const bridgeInContractAddress = chainProvider.config.contractAddress
   const tx = {
     to: bridgeInContractAddress,
     value: 0,
@@ -1696,7 +1596,7 @@ async function processCoinToToken(
   }
 }
 
-async function processTokenToToken(
+async function processVaultBridge(
   to: string,
   value: ethers.BigNumber,
   txId: string,
@@ -1704,7 +1604,7 @@ async function processTokenToToken(
   destinationChainId: number,
 ): Promise<void> {
   value = ethers.BigNumber.from(value)
-  console.log('Processing token to token (EVM-to-EVM) transaction', {
+  console.log('Processing vault bridge transaction', {
     to,
     value: value.toString(),
     sourceChainId,
@@ -1725,13 +1625,11 @@ async function processTokenToToken(
 
   const sourceChainName = sourceChainProvider.config.name
   const destChainName = destChainProvider.config.name
-  const { useVault } = destChainProvider
-  const contractLabel = useVault ? 'vault' : 'bridge'
-  console.log(`Processing EVM-to-EVM bridge: ${sourceChainName} -> ${destChainName} (${contractLabel})`)
+  console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
   // Check max bridge-in amount (state is already fetched from the correct contract in fetchBridgeState)
   if (!destChainProvider.maxBridgeInAmount.isZero() && value.gt(destChainProvider.maxBridgeInAmount)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainProvider.maxBridgeInAmount)} on ${destChainName} (${contractLabel})`
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainProvider.maxBridgeInAmount)} on ${destChainName}`
     console.error(reason)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
     return
@@ -1746,7 +1644,7 @@ async function processTokenToToken(
     if (now < cooldownEnd) {
       const waitSec = cooldownEnd - now
       console.log(
-        `Waiting ${waitSec}s for bridge-in cooldown on ${destChainName} (${contractLabel}): ` +
+        `Waiting ${waitSec}s for bridge-in cooldown on ${destChainName}: ` +
         `lastBridgeInTime=${new Date(destChainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
         `cooldown=${destChainProvider.bridgeInCooldown}s, ` +
         `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
@@ -1773,33 +1671,17 @@ async function processTokenToToken(
 
   // EVM txId is already 0x-prefixed, use directly as bytes32
   const txIdBytes32 = txId
-  let data: string
-  if (useVault || destChainProvider.config.supportsBridgeChainId) {
-    // Vault always uses 5-param bridgeIn; main contract uses it when supportsBridgeChainId is true
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId, uint256 sourceChainId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      to, // Already an Ethereum address from BridgedOut event
-      value,
-      destinationChainId,
-      txIdBytes32,
-      sourceChainId,
-    ])
-  } else {
-    // Old 4-param bridgeIn for contracts without bridgeChainId support
-    const bridgeInterface = new ethersUtils.Interface([
-      'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
-    ])
-    data = bridgeInterface.encodeFunctionData('bridgeIn', [
-      to, // Already an Ethereum address
-      value,
-      destinationChainId,
-      txIdBytes32,
-    ])
-  }
+  const bridgeInterface = new ethersUtils.Interface([
+    'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+  ])
+  const data = bridgeInterface.encodeFunctionData('bridgeIn', [
+    to,
+    value,
+    destinationChainId,
+    txIdBytes32,
+  ])
 
-  const bridgeInContractAddress = destChainProvider.bridgeContractAddress
+  const bridgeInContractAddress = destChainProvider.config.contractAddress
   const tx = {
     to: bridgeInContractAddress,
     value: 0,
@@ -2440,15 +2322,8 @@ function subscribeToChainEvents(chainId: number) {
     chainProvider.contract.removeAllListeners('BridgedOut')
   }
 
-  const { useVault, bridgeContractAddress: contractAddress } = chainProvider
-  // Vault always uses 6-param ABI; main contract depends on supportsBridgeChainId
-  const hasDestChainId = useVault || !!chainProvider.config.supportsBridgeChainId
-
-  const bridgeInterface = new ethersUtils.Interface([
-    hasDestChainId
-      ? 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp, uint256 destinationChainId)'
-      : 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)',
-  ])
+  const contractAddress = chainProvider.config.contractAddress
+  const bridgeInterface = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
 
   const contract = new ethers.Contract(
     contractAddress,
@@ -2466,18 +2341,8 @@ function subscribeToChainEvents(chainId: number) {
       targetAddress: string,
       parsedChainId: ethers.BigNumber,
       timestamp: ethers.BigNumber,
-      ...args: any[]
+      event: ethers.Event,
     ) => {
-      // For new ABI: args = [destinationChainId, event], for old ABI: args = [event]
-      let destinationChainId = hasDestChainId
-        ? (args[0] as ethers.BigNumber).toNumber()
-        : LIBERDUS_CHAIN_ID
-      // If Liberdus Network is not enabled, we bridge to the default chain
-      if (!chainConfigs.enableLiberdusNetwork && destinationChainId === LIBERDUS_CHAIN_ID) {
-        destinationChainId = DEFAULT_CHAIN_ID
-      }
-      const event = hasDestChainId ? args[1] : args[0]
-
       try {
         if (verboseLogs) {
           console.log(`BridgedOut event received from ${chainName}:`, {
@@ -2485,7 +2350,6 @@ function subscribeToChainEvents(chainId: number) {
             amount: amount.toString(),
             targetAddress,
             chainId: parsedChainId.toString(),
-            bridgeChainId: destinationChainId,
             txHash: event.transactionHash,
           })
         }
@@ -2494,7 +2358,6 @@ function subscribeToChainEvents(chainId: number) {
         console.log(`🔍 BridgedOut event analysis for ${chainName}:`, {
           eventChainId: parsedChainId.toNumber(),
           currentChainId: chainId,
-          bridgeChainId: destinationChainId,
           shouldProcess: parsedChainId.toNumber() === chainId,
           eventData: {
             from,
@@ -2524,33 +2387,16 @@ function subscribeToChainEvents(chainId: number) {
         // Check if already in queue
         if (txQueueMap.has(event.transactionHash)) return
 
-        // Add to queue
+        // In vault mode, events on vaultChain → vaultBridge; in Liberdus mode → tokenToCoin
+        const bridgeType: TransactionQueueItem['type'] =
+          !chainConfigs.enableLiberdusNetwork ? 'vaultBridge' : 'tokenToCoin'
+
         const validTx: BridgeOutEvent = {
           from,
           amount,
           targetAddress,
           chainId: parsedChainId.toNumber(),
-          bridgeChainId: destinationChainId,
           txId: event.transactionHash,
-        }
-        // Determine bridge type based on destinationChainId
-        let bridgeType: TransactionQueueItem['type'] = 'tokenToCoin'
-        let effectiveBridgeChainId = validTx.bridgeChainId
-        if (validTx.bridgeChainId !== LIBERDUS_CHAIN_ID) {
-          const destChainConfig = chainConfigs.supportedChains[validTx.bridgeChainId.toString()]
-          if (destChainConfig) {
-            bridgeType = 'tokenToToken'
-            console.log(
-              `Bridge routing: EVM-to-EVM from ${chainName} (${chainId}) to ${destChainConfig.name} (${validTx.bridgeChainId})`,
-            )
-          } else {
-            // Unsupported destination chain, inject back to source chain
-            bridgeType = 'tokenToToken'
-            effectiveBridgeChainId = chainId
-            console.log(
-              `Bridge routing: bridgeChainId ${validTx.bridgeChainId} is not a supported chain, injecting back to source chain ${chainName} (${chainId})`,
-            )
-          }
         }
 
         const txData: TransactionQueueItem = {
@@ -2559,8 +2405,7 @@ function subscribeToChainEvents(chainId: number) {
           value: validTx.amount,
           txId: validTx.txId,
           type: bridgeType,
-          chainId: chainId, // Source chain where the event originated
-          bridgeChainId: effectiveBridgeChainId,
+          chainId: chainId,
         }
         txQueue.push(txData)
         txQueueMap.set(validTx.txId, {
@@ -2569,8 +2414,7 @@ function subscribeToChainEvents(chainId: number) {
           value: validTx.amount,
           txId: validTx.txId,
           chainId: chainId,
-          bridgeChainId: validTx.bridgeChainId,
-          timestamp: Date.now(), // Add timestamp for cleanup
+          timestamp: Date.now(),
         })
         saveQueueToFile(ourParty.idx)
         if (verboseLogs) {
@@ -2583,13 +2427,16 @@ function subscribeToChainEvents(chainId: number) {
     },
   )
 
-  console.log(`📡 Subscribed to BridgedOut events on ${chainName} (${useVault ? 'vault' : 'bridge'}) at ${contractAddress}`)
+  console.log(`📡 Subscribed to BridgedOut events on ${chainName} at ${contractAddress}`)
 }
 
 function subscribeEthereumTransactions() {
 
   // Subscribe to events from all supported chains
   for (const [chainId, chainProvider] of chainProviders.entries()) {
+    // In vault mode, only vaultChain emits events we subscribe to
+    if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.secondaryChainConfig!.chainId) continue
+
     if (!chainProvider.wsProvider) {
       console.warn(`⚠️ No WebSocket provider available for ${chainProvider.config.name}, skipping event subscription`)
       continue
@@ -2615,7 +2462,7 @@ function subscribeEthereumTransactions() {
 
     if (verboseLogs) {
       console.log(`📡 Subscribed to BridgedOut events from ${chainProvider.config.name} via WebSocket`)
-      console.log(`📋 Contract address: ${chainProvider.bridgeContractAddress}${chainProvider.useVault ? ' (vault)' : ''}`)
+      console.log(`📋 Contract address: ${chainProvider.config.contractAddress}`)
       console.log(`🔗 WebSocket URL: ${chainProvider.config.wsUrl}`)
     }
   }
@@ -2705,7 +2552,7 @@ async function main(): Promise<void> {
       console.log('=' .repeat(60))
       
       for (const [chainId, keystore] of keystores.entries()) {
-        const chainConfig = chainConfigs.supportedChains[chainId.toString()]
+        const chainConfig = getChainConfigById(chainId)
         const chainName = chainConfig?.name || `Chain ${chainId}`
 
         console.log(`\n${chainName} (Chain ID: ${chainId}):`)
@@ -2732,8 +2579,8 @@ async function main(): Promise<void> {
           console.log(`  ⚠️  Error: ${e instanceof Error ? e.message : String(e)}`)
         }
         
-        console.log(`  🌐 RPC URL: ${chainConfig.rpcUrl}`)
-        console.log(`  📋 Contract: ${chainConfig.contractAddress}`)
+        console.log(`  🌐 RPC URL: ${chainConfig?.rpcUrl}`)
+        console.log(`  📋 Contract: ${chainConfig?.contractAddress}`)
       }
 
       console.log(`\n✅ Verification complete for all ${keystores.size} chains`)
@@ -2762,10 +2609,7 @@ async function main(): Promise<void> {
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
       const currentBlock = await chainProvider.provider.getBlockNumber()
-      // Vault chains are tracked under the "vault" sub-key; bridge chains at the top level
-      const savedBlock: number | undefined = chainProvider.useVault
-        ? savedBlockState?.vault?.[chainId.toString()]
-        : (savedBlockState?.[chainId.toString()] as number | undefined)
+      const savedBlock: number | undefined = savedBlockState?.[chainId.toString()] as number | undefined
       if (savedBlock != null && savedBlock < currentBlock) {
         chainProvider.lastCheckedBlockNumber = savedBlock
         console.log(`Resuming ${chainProvider.config.name} from saved block ${savedBlock} (current: ${currentBlock})`)
@@ -2774,10 +2618,8 @@ async function main(): Promise<void> {
         chainProvider.lastCheckedBlockNumber = currentBlock
         console.log(`Starting ${chainProvider.config.name} at current block ${currentBlock}`)
       } else {
-        // No saved state for this chain — start from the appropriate deployment block
-        const deploymentBlock = chainProvider.useVault
-          ? (chainProvider.config.vaultDeploymentBlock || chainProvider.config.deploymentBlock || 0)
-          : (chainProvider.config.deploymentBlock || 0)
+        // No saved state for this chain — start from the deployment block
+        const deploymentBlock = chainProvider.config.deploymentBlock || 0
         chainProvider.lastCheckedBlockNumber = deploymentBlock
         console.log(`No saved block state for ${chainProvider.config.name}, starting from deployment block ${deploymentBlock} (current: ${currentBlock})`)
       }
@@ -2850,8 +2692,7 @@ async function main(): Promise<void> {
             validTx.from,
             validTx.value as ethers.BigNumber,
             validTx.txId,
-            validTx.chainId || chainConfigs.defaultChain,
-            validTx.bridgeChainId ?? LIBERDUS_CHAIN_ID,
+            validTx.chainId,
           ),
         )
       } else if (validTx.type === 'tokenToCoin') {
@@ -2861,18 +2702,18 @@ async function main(): Promise<void> {
             validTx.from,
             validTx.value as ethers.BigNumber,
             validTx.txId,
-            validTx.chainId || chainConfigs.defaultChain,
+            validTx.chainId,
           ),
         )
-      } else if (validTx.type === 'tokenToToken') {
-        console.log('Processing token to token (EVM-to-EVM) transaction', validTx)
+      } else if (validTx.type === 'vaultBridge') {
+        console.log('Processing vault bridge (EVM-to-EVM) transaction', validTx)
         promises.push(
-          processTokenToToken(
+          processVaultBridge(
             validTx.from,
             validTx.value as ethers.BigNumber,
             validTx.txId,
-            validTx.chainId || chainConfigs.defaultChain,
-            validTx.bridgeChainId,
+            validTx.chainId,
+            chainConfigs.secondaryChainConfig!.chainId,
           ),
         )
       }

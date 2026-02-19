@@ -11,7 +11,6 @@ export interface Transaction {
   type: TransactionType;
   txTimestamp: number;
   chainId: number;
-  bridgeChainId: number; // The chain on the other side of the bridge (Default: LIBERDUS_CHAIN_ID)
   status: TransactionStatus;
   receiptId: string;
   reason?: string | null; // Optional field for error reason
@@ -27,16 +26,16 @@ export enum TransactionStatus {
 }
 
 export enum TransactionType {
-  BRIDGE_IN = 0, // COIN to TOKEN
-  BRIDGE_OUT = 1, // TOKEN to COIN
-  BRIDGE_CROSS = 2, // TOKEN to TOKEN (EVM cross-chain)
+  BRIDGE_IN = 0,    // COIN to TOKEN (Liberdus → EVM)
+  BRIDGE_OUT = 1,   // TOKEN to COIN (EVM → Liberdus)
+  BRIDGE_VAULT = 2, // VAULT to SECONDARY (vault chain → secondary EVM chain)
 }
 
 export function isTransactionType(value: any): value is TransactionType {
   return (
     value === TransactionType.BRIDGE_IN ||
     value === TransactionType.BRIDGE_OUT ||
-    value === TransactionType.BRIDGE_CROSS
+    value === TransactionType.BRIDGE_VAULT
   );
 }
 
@@ -64,12 +63,12 @@ export async function initializeTransactionsDatabase(): Promise<void> {
     txTimestamp: "BIGINT NOT NULL", // assume this is from blockchain or external source
     receiptId: "TEXT NOT NULL",
     chainId: "INTEGER NOT NULL",
-    bridgeChainId: `INTEGER NOT NULL DEFAULT ${LIBERDUS_CHAIN_ID}`,
     status: "INTEGER NOT NULL",
     reason: "TEXT",
     createdAt: "INTEGER DEFAULT (strftime('%s','now'))",
     updatedAt: "INTEGER DEFAULT (strftime('%s','now'))",
   });
+  
   await db.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_transactions_updatedAt
     AFTER UPDATE ON transactions
