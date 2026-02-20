@@ -222,7 +222,7 @@ const chainProviders: Map<number, ChainProviders> = new Map()
 function pickRandomWsUrl(chainId: number): string | null {
   const urls = rpcUrls.getWsUrls(chainId)
   if (urls.length === 0) return null
-  return urls[Math.floor(Math.random() * urls.length)]
+  return rpcUrls.pickAvailableUrlFromList(urls)
 }
 
 for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains)) {
@@ -234,6 +234,7 @@ for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains))
     console.log(`[startup] WS url selected chainId=${chainId} url=${displayWsUrl}`)
     try {
       wsProvider = createWebSocketProvider(wsUrl, chainId, (error) => {
+        if (rpcUrls.shouldBlacklistForError(error)) rpcUrls.markUrlFailed(wsUrl, undefined, (error as Error)?.message?.slice(0, 100))
         console.error(`WebSocket connection error for ${config.name} (Chain ID: ${chainId}): ${error.message}`)
       })
       console.log(`WebSocket provider initialized for ${config.name} (Chain ID: ${chainId})`)
@@ -318,8 +319,18 @@ async function fetchBridgeState(chainId: number): Promise<void> {
       `maxBridgeInAmount=${maxAmountStr}, ` +
       `lastBridgeInTime=${lastBridgeInStr}`
     )
-  } catch (error) {
-    console.warn(`Failed to fetch bridge state for chain ${chainId} (${contractLabel}):`, error)
+  } catch (error: any) {
+    const code = error?.code
+    const method = error?.method
+    if (code === 'CALL_EXCEPTION' && method === 'bridgeInCooldown()') {
+      console.warn(
+        `Bridge state not available for chain ${chainId} (${contractLabel}): bridgeInCooldown() reverted. ` +
+        'Contract may not support this view or vault may be in cooldown.'
+      )
+    } else {
+      const msg = error?.message?.slice(0, 80) ?? String(error).slice(0, 80)
+      console.warn(`Failed to fetch bridge state for chain ${chainId} (${contractLabel}): ${msg}`)
+    }
   }
 }
 
@@ -2402,18 +2413,31 @@ function reconnectWebSocket(chainId: number) {
   reconnectingChains.add(chainId)
 
   try {
+    // Mark current WS URL as failed when reconnecting (state not open, closed, or error)
+    if (chainProvider.wsProvider) {
+      const failedUrl = (chainProvider.wsProvider as any).connection?.url
+      if (failedUrl && typeof failedUrl === 'string') rpcUrls.markUrlFailed(failedUrl, undefined, 'reconnect (socket not open or closed)')
+    }
+
     // Clean up old contract listeners
     if (chainProvider.contract) {
       chainProvider.contract.removeAllListeners('BridgedOut')
     }
 
-    // Clean up old provider listeners
+    // Clean up old provider so no late messages can run (prevents "Cannot read properties of undefined (reading 'callback')" in ethers WebSocketProvider).
+    // Ethers sets websocket.onmessage (and onopen/onerror) directly; removeAllListeners() only clears EventEmitter listeners, so we must null these first.
     if (chainProvider.wsProvider) {
+      const oldWs = (chainProvider.wsProvider as any)._websocket as (WebSocket | import('ws')) & { onmessage?: (ev: any) => void; onopen?: () => void; onerror?: (ev: any) => void; onclose?: () => void; removeAllListeners?: () => void; close?: () => void }
+      if (oldWs) {
+        oldWs.onmessage = null
+        oldWs.onopen = null
+        oldWs.onerror = null
+        ;(oldWs as any).onclose = null
+      }
       chainProvider.wsProvider.removeAllListeners()
-      // @ts-ignore access raw websocket to clear low-level listeners
-      if (chainProvider.wsProvider._websocket) {
-        chainProvider.wsProvider._websocket.removeAllListeners?.()
-        chainProvider.wsProvider._websocket.close?.()
+      if (oldWs) {
+        oldWs.removeAllListeners?.()
+        oldWs.close?.()
       }
     }
 
@@ -2427,7 +2451,7 @@ function reconnectWebSocket(chainId: number) {
     console.log(`[reconnectWebSocket] WS url selected chainId=${chainId} url=${displayWsUrl}`)
 
     const newWsProvider = createWebSocketProvider(wsUrl, chainId, (error) => {
-      // Socket-level error caught (crash prevented); schedule reconnect as fallback
+      if (rpcUrls.shouldBlacklistForError(error)) rpcUrls.markUrlFailed(wsUrl, undefined, (error as Error)?.message?.slice(0, 100))
       setTimeout(() => {
         console.warn(`⚠️ Reconnecting after socket error for ${chainProvider.config.name}...`)
         reconnectWebSocket(chainId)

@@ -3,6 +3,7 @@
  */
 
 import {ethers} from 'ethers'
+import {markUrlFailed, pickAvailableUrlFromList, shouldBlacklistForError} from './rpcUrls'
 
 const {providers} = ethers
 
@@ -59,20 +60,23 @@ export async function withHttpProviderRetry<T>(
 
   let lastError: unknown
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const provider = getHttpProviderForChain(urls, {
+    const url = pickAvailableUrlFromList(urls)
+    const provider = getHttpProviderForChain([url], {
       fallbackRpcUrl: fallback,
       chainId: options.chainId,
     })
     if (options.logUrl) {
-      const url = (provider as any).connection?.url ?? (provider as any).connection
-      if (url) console.log(`🔗 HTTP RPC URL: ${url}`)
+      console.log(`🔗 HTTP RPC URL: ${url}`)
     }
     try {
       return await fn(provider)
     } catch (e) {
       lastError = e
+      if (shouldBlacklistForError(e)) {
+        const reason = (e as Error)?.message?.slice(0, 100) ?? String(e).slice(0, 100)
+        markUrlFailed(url, undefined, reason)
+      }
       if (attempt < maxRetries - 1 && urls.length > 1) {
-        // Next attempt will pick a different random URL
         continue
       }
       throw e
@@ -122,12 +126,11 @@ export async function withCachedHttpProvider<T>(
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let entry = providerCache.get(chainId)
     if (!entry) {
-      const provider = getHttpProviderForChain(urls, {
+      const url = pickAvailableUrlFromList(urls)
+      const provider = getHttpProviderForChain([url], {
         fallbackRpcUrl: fallback,
         chainId,
       })
-      const url =
-        (provider as any).connection?.url ?? (provider as any).connection ?? ''
       entry = { provider, url }
       providerCache.set(chainId, entry)
       if (logCache) console.log(`🔗 [cache] New HTTP provider for chain ${chainId}: ${url}`)
@@ -140,6 +143,10 @@ export async function withCachedHttpProvider<T>(
       return result
     } catch (e) {
       lastError = e
+      if (shouldBlacklistForError(e)) {
+        const reason = (e as Error)?.message?.slice(0, 100) ?? String(e).slice(0, 100)
+        markUrlFailed(entry.url, undefined, reason)
+      }
       providerCache.delete(chainId)
       if (logCache) {
         console.warn(`🔗 [cache] Invalidated HTTP provider for chain ${chainId} after error:`, (e as Error)?.message ?? e)

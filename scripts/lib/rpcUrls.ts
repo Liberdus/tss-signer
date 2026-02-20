@@ -11,6 +11,10 @@ const HOURLY_MS = 60 * 60 * 1000
 const httpRpcUrlsByChain: Map<number, string[]> = new Map()
 const wsUrlsByChain: Map<number, string[]> = new Map()
 
+/** TTL blacklist: URL -> expiry timestamp. Only for genuine errors (not rate limit, not timeout). */
+const urlBlacklistExpiry = new Map<string, number>()
+const DEFAULT_TTL_MS = 5 * 60 * 1000
+
 export function applyInfuraKey(url: string, infuraKey: string): string {
   const u = (url || '').trim()
   if (!u || !infuraKey) return u
@@ -99,6 +103,62 @@ export async function fetchChainlistAndMerge(
   } catch (err: any) {
     console.warn('[rpcUrls] Chainlist fetch failed:', err?.message || err)
   }
+}
+
+/** Clear blacklist (for tests). */
+export function clearUrlBlacklist(): void {
+  urlBlacklistExpiry.clear()
+}
+
+/**
+ * Mark a URL as failed (genuine error). It will be skipped until TTL expires.
+ * Call only when shouldBlacklistForError(error) is true.
+ */
+export function markUrlFailed(url: string, ttlMs?: number, reason?: string): void {
+  urlBlacklistExpiry.set(url, Date.now() + (ttlMs ?? DEFAULT_TTL_MS))
+  const displayUrl = url.replace(/\/[a-f0-9-]+$/i, '/…')
+  const reasonPart = reason ? ` – reason: ${reason}` : ''
+  console.warn(`[rpcUrls] ⛔ Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m: ${displayUrl}${reasonPart}\n`)
+}
+
+/**
+ * Pick one URL from the list, skipping blacklisted (non-expired) URLs.
+ * Caller ensures non-empty list. After N attempts returns lastIterationURL so we never get stuck.
+ */
+export function pickAvailableUrlFromList(urls: string[]): string {
+  const maxAttempts = urls.length
+  let lastIterationURL = urls[0]
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const url = urls[Math.floor(Math.random() * urls.length)]
+    lastIterationURL = url
+    const expiry = urlBlacklistExpiry.get(url)
+    if (expiry === undefined) return url
+    if (Date.now() > expiry) {
+      urlBlacklistExpiry.delete(url)
+      return url
+    }
+  }
+  return lastIterationURL
+}
+
+/**
+ * True if the error should cause the URL to be blacklisted (genuine error).
+ * False for rate limit (429), timeout, and rate-limit-like messages.
+ */
+export function shouldBlacklistForError(error: unknown): boolean {
+  const msg = String((error as any)?.message ?? (error as any)?.code ?? error).toLowerCase()
+  const code = (error as any)?.code
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'ECONNRESET') return true
+  if (code === 'NETWORK_ERROR') return true
+  if (/could not detect network|no network|nonetwork/i.test(msg)) return true
+  if (code === 'ETIMEDOUT') return false
+  if (/timeout|timed out/i.test(msg)) return false
+  if (/429|rate limit|too many requests|throttl/i.test(msg)) return false
+  if (/5\d{2}/.test(String((error as any)?.status ?? (error as any)?.response?.status ?? ''))) return true
+  if (/5\d{2}/.test(msg)) return true
+  if (/econnrefused|enotfound|econnreset/i.test(msg)) return true
+  if (/invalid response|parse error|unexpected token/i.test(msg)) return true
+  return false
 }
 
 export function getHttpUrls(chainId: number): string[] {

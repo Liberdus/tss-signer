@@ -15,6 +15,10 @@ import {
   getWsUrls,
   mergeChainlistResponse,
   fetchChainlistAndMerge,
+  markUrlFailed,
+  pickAvailableUrlFromList,
+  shouldBlacklistForError,
+  clearUrlBlacklist,
 } from './lib/rpcUrls'
 import {
   getHttpProviderForChain,
@@ -165,6 +169,63 @@ describe('RPC and provider tests', () => {
         expect(getHttpUrls(cid).length).toBeGreaterThanOrEqual(0)
         expect(getWsUrls(cid).length).toBeGreaterThanOrEqual(0)
       }
+    })
+  })
+
+  describe('rpcUrls - shouldBlacklistForError', () => {
+    it('returns true for ECONNREFUSED, ENOTFOUND, ECONNRESET', () => {
+      expect(shouldBlacklistForError({ code: 'ECONNREFUSED' })).toBe(true)
+      expect(shouldBlacklistForError({ code: 'ENOTFOUND' })).toBe(true)
+      expect(shouldBlacklistForError({ code: 'ECONNRESET' })).toBe(true)
+    })
+    it('returns true for 5xx status and 5xx in message', () => {
+      expect(shouldBlacklistForError({ status: 502 })).toBe(true)
+      expect(shouldBlacklistForError({ response: { status: 503 } })).toBe(true)
+      expect(shouldBlacklistForError({ message: '502 Bad Gateway' })).toBe(true)
+    })
+    it('returns true for invalid response / parse error', () => {
+      expect(shouldBlacklistForError({ message: 'invalid response' })).toBe(true)
+      expect(shouldBlacklistForError({ message: 'parse error' })).toBe(true)
+    })
+    it('returns false for 429 and rate limit message', () => {
+      expect(shouldBlacklistForError({ message: '429 Too Many Requests' })).toBe(false)
+      expect(shouldBlacklistForError({ message: 'rate limit exceeded' })).toBe(false)
+      expect(shouldBlacklistForError({ message: 'too many requests' })).toBe(false)
+      expect(shouldBlacklistForError({ message: 'throttled' })).toBe(false)
+    })
+    it('returns false for ETIMEDOUT and timeout message', () => {
+      expect(shouldBlacklistForError({ code: 'ETIMEDOUT' })).toBe(false)
+      expect(shouldBlacklistForError({ message: 'Timeout after 5000ms' })).toBe(false)
+    })
+  })
+
+  describe('rpcUrls - pickAvailableUrlFromList and markUrlFailed', () => {
+    const urlA = 'https://a.example.com/rpc'
+    const urlB = 'https://b.example.com/rpc'
+
+    afterEach(() => {
+      clearUrlBlacklist()
+    })
+
+    it('returns one of the URLs when none blacklisted', () => {
+      const urls = [urlA, urlB]
+      for (let i = 0; i < 20; i++) {
+        const result = pickAvailableUrlFromList(urls)
+        expect(urls).toContain(result)
+      }
+    })
+    it('returns lastIterationURL when all blacklisted', () => {
+      markUrlFailed(urlA, 60000)
+      markUrlFailed(urlB, 60000)
+      const result = pickAvailableUrlFromList([urlA, urlB])
+      expect([urlA, urlB]).toContain(result)
+    })
+    it('removes expired entry and returns that URL', () => {
+      markUrlFailed(urlA, -10000)
+      const r1 = pickAvailableUrlFromList([urlA])
+      expect(r1).toBe(urlA)
+      const r2 = pickAvailableUrlFromList([urlA])
+      expect(r2).toBe(urlA)
     })
   })
 

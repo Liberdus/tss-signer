@@ -23,5 +23,12 @@ export function createWebSocketProvider(
     onError(error)
   })
 
-  return new ethers.providers.WebSocketProvider(ws as any, chainId)
+  const provider = new ethers.providers.WebSocketProvider(ws as any, chainId)
+  // Prevent ethers from logging "unhandled: Event" for open/close (WebSocketProvider._startEvent has no case for them)
+  const origStartEvent = provider._startEvent.bind(provider)
+  provider._startEvent = function (event: any) {
+    if (event?.type === 'open' || event?.type === 'close') return
+    origStartEvent(event)
+  }
+  return provider
 }

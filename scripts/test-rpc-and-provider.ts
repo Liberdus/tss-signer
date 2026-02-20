@@ -24,6 +24,10 @@ import {
   getWsUrls,
   mergeChainlistResponse,
   fetchChainlistAndMerge,
+  markUrlFailed,
+  pickAvailableUrlFromList,
+  shouldBlacklistForError,
+  clearUrlBlacklist,
 } from './lib/rpcUrls'
 import {
   getHttpProviderForChain,
@@ -182,6 +186,42 @@ async function main(): Promise<void> {
   for (const cid of supportedChainIds) {
     console.log(`   Chain ${cid}  HTTP: ${getHttpUrls(cid).length}  WS: ${getWsUrls(cid).length} (config + chainlist.org combined)`)
   }
+  console.log('   OK\n')
+
+  // --- shouldBlacklistForError ---
+  console.log('8b. shouldBlacklistForError')
+  assert(shouldBlacklistForError({ code: 'ECONNREFUSED' }) === true, 'ECONNREFUSED should blacklist')
+  assert(shouldBlacklistForError({ code: 'ENOTFOUND' }) === true, 'ENOTFOUND should blacklist')
+  assert(shouldBlacklistForError({ code: 'ECONNRESET' }) === true, 'ECONNRESET should blacklist')
+  assert(shouldBlacklistForError({ status: 502 }) === true, '5xx status should blacklist')
+  assert(shouldBlacklistForError({ message: '502 Bad Gateway' }) === true, '5xx in message should blacklist')
+  assert(shouldBlacklistForError({ message: 'invalid response' }) === true, 'invalid response should blacklist')
+  assert(shouldBlacklistForError({ message: '429 Too Many Requests' }) === false, '429 should not blacklist')
+  assert(shouldBlacklistForError({ message: 'rate limit exceeded' }) === false, 'rate limit should not blacklist')
+  assert(shouldBlacklistForError({ code: 'ETIMEDOUT' }) === false, 'ETIMEDOUT should not blacklist')
+  assert(shouldBlacklistForError({ message: 'Timeout after 5000ms' }) === false, 'timeout message should not blacklist')
+  console.log('   OK\n')
+
+  // --- pickAvailableUrlFromList and markUrlFailed ---
+  console.log('8c. pickAvailableUrlFromList and markUrlFailed')
+  const urlA = 'https://a.example.com/rpc'
+  const urlB = 'https://b.example.com/rpc'
+  clearUrlBlacklist()
+  for (let i = 0; i < 20; i++) {
+    const result = pickAvailableUrlFromList([urlA, urlB])
+    assert([urlA, urlB].includes(result), 'result should be one of the URLs when none blacklisted')
+  }
+  markUrlFailed(urlA, 60000)
+  markUrlFailed(urlB, 60000)
+  const resultAllBlacklisted = pickAvailableUrlFromList([urlA, urlB])
+  assert([urlA, urlB].includes(resultAllBlacklisted), 'result should be lastIterationURL when all blacklisted')
+  clearUrlBlacklist()
+  markUrlFailed(urlA, -10000)
+  const r1 = pickAvailableUrlFromList([urlA])
+  assert(r1 === urlA, 'expired URL should be removed and returned')
+  const r2 = pickAvailableUrlFromList([urlA])
+  assert(r2 === urlA, 'URL should still be returned after expiry removed')
+  clearUrlBlacklist()
   console.log('   OK\n')
 
   // --- Optional: live HTTP RPC and WebSocket tests (use merged URLs from config + chainlist) ---
@@ -430,30 +470,33 @@ async function main(): Promise<void> {
       const goodWsUrls = getWsUrls(chainId)
       if (goodWsUrls.length === 0) continue
       const badUrl = BAD_WS_URL
-      const goodUrl = goodWsUrls[0]
       let reconnectResolve!: (block: number) => void
       const reconnectDone = new Promise<number>((resolve) => {
         reconnectResolve = resolve
       })
       const firstProvider = createWebSocketProvider(badUrl, chainId, (error) => {
-        // Same snippet as tss-party: socket-level error → schedule reconnect
-        setTimeout(() => {
+        // Same snippet as tss-party: socket-level error → schedule reconnect; try URLs until one works
+        setTimeout(async () => {
           console.log(`   Chain ${chainId}  Reconnecting after socket error (trying good URL)...`)
-          const secondProvider = createWebSocketProvider(goodUrl, chainId, () => {})
-          Promise.race([
-            secondProvider.getBlockNumber(),
-            timeoutReject<number>(wsTimeoutMs),
-          ])
-            .then((block) => {
-              reconnectResolve(block)
+          let block = -1
+          for (const goodUrl of goodWsUrls) {
+            const secondProvider = createWebSocketProvider(goodUrl, chainId, () => {})
+            try {
+              block = await Promise.race([
+                secondProvider.getBlockNumber(),
+                timeoutReject<number>(wsTimeoutMs),
+              ])
               secondProvider.removeAllListeners()
-              if ((secondProvider as any)._websocket) (secondProvider as any)._websocket.terminate()
-            })
-            .catch((e: any) => {
-              reconnectResolve(-1)
+              const ws = (secondProvider as any)._websocket
+              if (ws && typeof ws.terminate === 'function') ws.terminate()
+              if (block > 0) break
+            } catch (e: any) {
               secondProvider.removeAllListeners()
-              if ((secondProvider as any)._websocket) (secondProvider as any)._websocket.terminate()
-            })
+              const ws = (secondProvider as any)._websocket
+              if (ws && typeof ws.terminate === 'function') ws.terminate()
+            }
+          }
+          reconnectResolve(block)
         }, 3000)
       })
       const displayBad = badUrl.replace(/\/[a-f0-9-]+$/i, '/…')
@@ -461,7 +504,7 @@ async function main(): Promise<void> {
       // Bad URL will fail; onError fires and schedules reconnect; wait for reconnect to complete
       const block = await Promise.race([
         reconnectDone,
-        timeoutReject<number>(wsTimeoutMs + 5000),
+        timeoutReject<number>(wsTimeoutMs * (goodWsUrls.length + 1) + 5000),
       ])
       firstProvider.removeAllListeners()
       if ((firstProvider as any)._websocket) (firstProvider as any)._websocket.terminate()
