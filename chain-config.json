@@ -1,5 +1,4 @@
 {
-  "coordinatorUrl": "http://127.0.0.1:8000",
   "vaultChain": {
     "name": "Polygon Amoy Testnet",
     "chainId": 80002,
@@ -7,7 +6,7 @@
     "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
     "contractAddress": "0x1469f20C91da50BF9Cc82d7cFB9A8D9EF1dEe86a",
     "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
-    "bridgeAddress": "22443e34ed93d88caa380f76d8e072998990d221000000000000000000000000",
+    "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [50, 100, 150, 200, 250, 300]
@@ -21,7 +20,7 @@
     "wsUrl": "wss://bsc-testnet.publicnode.com",
     "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
     "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
-    "bridgeAddress": "79309245d2bed1cc8efca12f3dbd2e64ab9591c0000000000000000000000000",
+    "bridgeAddress": "43178f0e762433e8aa0e50eb6d691a3254f957ee000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [5, 10, 15, 20, 25, 30]
@@ -36,7 +35,7 @@
       "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
       "contractAddress": "0xD5409531c857AfD1b2fF6Cd527038e9981ef4863",
       "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
-      "bridgeAddress": "22443e34ed93d88caa380f76d8e072998990d221000000000000000000000000",
+      "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
@@ -50,7 +49,7 @@
       "wsUrl": "wss://bsc-testnet.publicnode.com",
       "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
       "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
-      "bridgeAddress": "79309245d2bed1cc8efca12f3dbd2e64ab9591c0000000000000000000000000",
+      "bridgeAddress": "43178f0e762433e8aa0e50eb6d691a3254f957ee000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
@@ -59,5 +58,8 @@
     }
   },
   "enableLiberdusNetwork": false,
-  "liberdusNetworkId": "7440f5161ffc77eed9ee91d6fbb406083192d1fe4d7e64b2f0814c0e067dcab4"
+  "coordinatorUrl": "http://127.0.0.1:8000",
+  "collectorHost": "https://dev.liberdus.com:3035",
+  "proxyServerHost": "https://dev.liberdus.com:3030",
+  "liberdusNetworkId": "52d545708708f41ed7162ff641626de0568b2bd098e5640233ce4a387d9c5aa8"
 }
