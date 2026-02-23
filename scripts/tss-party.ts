@@ -38,6 +38,8 @@ interface ChainConfigs {
   enableLiberdusNetwork: boolean
   liberdusNetworkId: string
   coordinatorUrl?: string // Coordinator server URL (default: http://127.0.0.1:8000)
+  collectorHost?: string // Collector server URL (default: http://127.0.0.1:3035)
+  proxyServerHost?: string // Proxy server URL (default: http://127.0.0.1:3030)
 }
 
 interface ChainProviders {
@@ -199,8 +201,8 @@ const infuraKeys = JSON.parse(
 )
 
 const coordinatorUrl = process.env.COORDINATOR_URL || chainConfigs.coordinatorUrl;
-const collectorHost = 'http://127.0.0.1:6001'
-const proxyServerHost = 'https://dev.liberdus.com:3030'
+const collectorHost = process.env.COLLECTOR_HOST || chainConfigs.collectorHost;
+const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServerHost;
 
 const tssPartyIdx =
   parsedIdx == null ? readline.question('Enter the party index (1 to 5): ') : parsedIdx
@@ -673,7 +675,7 @@ async function validateTokenToCoinTx(
 ): Promise<BridgeOutEvent | false> {
   const chainProvider = chainProviders.get(targetChainId)
   if (!chainProvider) {
-    console.log(`Chain provider not found for chainId ${targetChainId}`)
+    console.log(`[validateTokenToCoinTx] Chain provider not found for chainId ${targetChainId}`)
     return false
   }
 
@@ -773,11 +775,6 @@ function validateCoinToTokenTx(
     return false
   }
   const transferAmountInBigInt = BigNumber.from('0x' + additionalInfo.amount.value)
-  const oneEtherInBigInt = ethersUtils.parseEther('1.0')
-  if (transferAmountInBigInt.lt(oneEtherInBigInt)) {
-    console.log('Transaction value is less than 1 LIB')
-    return false
-  }
   return {from, value: transferAmountInBigInt, txId, targetChainId}
 }
 
@@ -1470,7 +1467,7 @@ async function processCoinToToken(
 
   const chainProvider = chainProviders.get(targetChainId)
   if (!chainProvider) {
-    console.error(`Chain provider not found for chainId ${targetChainId}`)
+    console.error(`[ProcessCoinToToken] Chain provider not found for chainId ${targetChainId}`)
     return
   }
 
@@ -1537,7 +1534,7 @@ async function processCoinToToken(
     nonce: senderNonce,
     gasLimit: chainProvider.config.gasConfig.gasLimit,
     gasPrice: currentGasPrice,
-    chainId: targetChainId,
+    chainId: targetChainId === 31338 ? 31337 : targetChainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
   }
   console.log(`eth tx to sign on ${targetChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
@@ -1690,7 +1687,7 @@ async function processVaultBridge(
     nonce: senderNonce,
     gasLimit: destChainProvider.config.gasConfig.gasLimit,
     gasPrice: currentGasPrice,
-    chainId: destChainProvider.config.chainId,
+    chainId: destChainProvider.config.chainId === 31338 ? 31337 : destChainProvider.config.chainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
   }
   console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
@@ -1760,7 +1757,7 @@ async function processTokenToCoin(
 
   const sourceChainProvider = chainProviders.get(sourceChainId)
   if (!sourceChainProvider) {
-    console.error(`Source chain provider not found for chainId ${sourceChainId}`)
+    console.error(`[ProcessTokenToCoin] Source chain provider not found for chainId ${sourceChainId}`)
     return
   }
 
