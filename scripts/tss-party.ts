@@ -309,6 +309,44 @@ async function fetchBridgeState(chainId: number): Promise<void> {
   }
 }
 
+async function waitForBridgeCooldown(chainProvider: ChainProviders, chainName: string): Promise<void> {
+  if (chainProvider.bridgeInCooldown <= 0 || chainProvider.lastBridgeInTime <= 0) return
+  const latestBlock = await chainProvider.provider.getBlock('latest')
+  const now = latestBlock.timestamp
+  const cooldownEnd = chainProvider.lastBridgeInTime + chainProvider.bridgeInCooldown
+  if (now < cooldownEnd) {
+    const waitSec = cooldownEnd - now
+    console.log(
+      `Waiting ${waitSec}s for bridge-in cooldown on ${chainName}: ` +
+      `lastBridgeInTime=${new Date(chainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
+      `cooldown=${chainProvider.bridgeInCooldown}s, ` +
+      `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
+      `chainNow=${new Date(now * 1000).toISOString()}`
+    )
+    await sleep(waitSec * 1000)
+  }
+}
+
+function checkMaxBridgeAmount(
+  chainProvider: ChainProviders,
+  value: ethers.BigNumber,
+  txId: string,
+  chainName: string,
+): boolean {
+  if (chainProvider.maxBridgeInAmount.isZero()) return true
+  if (value.lte(chainProvider.maxBridgeInAmount)) return true
+  const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${chainName}`
+  console.error(reason)
+  sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
+  return false
+}
+
+async function refreshBridgeStateOnRevert(reason: string | undefined, chainId: number): Promise<void> {
+  if (!reason || (!reason.includes('Bridge-in cooldown not met') && !reason.includes('Amount exceeds bridge-in limit'))) return
+  console.log(`Refreshing bridge state for chain ${chainId} due to revert: ${reason}`)
+  await fetchBridgeState(chainId)
+}
+
 // Fetch bridge state for all chains on startup (skip vault source chain — we only call bridgeIn on the destination)
 for (const [chainId] of chainProviders.entries()) {
   if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.vaultChain!.chainId) continue
