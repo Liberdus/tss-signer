@@ -1533,11 +1533,8 @@ async function processCoinToToken(
     }
   }
 
-  const txIdBytes32 = '0x' + txId
-  const bridgeInterface = new ethersUtils.Interface([
-    'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
-  ])
-  const data = bridgeInterface.encodeFunctionData('bridgeIn', [
+  const txIdBytes32 = txId.startsWith('0x') ? txId : '0x' + txId
+  const data = BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeIn', [
     '0x' + to.slice(0, 40),
     value,
     targetChainId,
