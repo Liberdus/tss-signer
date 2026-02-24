@@ -4,6 +4,8 @@ target/
 node_modules
 dist
 keystores
+# Local Infura keys, do not commit
+infura_keys.json
 yarn-error.log
 package-lock.json
 pkg
