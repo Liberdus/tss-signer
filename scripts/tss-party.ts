@@ -939,7 +939,10 @@ async function monitorEthereumTransactions(): Promise<void> {
         continue
       }
 
-      for (let i = chainProvider.lastCheckedBlockNumber + 1; i <= newestBlockNumber; i++) {
+      // Start from lastCheckedBlockNumber - 10 for redundancy (duplicates skipped via txQueueMap)
+      const deploymentBlock = chainProvider.config.deploymentBlock ?? 0
+      const scanStart = Math.max(deploymentBlock, chainProvider.lastCheckedBlockNumber - 10)
+      for (let i = scanStart; i <= newestBlockNumber; i++) {
         const block = await chainProvider.provider.getBlockWithTransactions(i)
         if (verboseLogs) console.log(`Processing block ${i} on ${chainProvider.config.name}`, block.number)
         if (verboseLogs) console.log('Found block with transactions:', block.transactions.length)
@@ -1044,7 +1047,9 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
           continue
         }
 
-        const fromBlock = chainProvider.lastCheckedBlockNumber + 1
+        // Start from lastCheckedBlockNumber - 10 for redundancy (duplicates skipped via txQueueMap)
+        const deploymentBlock = chainProvider.config.deploymentBlock ?? 0
+        const fromBlock = Math.max(deploymentBlock, chainProvider.lastCheckedBlockNumber - 10)
         const toBlock = newestBlockNumber
         console.log(`[queryFilter] Scanning ${chainName} from block ${fromBlock} to ${toBlock} (${toBlock - fromBlock + 1} blocks)`)
 
