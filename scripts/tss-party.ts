@@ -280,23 +280,17 @@ async function fetchBridgeState(chainId: number): Promise<void> {
   const chainProvider = chainProviders.get(chainId)
   if (!chainProvider) return
 
-  const iface = new ethersUtils.Interface([
-    'function bridgeInCooldown() view returns (uint256)',
-    'function maxBridgeInAmount() view returns (uint256)',
-    'function lastBridgeInTime() view returns (uint256)',
-  ])
-
   const contractAddr = chainProvider.config.contractAddress
   try {
     const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
-      chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('bridgeInCooldown') }),
-      chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('maxBridgeInAmount') }),
-      chainProvider.provider.call({ to: contractAddr, data: iface.encodeFunctionData('lastBridgeInTime') }),
+      chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown') }),
+      chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount') }),
+      chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime') }),
     ])
 
-    chainProvider.bridgeInCooldown = iface.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
-    chainProvider.maxBridgeInAmount = iface.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
-    chainProvider.lastBridgeInTime = iface.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+    chainProvider.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+    chainProvider.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
+    chainProvider.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
 
     const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
       ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
