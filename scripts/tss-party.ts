@@ -2686,7 +2686,13 @@ async function main(): Promise<void> {
     }
 
     // Verify with coordinator that this tx hasn't already been completed/is being processed
-    const coordinatorStatus = await checkTxStatusFromCoordinator(txId)
+    let coordinatorStatus: TransactionStatus | null = null
+    try {
+      coordinatorStatus = await checkTxStatusFromCoordinator(txId)
+    } catch (error) {
+      console.error(`Coordinator check failed for ${txId}, leaving in queue for later:`, error)
+      return
+    }
     if (coordinatorStatus === TransactionStatus.COMPLETED || coordinatorStatus === TransactionStatus.PROCESSING) {
       console.log(`⏩ Transaction ${txId} already has status ${coordinatorStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'PROCESSING'} on coordinator, skipping`)
       txQueueMap.set(txId, {
