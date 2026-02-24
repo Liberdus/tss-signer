@@ -175,11 +175,33 @@ const serverStartTime = Date.now()
 
 let params: Params = loadParams()
 let chainConfigs: ChainConfigs = loadChainConfigs()
+
+// Vault mode: require vaultChain and secondaryChainConfig with distinct chainIds
+if (!chainConfigs.enableLiberdusNetwork) {
+  if (!chainConfigs.vaultChain || !chainConfigs.secondaryChainConfig) {
+    console.error('vaultChain and secondaryChainConfig are required when enableLiberdusNetwork is false')
+    process.exit(1)
+  }
+  if (chainConfigs.vaultChain.chainId === chainConfigs.secondaryChainConfig.chainId) {
+    console.error('vaultChain and secondaryChainConfig must have different chainIds')
+    process.exit(1)
+  }
+}
+
 let t = params.threshold
 let n = params.parties
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 const BRIDGE_OUT_EVENT_ABI = 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)'
+
+// Shared bridge contract ABI for state reads and bridgeIn
+const BRIDGE_CONTRACT_ABI = [
+  'function bridgeInCooldown() view returns (uint256)',
+  'function maxBridgeInAmount() view returns (uint256)',
+  'function lastBridgeInTime() view returns (uint256)',
+  'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+]
+const BRIDGE_CONTRACT_IFACE = new ethersUtils.Interface(BRIDGE_CONTRACT_ABI)
 
 /** Returns chain IDs active in the current mode (vault mode or Liberdus mode) */
 function getEffectiveChainIds(): number[] {
