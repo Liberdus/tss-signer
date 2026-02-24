@@ -969,7 +969,7 @@ async function monitorEthereumTransactions(): Promise<void> {
           sendTxDataToCoordinator(txData, block.timestamp * 1000)
         }
         chainProvider.lastCheckedBlockNumber = i
-        saveBlockState(ourParty.idx)
+        await saveBlockState(ourParty.idx)
       }
     } catch (error) {
       console.error(
@@ -1138,7 +1138,7 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
           // Batch succeeded — advance cursor and try growing batch size back
           cursor = batchEnd + 1
           chainProvider.lastCheckedBlockNumber = batchEnd
-          saveBlockState(ourParty.idx)
+          await saveBlockState(ourParty.idx)
 
           // Gradually increase batch size back up after success (up to initial)
           if (batchSize < INITIAL_BATCH_SIZE) {
