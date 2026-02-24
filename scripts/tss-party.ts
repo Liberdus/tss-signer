@@ -1339,18 +1339,41 @@ async function sendTxStatusToCoordinator(
   }
 }
 
+function isValidTransactionStatus(value: unknown): value is TransactionStatus {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= TransactionStatus.PENDING &&
+    value <= TransactionStatus.FAILED
+  )
+}
+
 async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionStatus | null> {
   try {
     const url = `${coordinatorUrl}/transaction?txId=${encodeURIComponent(txId)}`
     const response = await axios.get(url)
-    const transactions = response.data?.Ok?.transactions
-    if (transactions && transactions.length > 0) {
-      return transactions[0].status as TransactionStatus
+    const data = response.data
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid coordinator response shape: missing or non-object data')
+    }
+    if (!('Ok' in data) || data.Ok == null) {
+      throw new Error('Invalid coordinator response shape: missing Ok')
+    }
+    const ok = data.Ok as { transactions?: unknown[] }
+    if (!Array.isArray(ok.transactions)) {
+      throw new Error('Invalid coordinator response shape: Ok.transactions is not an array')
+    }
+    if (ok.transactions.length > 0) {
+      const first = ok.transactions[0] as { status?: unknown }
+      if (!isValidTransactionStatus(first?.status)) {
+        throw new Error('Invalid coordinator response shape: invalid transaction status')
+      }
+      return first.status as TransactionStatus
     }
     return null
   } catch (error) {
     console.error(`Error checking tx status from coordinator for ${txId}:`, error)
-    return null
+    throw error
   }
 }
 
