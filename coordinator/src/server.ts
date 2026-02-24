@@ -331,6 +331,19 @@ app.post(
         );
       }
 
+      // Do not overwrite COMPLETED with FAILED (a failed party must not overwrite a successful one)
+      const current = await TransactionDB.getTransactionById(txId);
+      if (
+        current?.status === TransactionDB.TransactionStatus.COMPLETED &&
+        status === TransactionDB.TransactionStatus.FAILED
+      ) {
+        console.log(
+          "Ignoring FAILED status update; transaction already COMPLETED:",
+          txId
+        );
+        return res.json({ Ok: null });
+      }
+
       // Update transaction status
       await TransactionDB.updateTransactionStatus(
         txId,
