@@ -2939,7 +2939,7 @@ async function main(): Promise<void> {
   // Add memory management and monitoring schedulers
   startDriftResistantScheduler(cleanupOldTransactions, 10 * 60 * 1000) // Every 10 minutes (more frequent)
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
-  startDriftResistantScheduler(monitorWebSocketHealth, 2 * 60 * 1000) // Every 5 minutes
+  startDriftResistantScheduler(monitorWebSocketHealth, 2 * 60 * 1000) // Every 2 minutes
   // Additional cleanup scheduler for stuck transactions
   startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
   const ethMonitorFn = useQueryFilter ? monitorEthereumTransactionsQueryFilter : monitorEthereumTransactions
