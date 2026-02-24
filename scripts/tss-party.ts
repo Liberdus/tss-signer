@@ -1,5 +1,6 @@
 import {ethers} from 'ethers'
 import * as fs from 'fs'
+import {writeFile} from 'fs/promises'
 import * as path from 'path'
 import axios, {AxiosResponse} from 'axios'
 import * as crypto from '@shardus/crypto-utils'
@@ -532,14 +533,14 @@ interface BlockStateFile {
   [chainId: string]: number | undefined
 }
 
-const saveBlockState = (partyIdx: number): void => {
+const saveBlockState = async (partyIdx: number): Promise<void> => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
   const state: BlockStateFile = {}
   for (const [chainId, cp] of chainProviders.entries()) {
     state[chainId.toString()] = cp.lastCheckedBlockNumber
   }
-  fs.writeFileSync(filePath, JSON.stringify(state))
+  await writeFile(filePath, JSON.stringify(state), 'utf8')
 }
 
 const loadBlockState = (partyIdx: number): BlockStateFile | null => {
