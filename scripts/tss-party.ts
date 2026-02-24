@@ -1681,12 +1681,8 @@ async function processVaultBridge(
     }
   }
 
-  // EVM txId is already 0x-prefixed, use directly as bytes32
-  const txIdBytes32 = txId
-  const bridgeInterface = new ethersUtils.Interface([
-    'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
-  ])
-  const data = bridgeInterface.encodeFunctionData('bridgeIn', [
+  const txIdBytes32 = txId.startsWith('0x') ? txId : '0x' + txId
+  const data = BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeIn', [
     to,
     value,
     destinationChainId,
