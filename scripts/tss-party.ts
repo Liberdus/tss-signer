@@ -1650,32 +1650,8 @@ async function processVaultBridge(
   const destChainName = destChainProvider.config.name
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
-  // Check max bridge-in amount (state is already fetched from the correct contract in fetchBridgeState)
-  if (!destChainProvider.maxBridgeInAmount.isZero() && value.gt(destChainProvider.maxBridgeInAmount)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainProvider.maxBridgeInAmount)} on ${destChainName}`
-    console.error(reason)
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
-    return
-  }
-
-  // Wait for bridge-in cooldown if needed
-  if (destChainProvider.bridgeInCooldown > 0 && destChainProvider.lastBridgeInTime > 0) {
-    // Use the destination chain's latest block timestamp as "now" to avoid wall-clock drift on local nodes
-    const latestBlock = await destChainProvider.provider.getBlock('latest')
-    const now = latestBlock.timestamp
-    const cooldownEnd = destChainProvider.lastBridgeInTime + destChainProvider.bridgeInCooldown
-    if (now < cooldownEnd) {
-      const waitSec = cooldownEnd - now
-      console.log(
-        `Waiting ${waitSec}s for bridge-in cooldown on ${destChainName}: ` +
-        `lastBridgeInTime=${new Date(destChainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
-        `cooldown=${destChainProvider.bridgeInCooldown}s, ` +
-        `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
-        `chainNow=${new Date(now * 1000).toISOString()}`
-      )
-      await sleep(waitSec * 1000)
-    }
-  }
+  await waitForBridgeCooldown(destChainProvider, destChainName)
+  if (!checkMaxBridgeAmount(destChainProvider, value, txId, destChainName)) return
 
   const senderNonce = await destChainProvider.provider.getTransactionCount(
     destChainProvider.config.tssSenderAddress,
@@ -1738,10 +1714,7 @@ async function processVaultBridge(
     const reason = error instanceof Error ? error.message : (error as string)
     console.error(`Failed to inject EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
     res = {success: false, reason}
-    if (reason && (reason.includes('Bridge-in cooldown not met') || reason.includes('Amount exceeds bridge-in limit'))) {
-      console.log(`Refreshing bridge state for chain ${destinationChainId} due to revert: ${reason}`)
-      await fetchBridgeState(destinationChainId)
-    }
+    await refreshBridgeStateOnRevert(reason, destinationChainId)
   }
 
   const receipt = await destChainProvider.provider.getTransactionReceipt(txHash)
