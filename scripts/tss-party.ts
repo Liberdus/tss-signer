@@ -62,6 +62,7 @@ interface TransactionQueueItem {
   txId: string
   type: 'tokenToCoin' | 'coinToToken' | 'vaultBridge'
   chainId: number // Add chainId to track which chain this transaction belongs to
+  txTimestamp?: number // Optional: populated when sourced from coordinator, used for queue ordering
 }
 
 interface TxQueueMapValue {
@@ -1346,7 +1347,7 @@ async function sendTxStatusToCoordinator(
 async function pollPendingTransactionsFromCoordinator(): Promise<void> {
   console.log('Polling pending transactions from coordinator...')
   try {
-    const url = `${coordinatorUrl}/transaction?status=${TransactionStatus.PENDING}`
+    const url = `${coordinatorUrl}/transaction?unprocessed=true`
     const response = await axios.get(url, {timeout: 30_000})
     const data = response.data
     if (verboseLogs) {
@@ -1355,6 +1356,8 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
     if (!data?.Ok?.transactions) return
 
     const transactions: Transaction[] = data.Ok.transactions
+      .slice()
+      .sort((a: Transaction, b: Transaction) => a.txTimestamp - b.txTimestamp)
     if (transactions.length === 0) return
 
     if (data.Ok.totalTranactions > transactions.length) {
@@ -1386,6 +1389,7 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         txId: tx.txId,
         type: bridgeType,
         chainId: tx.chainId,
+        txTimestamp: tx.txTimestamp,
       }
 
       txQueue.push(txData)
@@ -1403,6 +1407,14 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         console.log(`[poll] Added ${bridgeType} tx ${tx.txId} from coordinator (${chainName})`)
       }
     }
+
+    // Re-sort the queue so newly inserted items are in txTimestamp order.
+    // Items without a txTimestamp (from local monitoring) are placed last.
+    txQueue.sort((a, b) => {
+      const ta = a.txTimestamp ?? Infinity
+      const tb = b.txTimestamp ?? Infinity
+      return ta - tb
+    })
 
     saveQueueToFile(ourParty.idx)
   } catch (error) {
@@ -1965,6 +1977,8 @@ async function retryOperation<T>(
         // Insufficient funds for gas
         'insufficient funds',
         'INSUFFICIENT_FUNDS',
+        // Liberdus: tx already accepted by the network, no need to retry
+        'Transaction is already in queue',
       ]
       return !nonRetryablePatterns.some((pattern) => msg.includes(pattern))
     },

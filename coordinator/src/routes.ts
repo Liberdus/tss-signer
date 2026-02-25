@@ -45,6 +45,7 @@ type TransactionAPIQueryParameters = {
   status?: TransactionDB.TransactionStatus;
   txId?: string;
   page?: string;
+  unprocessed?: string; // when "true", returns PENDING + PROCESSING ordered by txTimestamp ASC
 };
 
 // --- Helpers ---
@@ -267,7 +268,7 @@ export function registerRoutes(app: express.Application): void {
       >
     ) => {
       try {
-        let { sender, txId, page, type, status } = req.query;
+        let { sender, txId, page, type, status, unprocessed } = req.query;
         let pageNum = 1;
         const txsPerPage = 10;
         let transactions: TransactionDB.Transaction[] = [];
@@ -327,10 +328,12 @@ export function registerRoutes(app: express.Application): void {
           status = parsedStatus;
         }
 
+        const isUnprocessed = unprocessed === "true";
         totalTranactions = await TransactionDB.getTotalTransactions({
           sender,
           type,
           status,
+          unprocessed: isUnprocessed,
         });
         totalPages = Math.ceil(totalTranactions / txsPerPage);
 
@@ -348,7 +351,7 @@ export function registerRoutes(app: express.Application): void {
         transactions = await TransactionDB.getTransactionsByPage(
           txsPerPage,
           pageStart,
-          { sender, type, status }
+          { sender, type, status, unprocessed: isUnprocessed }
         );
         res.json({ Ok: { transactions, totalTranactions, totalPages } });
       } catch (e) {
