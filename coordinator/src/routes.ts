@@ -5,6 +5,8 @@ import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
 import { verifyTxOnChain } from "./verification";
+import { monitorEthereumTransactionsQueryFilter } from "./monitor/ethereum";
+import { getChainConfigById } from "./config";
 
 // --- Types ---
 interface Entry {
@@ -360,4 +362,90 @@ export function registerRoutes(app: express.Application): void {
       }
     }
   );
+
+  // ---------------------------------------------------------------------------
+  // POST /notify-bridgeout — triggered by UI/clients when a BridgeOut event
+  // is observed on-chain, prompting an immediate queryFilter poll instead of
+  // waiting for the next scheduled interval (up to 1 min in production).
+  //
+  // Per-chain throttle + fixed deferred trigger strategy:
+  //   • If cooldown (5s) has elapsed since last poll → poll immediately.
+  //   • If within cooldown → schedule exactly one deferred poll for
+  //     Date.now() + COOLDOWN_MS (full 5s from this notification's arrival),
+  //     so late-arriving events are never silently dropped.
+  //   • Subsequent calls while a deferred timer is already pending → no-op.
+  //
+  // Example timeline (COOLDOWN_MS = 5s):
+  //   t= 0s  notify → immediate poll,    lastPoll=0s
+  //   t= 2s  notify → timer set t=7s
+  //   t= 3s  notify → no-op (timer pending)
+  //   t= 7s  timer fires → poll,         lastPoll=7s, cooldown clears at t=12s
+  //   t= 8s  notify → timer set t=13s
+  //   t=13s  timer fires → poll,         lastPoll=13s
+  // ---------------------------------------------------------------------------
+
+  const NOTIFY_COOLDOWN_MS = 5_000;
+
+  // Per-chain timestamp of the most recent triggered poll (immediate or deferred).
+  const notifyLastPollAt = new Map<number, number>();
+
+  // Per-chain handle for a scheduled deferred poll. At most one per chain at
+  // any time — prevents a burst of notifications from queuing multiple polls.
+  const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
+
+  app.post("/notify-bridgeout", (req, res) => {
+    const { chainId } = req.body;
+
+    // Validate that chainId is a number belonging to a configured chain.
+    if (typeof chainId !== "number" || !getChainConfigById(chainId)) {
+      return res.status(400).json({ Err: "Invalid or unknown chainId" });
+    }
+
+    const now = Date.now();
+    const lastPoll = notifyLastPollAt.get(chainId) ?? 0;
+    const elapsed = now - lastPoll;
+
+    if (elapsed >= NOTIFY_COOLDOWN_MS) {
+      // Cooldown has passed — trigger an immediate poll.
+      // Cancel any deferred timer for this chain; the immediate poll supersedes it.
+      const existing = notifyPendingTimer.get(chainId);
+      if (existing) {
+        clearTimeout(existing);
+        notifyPendingTimer.delete(chainId);
+      }
+
+      notifyLastPollAt.set(chainId, now);
+
+      // Fire-and-forget: monitorEthereumTransactionsQueryFilter has its own
+      // isQueryFilterRunning guard to safely skip concurrent invocations.
+      monitorEthereumTransactionsQueryFilter().catch((err) => {
+        console.error(`[notify-bridgeout] Poll error for chain ${chainId}:`, err);
+      });
+
+      return res.json({ Ok: "triggered" });
+    }
+
+    // Within cooldown — schedule exactly one deferred poll if not already pending.
+    // The timer is set to fire COOLDOWN_MS from now (not from lastPoll), so the
+    // poll always runs at least 5s after the notification that scheduled it.
+    if (!notifyPendingTimer.has(chainId)) {
+      const t = setTimeout(() => {
+        notifyPendingTimer.delete(chainId);
+        notifyLastPollAt.set(chainId, Date.now());
+
+        monitorEthereumTransactionsQueryFilter().catch((err) => {
+          console.error(
+            `[notify-bridgeout] Deferred poll error for chain ${chainId}:`,
+            err
+          );
+        });
+      }, NOTIFY_COOLDOWN_MS);
+
+      notifyPendingTimer.set(chainId, t);
+      return res.json({ Ok: "queued" });
+    }
+
+    // A deferred timer is already scheduled — nothing more to do.
+    return res.json({ Ok: "cooldown" });
+  });
 }

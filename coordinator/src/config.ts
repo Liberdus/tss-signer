@@ -34,12 +34,12 @@ export interface ChainConfigs {
 // ---------------------------------------------------------------------------
 
 export const chainConfigsRaw: ChainConfigs = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "../../chain-config.json"), "utf8")
+  fs.readFileSync(path.join(__dirname, "../../chain-config.json"), "utf8"),
 );
 
 export const infuraKey: string = (
   JSON.parse(
-    fs.readFileSync(path.join(__dirname, "../../infura_keys.json"), "utf8")
+    fs.readFileSync(path.join(__dirname, "../../infura_keys.json"), "utf8"),
   ) as string[]
 )[0];
 
@@ -62,10 +62,10 @@ for (const config of chainsToMonitor) {
     : config.rpcUrl;
   chainProviders.set(
     config.chainId,
-    new ethers.providers.JsonRpcProvider(rpcUrl)
+    new ethers.providers.JsonRpcProvider(rpcUrl),
   );
   console.log(
-    `HTTP provider initialized for ${config.name} (Chain ID: ${config.chainId})`
+    `HTTP provider initialized for ${config.name} (Chain ID: ${config.chainId})`,
   );
 }
 
