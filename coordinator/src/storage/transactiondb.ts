@@ -134,6 +134,7 @@ export async function getTotalTransactions(options?: {
   sender?: string;
   type?: TransactionType;
   status?: TransactionStatus;
+  unprocessed?: boolean; // when true, matches PENDING + PROCESSING (status IN (0,1))
 }): Promise<number> {
   let whereClause = "";
   const params: (string | number)[] = [];
@@ -148,7 +149,10 @@ export async function getTotalTransactions(options?: {
     whereClause += "type = ?";
     params.push(options.type);
   }
-  if (options?.status !== undefined) {
+  if (options?.unprocessed) {
+    appendAndClause(whereClause, params);
+    whereClause += "status IN (0, 1)";
+  } else if (options?.status !== undefined) {
     appendAndClause(whereClause, params);
     whereClause += "status = ?";
     params.push(options.status);
@@ -174,6 +178,7 @@ export async function getTransactionsByPage(
     sender?: string;
     type?: TransactionType;
     status?: TransactionStatus;
+    unprocessed?: boolean; // when true, matches PENDING + PROCESSING (status IN (0,1))
   }
 ): Promise<Transaction[]> {
   let whereClause = "";
@@ -189,15 +194,19 @@ export async function getTransactionsByPage(
     whereClause += "type = ?";
     params.push(options.type);
   }
-  if (options?.status !== undefined) {
+  if (options?.unprocessed) {
+    appendAndClause(whereClause, params);
+    whereClause += "status IN (0, 1)";
+  } else if (options?.status !== undefined) {
     appendAndClause(whereClause, params);
     whereClause += "status = ?";
     params.push(options.status);
   }
 
+  const orderBy = options?.unprocessed ? "txTimestamp ASC" : "createdAt DESC";
   const query = `SELECT * FROM transactions ${
     whereClause ? `WHERE ${whereClause}` : ""
-  } ORDER BY createdAt DESC LIMIT ? OFFSET ?`;
+  } ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
 
   params.push(limit, offset);
 
