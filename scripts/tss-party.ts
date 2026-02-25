@@ -1344,10 +1344,14 @@ async function sendTxStatusToCoordinator(
 }
 
 async function pollPendingTransactionsFromCoordinator(): Promise<void> {
+  console.log('Polling pending transactions from coordinator...')
   try {
     const url = `${coordinatorUrl}/transaction?status=${TransactionStatus.PENDING}`
     const response = await axios.get(url, {timeout: 30_000})
     const data = response.data
+    if (verboseLogs) {
+      console.log('Received pending transactions from coordinator:', data.Ok.transactions)
+    }
     if (!data?.Ok?.transactions) return
 
     const transactions: Transaction[] = data.Ok.transactions
@@ -3017,7 +3021,7 @@ async function main(): Promise<void> {
     subscribeEthereumTransactions()
   } else {
     // Coordinator-monitored mode: poll coordinator for pending transactions
-    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, 2 * 60 * 1000)
+    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, 10 * 1000)
   }
 }
 
