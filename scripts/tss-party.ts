@@ -171,6 +171,7 @@ const loadExistingQueue = true
 const verboseLogs = true
 const addOldTxToQueue = true
 const useQueryFilter = true // Use queryFilter for efficient event scanning (vs block-by-block getBlockWithTransactions)
+const enableLocalMonitoring = false // When false, coordinator handles EVM/Liberdus monitoring; TSS party polls coordinator instead
 
 const serverStartTime = Date.now()
 
@@ -249,9 +250,9 @@ for (const config of chainsToInit) {
 
   const provider = new providers.JsonRpcProvider(rpcUrl)
 
-  // Only create WebSocket provider if not in keygen mode and URL is valid
+  // Only create WebSocket provider if not in keygen mode, URL is valid, and local monitoring is enabled
   let wsProvider: ethers.providers.WebSocketProvider | null = null
-  if (!generateKeystore) {
+  if (!generateKeystore && enableLocalMonitoring) {
     try {
       const wsUrl = config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl
       wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
@@ -921,6 +922,7 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
 }
 
 async function monitorEthereumTransactions(): Promise<void> {
+  if (!enableLocalMonitoring) return
   // Monitor all supported EVM chains
   for (const [chainId, chainProvider] of chainProviders.entries()) {
     try {
@@ -1027,6 +1029,7 @@ const MAX_RETRY_DELAY_MS = 30000
 const MAX_RETRIES_PER_BATCH = 5
 
 async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
+  if (!enableLocalMonitoring) return
   if (isQueryFilterRunning) {
     if (verboseLogs) console.log('[queryFilter] Previous invocation still running, skipping this interval')
     return
@@ -1198,6 +1201,7 @@ async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
 }
 
 async function monitorLiberdusTransactions(): Promise<void> {
+  if (!enableLocalMonitoring) return
   console.log('Running monitorLiberdusTransactions', new Date().toISOString())
   try {
     // Query for transactions to all bridge addresses
@@ -1336,6 +1340,69 @@ async function sendTxStatusToCoordinator(
     }
   } catch (error) {
     console.error('Error updating transaction status to coordinator:', error)
+  }
+}
+
+async function pollPendingTransactionsFromCoordinator(): Promise<void> {
+  try {
+    const url = `${coordinatorUrl}/transaction?status=${TransactionStatus.PENDING}`
+    const response = await axios.get(url, {timeout: 30_000})
+    const data = response.data
+    if (!data?.Ok?.transactions) return
+
+    const transactions: Transaction[] = data.Ok.transactions
+    if (transactions.length === 0) return
+
+    if (data.Ok.totalTranactions > transactions.length) {
+      console.warn(
+        `[poll] ${data.Ok.totalTranactions} pending txs on coordinator, only fetched ${transactions.length} (first page)`,
+      )
+    }
+
+    for (const tx of transactions) {
+      if (txQueueMap.has(tx.txId)) continue
+      if (txQueue.length >= txQueueSize) {
+        console.warn('[poll] Transaction queue full, skipping remaining coordinator results')
+        break
+      }
+
+      const bridgeType: TransactionQueueItem['type'] =
+        tx.type === TransactionType.BRIDGE_IN
+          ? 'coinToToken'
+          : tx.type === TransactionType.BRIDGE_VAULT
+            ? 'vaultBridge'
+            : 'tokenToCoin'
+
+      const value = ethers.BigNumber.from(tx.value)
+
+      const txData: TransactionQueueItem = {
+        receipt: null as any, // receipt not needed — process functions use explicit params
+        from: tx.sender,      // coordinator stores toEthereumAddress(destination)
+        value,
+        txId: tx.txId,
+        type: bridgeType,
+        chainId: tx.chainId,
+      }
+
+      txQueue.push(txData)
+      txQueueMap.set(tx.txId, {
+        status: 'pending',
+        from: tx.sender,
+        value,
+        txId: tx.txId,
+        chainId: tx.chainId,
+        timestamp: Date.now(),
+      })
+
+      if (verboseLogs) {
+        const chainName = getChainConfigById(tx.chainId)?.name || 'Unknown'
+        console.log(`[poll] Added ${bridgeType} tx ${tx.txId} from coordinator (${chainName})`)
+      }
+    }
+
+    saveQueueToFile(ourParty.idx)
+  } catch (error) {
+    console.error('[poll] Error polling pending transactions from coordinator:', error)
   }
 }
 
@@ -2451,6 +2518,7 @@ function subscribeToChainEvents(chainId: number) {
 }
 
 function subscribeEthereumTransactions() {
+  if (!enableLocalMonitoring) return
 
   // Subscribe to events from all supported chains
   for (const [chainId, chainProvider] of chainProviders.entries()) {
@@ -2935,16 +3003,22 @@ async function main(): Promise<void> {
   }
 
   startDriftResistantScheduler(handleTransactionQueue, txQueueProcessingInterval)
-  if (chainConfigs.enableLiberdusNetwork) startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
   // Add memory management and monitoring schedulers
-  startDriftResistantScheduler(cleanupOldTransactions, 10 * 60 * 1000) // Every 10 minutes (more frequent)
+  startDriftResistantScheduler(cleanupOldTransactions, 10 * 60 * 1000) // Every 10 minutes
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
-  startDriftResistantScheduler(monitorWebSocketHealth, 2 * 60 * 1000) // Every 2 minutes
-  // Additional cleanup scheduler for stuck transactions
   startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
-  const ethMonitorFn = useQueryFilter ? monitorEthereumTransactionsQueryFilter : monitorEthereumTransactions
-  startDriftResistantScheduler(ethMonitorFn, ethereumTxMonitorInterval)
-  subscribeEthereumTransactions()
+
+  if (enableLocalMonitoring) {
+    // Local monitoring: this party scans EVM chains and Liberdus directly
+    if (chainConfigs.enableLiberdusNetwork) startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
+    startDriftResistantScheduler(monitorWebSocketHealth, 2 * 60 * 1000)
+    const ethMonitorFn = useQueryFilter ? monitorEthereumTransactionsQueryFilter : monitorEthereumTransactions
+    startDriftResistantScheduler(ethMonitorFn, ethereumTxMonitorInterval)
+    subscribeEthereumTransactions()
+  } else {
+    // Coordinator-monitored mode: poll coordinator for pending transactions
+    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, 2 * 60 * 1000)
+  }
 }
 
 main()
