@@ -1,0 +1,103 @@
+import { ethers } from "ethers";
+import axios from "axios";
+import * as TransactionDB from "../storage/transactiondb";
+import { toEthereumAddress } from "../utils/transformAddress";
+import { chainConfigsRaw } from "../config";
+import { monitorState, saveMonitorState } from "./state";
+
+// ---------------------------------------------------------------------------
+// Liberdus monitoring (only active when enableLiberdusNetwork = true)
+// ---------------------------------------------------------------------------
+
+function validateCoinToTokenTx(receipt: any): {
+  from: string;
+  value: ethers.BigNumber;
+  txId: string;
+  targetChainId: number;
+} | null {
+  try {
+    const { success, to, from, additionalInfo, type, txId } = receipt.data;
+    if (!success) return null;
+    if (type !== "transfer") return null;
+
+    let targetChainId: number | null = null;
+    for (const [chainIdStr, config] of Object.entries(
+      chainConfigsRaw.supportedChains
+    )) {
+      if (to === config.bridgeAddress) {
+        targetChainId = parseInt(chainIdStr);
+        break;
+      }
+    }
+    if (targetChainId === null) return null;
+
+    const value = ethers.BigNumber.from("0x" + additionalInfo.amount.value);
+    return { from, value, txId, targetChainId };
+  } catch (e) {
+    console.error("[coordinator/liberdus] validateCoinToTokenTx error:", e);
+    return null;
+  }
+}
+
+export async function monitorLiberdusTransactions(): Promise<void> {
+  console.log(
+    "[coordinator/liberdus] Running monitorLiberdusTransactions",
+    new Date().toISOString()
+  );
+  try {
+    const collectorHost =
+      chainConfigsRaw.collectorHost || "http://127.0.0.1:3035";
+    const bridgeAddresses = Object.values(chainConfigsRaw.supportedChains).map(
+      (c) => c.bridgeAddress
+    );
+
+    for (const bridgeAddress of bridgeAddresses) {
+      const query = `?accountId=${bridgeAddress}&afterTimestamp=${monitorState.lastLiberdusTimestamp}&page=1`;
+      const url = collectorHost + "/api/transaction" + query;
+      const response = await axios.get(url, { timeout: 30_000 });
+      const { success, totalTransactions, transactions } = response.data;
+
+      if (!success || totalTransactions === 0) continue;
+
+      for (let i = 0; i < transactions.length; i++) {
+        const receipt = transactions[i];
+        const validated = validateCoinToTokenTx(receipt);
+
+        if (!validated) {
+          if (i === transactions.length - 1) {
+            monitorState.lastLiberdusTimestamp = receipt.timestamp;
+            saveMonitorState();
+          }
+          continue;
+        }
+
+        const { from, value, txId, targetChainId } = validated;
+
+        // Dedup via DB
+        const existing = await TransactionDB.getTransactionById(txId);
+        if (existing) continue;
+
+        const tx: TransactionDB.Transaction = {
+          txId: txId.toLowerCase(),
+          sender: toEthereumAddress(from),
+          value: ethers.utils.hexValue(value),
+          type: TransactionDB.TransactionType.BRIDGE_IN,
+          txTimestamp: receipt.timestamp,
+          chainId: targetChainId,
+          receiptId: "",
+          status: TransactionDB.TransactionStatus.PENDING,
+        };
+
+        await TransactionDB.saveTransaction(tx);
+        console.log(`[coordinator/liberdus] Saved BRIDGE_IN tx ${txId}`);
+
+        if (i === transactions.length - 1) {
+          monitorState.lastLiberdusTimestamp = receipt.timestamp;
+          saveMonitorState();
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[coordinator/liberdus] Error monitoring Liberdus:", e);
+  }
+}
