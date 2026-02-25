@@ -44,10 +44,17 @@ export async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
       if (!chainConfig) continue;
       const chainName = chainConfig.name;
 
+      // Use separate block maps so vault and Liberdus mode contracts on the
+      // same chainId track their cursors independently.
+      const blockMap = chainConfigsRaw.enableLiberdusNetwork
+        ? monitorState.blocks
+        : monitorState.vault;
+      const chainKey = chainId.toString();
+
       try {
         const newestBlock = await provider.getBlockNumber();
         const savedBlock =
-          monitorState.blocks[chainId.toString()] ??
+          blockMap[chainKey] ??
           (chainConfig.deploymentBlock ?? 0);
 
         if (savedBlock >= newestBlock) {
@@ -179,7 +186,7 @@ export async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
 
           // Advance cursor and persist block state
           cursor = batchEnd + 1;
-          monitorState.blocks[chainId.toString()] = batchEnd;
+          blockMap[chainKey] = batchEnd;
           saveMonitorState();
 
           // Gradually recover batch size after a successful batch

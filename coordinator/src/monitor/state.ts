@@ -6,7 +6,8 @@ import path from "path";
 // ---------------------------------------------------------------------------
 
 export interface MonitorState {
-  blocks: Record<string, number>; // chainId → last checked block
+  vault: Record<string, number>;  // chainId → last checked block (vault mode contracts)
+  blocks: Record<string, number>; // chainId → last checked block (supportedChains contracts)
   lastLiberdusTimestamp: number;  // unix ms of last processed Liberdus tx
 }
 
@@ -18,6 +19,7 @@ const MONITOR_STATE_PATH = path.join(
 
 // Mutable singleton — mutated directly by ethereum.ts and liberdus.ts
 export const monitorState: MonitorState = {
+  vault: {},
   blocks: {},
   lastLiberdusTimestamp: Date.now(),
 };
