@@ -34,6 +34,8 @@
     "jsonwebtoken": "^9.0.2",
     "rate-limiter-flexible": "^4.0.0",
     "redis": "^4.6.12",
+    "axios": "^1.6.0",
+    "ethers": "^5.7.2",
     "sqlite3": "^5.1.7",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
