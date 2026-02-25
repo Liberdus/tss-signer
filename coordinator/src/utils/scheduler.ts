@@ -4,10 +4,10 @@
  */
 export function startDriftResistantScheduler(
   fn: () => void | Promise<void>,
-  intervalMS: number
+  intervalMS: number,
 ): void {
   console.log(
-    `Starting drift-resistant scheduler for ${fn.name} with interval ${intervalMS} ms`
+    `Starting drift-resistant scheduler for ${fn.name} with interval ${intervalMS} ms`,
   );
   const intervalSeconds = Math.round(intervalMS / 1000);
 
