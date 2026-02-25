@@ -74,6 +74,12 @@ for (const config of chainsToMonitor) {
 // ---------------------------------------------------------------------------
 
 export function getChainConfigById(chainId: number): ChainConfig | undefined {
+  // In Liberdus mode, supportedChains is the canonical source — its contract
+  // addresses differ from vaultChain/secondaryChainConfig, so check it first.
+  if (chainConfigsRaw.enableLiberdusNetwork) {
+    return chainConfigsRaw.supportedChains[chainId.toString()];
+  }
+  // Vault mode: vaultChain and secondaryChainConfig are the active configs.
   if (chainConfigsRaw.vaultChain?.chainId === chainId)
     return chainConfigsRaw.vaultChain;
   if (chainConfigsRaw.secondaryChainConfig?.chainId === chainId)
