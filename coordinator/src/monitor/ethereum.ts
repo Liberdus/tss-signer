@@ -17,22 +17,28 @@ const BASE_DELAY_MS = 500;
 const MAX_RETRY_DELAY_MS = 30_000;
 const MAX_RETRIES_PER_BATCH = 5;
 
-let isQueryFilterRunning = false;
+// Per-chain running flag — allows chains to be scanned independently.
+// A notify-triggered scan for chain A does not block a concurrent scheduler
+// scan from processing chain B.
+const isChainRunning = new Map<number, boolean>();
 const chainBatchSizes = new Map<number, number>();
 
 // ---------------------------------------------------------------------------
 // Ethereum monitoring — queryFilter only (no WebSocket)
+//
+// targetChainId (optional):
+//   If provided, only the specified chain is scanned. Used by the
+//   /notify-bridgeout endpoint to target the chain that received the event.
+//   If omitted (scheduled interval), all chains are scanned sequentially.
 // ---------------------------------------------------------------------------
 
-export async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
-  if (isQueryFilterRunning) {
-    console.log("[coordinator/queryFilter] Previous run still active, skipping");
-    return;
-  }
-  isQueryFilterRunning = true;
+export async function monitorEthereumTransactionsQueryFilter(
+  targetChainId?: number
+): Promise<void> {
+  for (const [chainId, provider] of chainProviders.entries()) {
+      // If called with a specific chainId, skip all other chains.
+      if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
-  try {
-    for (const [chainId, provider] of chainProviders.entries()) {
       // In vault mode only vaultChain emits events — skip secondaryChainConfig
       if (
         !chainConfigsRaw.enableLiberdusNetwork &&
@@ -40,8 +46,17 @@ export async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
       )
         continue;
 
+      // Per-chain lock: skip this chain if a scan is already in progress for it.
+      if (isChainRunning.get(chainId)) {
+        console.log(
+          `[coordinator/queryFilter] Chain ${chainId} scan still active, skipping`
+        );
+        continue;
+      }
+      isChainRunning.set(chainId, true);
+
       const chainConfig = getChainConfigById(chainId);
-      if (!chainConfig) continue;
+      if (!chainConfig) { isChainRunning.set(chainId, false); continue; }
       const chainName = chainConfig.name;
 
       // Use separate block maps so vault and Liberdus mode contracts on the
@@ -204,9 +219,10 @@ export async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
           `[coordinator/queryFilter] Error for ${chainName}:`,
           error
         );
+      } finally {
+        // Always release the per-chain lock, even if the scan threw or used
+        // `continue` to skip to the next chain early.
+        isChainRunning.set(chainId, false);
       }
-    }
-  } finally {
-    isQueryFilterRunning = false;
   }
 }

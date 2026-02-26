@@ -416,9 +416,10 @@ export function registerRoutes(app: express.Application): void {
 
       notifyLastPollAt.set(chainId, now);
 
-      // Fire-and-forget: monitorEthereumTransactionsQueryFilter has its own
-      // isQueryFilterRunning guard to safely skip concurrent invocations.
-      monitorEthereumTransactionsQueryFilter().catch((err) => {
+      // Fire-and-forget: only scan the notified chain.
+      // Per-chain lock in monitorEthereumTransactionsQueryFilter safely
+      // skips this chain if a scan is already in progress for it.
+      monitorEthereumTransactionsQueryFilter(chainId).catch((err) => {
         console.error(`[notify-bridgeout] Poll error for chain ${chainId}:`, err);
       });
 
@@ -433,7 +434,7 @@ export function registerRoutes(app: express.Application): void {
         notifyPendingTimer.delete(chainId);
         notifyLastPollAt.set(chainId, Date.now());
 
-        monitorEthereumTransactionsQueryFilter().catch((err) => {
+        monitorEthereumTransactionsQueryFilter(chainId).catch((err) => {
           console.error(
             `[notify-bridgeout] Deferred poll error for chain ${chainId}:`,
             err
