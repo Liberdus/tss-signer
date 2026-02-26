@@ -405,6 +405,10 @@ export function registerRoutes(app: express.Application): void {
     const lastPoll = notifyLastPollAt.get(chainId) ?? 0;
     const elapsed = now - lastPoll;
 
+    console.log(
+      `[notify-bridgeout] ${chainId} lastPoll=${lastPoll} ${elapsed/1000}s ${elapsed >= NOTIFY_COOLDOWN_MS ? "immediate" : "deferred"} ` 
+    );
+
     if (elapsed >= NOTIFY_COOLDOWN_MS) {
       // Cooldown has passed — trigger an immediate poll.
       // Cancel any deferred timer for this chain; the immediate poll supersedes it.

@@ -3,6 +3,8 @@ import * as fs from 'fs'
 import {writeFile} from 'fs/promises'
 import * as path from 'path'
 import axios, {AxiosResponse} from 'axios'
+import http from 'http'
+import https from 'https'
 import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
@@ -379,12 +381,27 @@ const txQueueSize = 10
 const txQueueProcessingInterval = 10000
 const liberdusTxMonitorInterval = 10000
 const ethereumTxMonitorInterval = 10000
+const COORDINATOR_POLL_INTERVAL = 10 * 1000 // 10s
 
 // Define maximum concurrent transactions
 const MAX_CONCURRENT_TXS = 1
 const processingTransactionIds = new Set<string>()
 
 const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+
+// Global HTTP agents with keep-alive enabled.
+// keepAlive:      reuse sockets across requests and lets the OS send TCP probes
+//                 on idle connections — detects a dead coordinator faster than
+//                 waiting for the axios timeout (critical for network partitions).
+// keepAliveMsecs: initial delay before the OS starts probing (30 s is standard).
+// maxSockets:     cap concurrent connections per host; TSS party traffic is low
+//                 (periodic coordinator polls + occasional status POSTs) so 10 is ample.
+// maxFreeSockets: idle socket pool size per host — small pool is enough here.
+const httpAgent  = new http.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 10, maxFreeSockets: 5 })
+const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 10, maxFreeSockets: 5 })
+axios.defaults.httpAgent  = httpAgent
+axios.defaults.httpsAgent = httpsAgent
 
 // Add this cleanup function for memory management
 function cleanupOldTransactions() {
@@ -1348,7 +1365,7 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
   console.log('Polling pending transactions from coordinator...')
   try {
     const url = `${coordinatorUrl}/transaction?unprocessed=true`
-    const response = await axios.get(url, {timeout: 30_000})
+    const response = await axios.get(url, {timeout: COORDINATOR_POLL_INTERVAL})
     const data = response.data
     if (verboseLogs) {
       console.log('Received pending transactions from coordinator:', data.Ok.transactions)
@@ -3035,7 +3052,7 @@ async function main(): Promise<void> {
     subscribeEthereumTransactions()
   } else {
     // Coordinator-monitored mode: poll coordinator for pending transactions
-    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, 10 * 1000)
+    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, COORDINATOR_POLL_INTERVAL)
   }
 }
 

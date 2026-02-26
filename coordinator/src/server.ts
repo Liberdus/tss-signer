@@ -32,7 +32,7 @@ registerRoutes(app);
 // ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8000;
-const ETH_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
+const ETH_MONITOR_INTERVAL_MS = 60 * 1000;  // 1 minute
 const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
 
 (async () => {
