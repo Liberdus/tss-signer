@@ -1344,11 +1344,14 @@ async function sendTxStatusToCoordinator(
   }
 }
 
+const COORDINATOR_LONG_POLL_TIMEOUT_MS = 125_000 // slightly above server's 120 s to let server respond first
+const COORDINATOR_POLL_ERROR_BACKOFF_MS = 3_000  // backoff before retrying on coordinator failure
+
 async function pollPendingTransactionsFromCoordinator(): Promise<void> {
-  console.log('Polling pending transactions from coordinator...')
+  console.log('[poll] Long-polling coordinator for pending transactions...')
   try {
-    const url = `${coordinatorUrl}/transaction?unprocessed=true`
-    const response = await axios.get(url, {timeout: 30_000})
+    const url = `${coordinatorUrl}/poll/pendingTxs`
+    const response = await axios.get(url, {timeout: COORDINATOR_LONG_POLL_TIMEOUT_MS})
     const data = response.data
     if (verboseLogs) {
       console.log('Received pending transactions from coordinator:', data.Ok.transactions)
@@ -1419,6 +1422,16 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
     saveQueueToFile(ourParty.idx)
   } catch (error) {
     console.error('[poll] Error polling pending transactions from coordinator:', error)
+    await sleep(COORDINATOR_POLL_ERROR_BACKOFF_MS)
+  }
+}
+
+// Starts an indefinite long-poll loop against the coordinator.  Replaces the
+// fixed-interval scheduler: each iteration either returns data immediately or
+// holds the connection for up to 120 s, then the next iteration fires right away.
+async function startCoordinatorLongPollLoop(): Promise<void> {
+  while (true) {
+    await pollPendingTransactionsFromCoordinator()
   }
 }
 
@@ -3034,8 +3047,8 @@ async function main(): Promise<void> {
     startDriftResistantScheduler(ethMonitorFn, ethereumTxMonitorInterval)
     subscribeEthereumTransactions()
   } else {
-    // Coordinator-monitored mode: poll coordinator for pending transactions
-    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, 10 * 1000)
+    // Coordinator-monitored mode: long-poll coordinator for pending transactions
+    startCoordinatorLongPollLoop()
   }
 }
 

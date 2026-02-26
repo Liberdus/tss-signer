@@ -41,13 +41,13 @@ interface TxStatusData
   party: number;
 }
 
+
 type TransactionAPIQueryParameters = {
   sender?: string;
   type?: TransactionDB.TransactionType;
   status?: TransactionDB.TransactionStatus;
   txId?: string;
   page?: string;
-  unprocessed?: string; // when "true", returns PENDING + PROCESSING ordered by txTimestamp ASC
 };
 
 // --- Helpers ---
@@ -256,6 +256,96 @@ export function registerRoutes(app: express.Application): void {
     }
   );
 
+  // GET /poll/pendingTxs — long-poll endpoint for TSS parties.
+  // Holds the connection for up to 120 s, responding as soon as pending
+  // transactions (PENDING + PROCESSING) are available, or with an empty
+  // result once the timeout expires.
+  app.get(
+    "/poll/pendingTxs",
+    async (
+      req,
+      res: Response<
+        Result<{
+          transactions: TransactionDB.Transaction[];
+          totalTranactions: number;
+          totalPages: number;
+        }>
+      >,
+    ) => {
+      const LONG_POLL_TIMEOUT_MS = 120_000;
+      const POLL_INTERVAL_MS = 1_000;
+      const PAGE_SIZE = 10;
+
+      const fetchPending = async () => {
+        const total = await TransactionDB.getTotalTransactions({
+          unprocessed: true,
+        });
+        if (total === 0) return null;
+        const txs = await TransactionDB.getTransactionsByPage(PAGE_SIZE, 0, {
+          unprocessed: true,
+        });
+        return {
+          transactions: txs,
+          totalTranactions: total,
+          totalPages: Math.ceil(total / PAGE_SIZE),
+        };
+      };
+
+      try {
+        // Fast path: respond immediately if data is already available.
+        const immediate = await fetchPending();
+        if (immediate) return res.json({ Ok: immediate });
+
+        // Slow path: hold and re-check DB every second.
+        let resolved = false;
+        let intervalId: NodeJS.Timeout;
+        let timeoutId: NodeJS.Timeout;
+
+        const done = (
+          data: {
+            transactions: TransactionDB.Transaction[];
+            totalTranactions: number;
+            totalPages: number;
+          } | null,
+        ) => {
+          if (resolved) return;
+          resolved = true;
+          clearInterval(intervalId);
+          clearTimeout(timeoutId);
+          res.json({
+            Ok: data ?? {
+              transactions: [],
+              totalTranactions: 0,
+              totalPages: 0,
+            },
+          });
+        };
+
+        req.on("close", () => {
+          resolved = true;
+          clearInterval(intervalId);
+          clearTimeout(timeoutId);
+        });
+
+        intervalId = setInterval(async () => {
+          try {
+            const result = await fetchPending();
+            if (result) done(result);
+          } catch (_e) {
+            /* timeout will end the wait */
+          }
+        }, POLL_INTERVAL_MS);
+
+        timeoutId = setTimeout(() => done(null), LONG_POLL_TIMEOUT_MS);
+      } catch (e) {
+        console.error("[poll/pendingTxs] Error:", e);
+        res
+          .status(500)
+          .json({ Err: `Failed to poll pending transactions: ${e}` });
+      }
+    },
+  );
+
   // GET /transaction — paginated query with optional filters
   app.get(
     "/transaction",
@@ -270,7 +360,7 @@ export function registerRoutes(app: express.Application): void {
       >
     ) => {
       try {
-        let { sender, txId, page, type, status, unprocessed } = req.query;
+        let { sender, txId, page, type, status } = req.query;
         let pageNum = 1;
         const txsPerPage = 10;
         let transactions: TransactionDB.Transaction[] = [];
@@ -330,12 +420,10 @@ export function registerRoutes(app: express.Application): void {
           status = parsedStatus;
         }
 
-        const isUnprocessed = unprocessed === "true";
         totalTranactions = await TransactionDB.getTotalTransactions({
           sender,
           type,
           status,
-          unprocessed: isUnprocessed,
         });
         totalPages = Math.ceil(totalTranactions / txsPerPage);
 
@@ -353,7 +441,7 @@ export function registerRoutes(app: express.Application): void {
         transactions = await TransactionDB.getTransactionsByPage(
           txsPerPage,
           pageStart,
-          { sender, type, status, unprocessed: isUnprocessed }
+          { sender, type, status }
         );
         res.json({ Ok: { transactions, totalTranactions, totalPages } });
       } catch (e) {
@@ -404,6 +492,10 @@ export function registerRoutes(app: express.Application): void {
     const now = Date.now();
     const lastPoll = notifyLastPollAt.get(chainId) ?? 0;
     const elapsed = now - lastPoll;
+
+    console.log(
+      `[notify-bridgeout] ${chainId} lastPoll=${lastPoll} elapsed=${elapsed}`,
+    );
 
     if (elapsed >= NOTIFY_COOLDOWN_MS) {
       // Cooldown has passed — trigger an immediate poll.
