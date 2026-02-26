@@ -73,12 +73,41 @@ export async function monitorLiberdusTransactions(): Promise<void> {
 
         const { from, value, txId, targetChainId } = validated;
 
-        // Dedup via DB
-        const existing = await TransactionDB.getTransactionById(txId);
-        if (existing) continue;
+        const txIdNorm = txId.toLowerCase();
+
+        // Dedup via DB.  The BridgedIn scanner may have early-saved this tx
+        // as COMPLETED using the "0x"-prefixed bytes32 form of the txId, while
+        // the Liberdus collector returns plain 64-char hex (no "0x" prefix).
+        // Check both formats so we correctly detect the early-save.
+        let existing = await TransactionDB.getTransactionById(txIdNorm);
+        if (!existing && !txIdNorm.startsWith("0x")) {
+          existing = await TransactionDB.getTransactionById("0x" + txIdNorm);
+        }
+
+        if (existing) {
+          if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
+            // Pre-populated by BridgedIn early-save.  Correct chainId (destination
+            // EVM chain), txTimestamp (Liberdus source timestamp), and sender
+            // (Liberdus originating address, not the EVM recipient stored earlier).
+            await TransactionDB.updateTransactionMetadata(
+              existing.txId,
+              targetChainId,
+              receipt.timestamp,
+              toEthereumAddress(from)
+            );
+            console.log(
+              `[coordinator/liberdus] Corrected metadata for early-saved BRIDGE_IN tx ${existing.txId}`
+            );
+          }
+          if (i === transactions.length - 1) {
+            monitorState.lastLiberdusTimestamp = receipt.timestamp;
+            saveMonitorState();
+          }
+          continue;
+        }
 
         const tx: TransactionDB.Transaction = {
-          txId: txId.toLowerCase(),
+          txId: txIdNorm,
           sender: toEthereumAddress(from),
           value: ethers.utils.hexValue(value),
           type: TransactionDB.TransactionType.BRIDGE_IN,
@@ -89,7 +118,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
         };
 
         await TransactionDB.saveTransaction(tx);
-        console.log(`[coordinator/liberdus] Saved BRIDGE_IN tx ${txId}`);
+        console.log(`[coordinator/liberdus] Saved BRIDGE_IN tx ${txIdNorm}`);
 
         if (i === transactions.length - 1) {
           monitorState.lastLiberdusTimestamp = receipt.timestamp;
