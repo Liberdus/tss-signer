@@ -90,6 +90,24 @@ export async function saveTransaction(transaction: Transaction): Promise<void> {
 }
 
 /**
+ * Correct source-side metadata on a transaction that was pre-populated by the
+ * BridgedIn scanner before the originating source event (BridgedOut / Liberdus)
+ * was observed.  Always updates chainId and txTimestamp; optionally updates
+ * sender when the early-save used a placeholder (BRIDGE_IN where BridgedIn's
+ * `to` ≠ the Liberdus originating address).
+ */
+export async function updateTransactionMetadata(
+  txId: string,
+  chainId: number,
+  txTimestamp: number,
+  sender?: string
+): Promise<void> {
+  const fields: Record<string, number | string> = { chainId, txTimestamp };
+  if (sender !== undefined) fields.sender = sender;
+  await db.update("transactions", fields, "txId = ?", [txId]);
+}
+
+/**
  * Update the status of a transaction by txId
  * @param txId - Unique transaction ID
  * @param status - New status value
@@ -203,7 +221,7 @@ export async function getTransactionsByPage(
     params.push(options.status);
   }
 
-  const orderBy = options?.unprocessed ? "txTimestamp ASC" : "createdAt DESC";
+  const orderBy = options?.unprocessed ? "txTimestamp ASC" : "txTimestamp DESC";
   const query = `SELECT * FROM transactions ${
     whereClause ? `WHERE ${whereClause}` : ""
   } ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
