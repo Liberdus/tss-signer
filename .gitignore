@@ -11,3 +11,4 @@ package-lock.json
 pkg
 Cargo.lock
 *.log
+tx.json

@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node dist/server.js",
     "build": "tsc",
-    "dev": "nodemon --exec ts-node src/server.ts --ignore block_state_coordinator.json --ignore transactions.sqlite",
+    "dev": "nodemon --exec ts-node src/server.ts --ignore block_state.json",
     "test": "jest",
     "test:watch": "jest --watch",
     "lint": "eslint . --ext .ts"
