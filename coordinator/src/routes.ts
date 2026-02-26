@@ -7,6 +7,7 @@ import { isEthereumAddress } from "./utils/transformAddress";
 import { verifyTxOnChain } from "./verification";
 import { monitorEthereumTransactionsQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
+import { syncReady } from "./monitor/state";
 
 // --- Types ---
 interface Entry {
@@ -331,6 +332,18 @@ export function registerRoutes(app: express.Application): void {
         }
 
         const isUnprocessed = unprocessed === "true";
+
+        // While the initial ordered scan (BridgedOut → Liberdus → BridgedIn) has
+        // not yet completed, return empty for pending/unprocessed queries.
+        // This prevents TSS parties from picking up transactions that are already
+        // completed on-chain but whose BridgedIn events haven't been scanned yet.
+        if (
+          !syncReady &&
+          (isUnprocessed || status === TransactionDB.TransactionStatus.PENDING)
+        ) {
+          return res.json({ Ok: { transactions: [], totalTranactions: 0, totalPages: 0 } });
+        }
+
         totalTranactions = await TransactionDB.getTotalTransactions({
           sender,
           type,

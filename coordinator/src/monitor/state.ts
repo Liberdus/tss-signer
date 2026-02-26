@@ -6,9 +6,10 @@ import path from "path";
 // ---------------------------------------------------------------------------
 
 export interface MonitorState {
-  vault: Record<string, number>;  // chainId → last checked block (vault mode contracts)
-  blocks: Record<string, number>; // chainId → last checked block (supportedChains contracts)
-  lastLiberdusTimestamp: number;  // unix ms of last processed Liberdus tx
+  vault: Record<string, number>;         // chainId → last checked block (vault mode BridgedOut)
+  blocks: Record<string, number>;        // chainId → last checked block (Liberdus mode BridgedOut)
+  bridgeInBlocks: Record<string, number>; // chainId → last checked block (BridgedIn events)
+  lastLiberdusTimestamp: number;         // unix ms of last processed Liberdus tx
 }
 
 // Path relative to compiled output (coordinator/dist/monitor/ → coordinator/)
@@ -21,16 +22,28 @@ const MONITOR_STATE_PATH = path.join(
 export const monitorState: MonitorState = {
   vault: {},
   blocks: {},
+  bridgeInBlocks: {},
   lastLiberdusTimestamp: Date.now(),
 };
+
+// Set to true once the initial ordered scan (BridgedOut → Liberdus → BridgedIn)
+// completes on startup.  While false, GET /transaction for pending/unprocessed
+// transactions returns empty to prevent parties from picking up transactions
+// that are already completed on-chain.
+export let syncReady = false;
+export function setSyncReady(): void {
+  syncReady = true;
+}
 
 export function initMonitorState(): void {
   if (fs.existsSync(MONITOR_STATE_PATH)) {
     try {
-      const saved: MonitorState = JSON.parse(
+      const saved: Partial<MonitorState> = JSON.parse(
         fs.readFileSync(MONITOR_STATE_PATH, "utf8")
       );
       Object.assign(monitorState, saved);
+      // Ensure bridgeInBlocks exists for older state files that predate this field
+      if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
     } catch (e) {
       console.warn("[monitor] Failed to load monitor state, using defaults:", e);
     }
