@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 
 // ---------------------------------------------------------------------------
-// Monitor state — persisted to block_state_coordinator.json
+// Monitor state — persisted to block_state.json
 // ---------------------------------------------------------------------------
 
 export interface MonitorState {
@@ -14,7 +14,7 @@ export interface MonitorState {
 // Path relative to compiled output (coordinator/dist/monitor/ → coordinator/)
 const MONITOR_STATE_PATH = path.join(
   __dirname,
-  "../../block_state_coordinator.json"
+  "../../block_state.json"
 );
 
 // Mutable singleton — mutated directly by ethereum.ts and liberdus.ts
