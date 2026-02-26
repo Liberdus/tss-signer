@@ -54,6 +54,9 @@ export async function monitorEthereumTransactionsQueryFilter(
         continue;
       }
       isChainRunning.set(chainId, true);
+      console.log(
+        `[coordinator/queryFilter] Starting scan for chain ${chainId}`
+      );
 
       const chainConfig = getChainConfigById(chainId);
       if (!chainConfig) { isChainRunning.set(chainId, false); continue; }
