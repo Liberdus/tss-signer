@@ -8,6 +8,7 @@ import https from 'https'
 import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
+import {isNormalizedTxId, normalizeTxId} from './transformTxId'
 
 const {BigNumber, utils: ethersUtils, providers} = ethers
 
@@ -97,7 +98,7 @@ interface LiberdusTx {
   to: string
   amount: bigint
   type: string
-  memo: string
+  // memo: string
   networkId: string
   chatId?: string
   timestamp?: number
@@ -1347,7 +1348,13 @@ async function sendTxStatusToCoordinator(
 ): Promise<void> {
   try {
     const url = `${coordinatorUrl}/transaction/status`
-    const data: TxStatusData = {txId, status, receiptId, reason: failedReason, party: ourParty.idx}
+    const data: TxStatusData = {
+      txId: normalizeTxId(txId),
+      status,
+      receiptId: receiptId ? normalizeTxId(receiptId) : receiptId,
+      reason: failedReason,
+      party: ourParty.idx,
+    }
     const response = await axios.post(url, data)
     if (response.status !== 202 && response.status !== 200) {
       console.error('Failed to update transaction status to coordinator:', response.data)
@@ -1384,6 +1391,10 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
     }
 
     for (const tx of transactions) {
+      if (!tx.txId || !isNormalizedTxId(tx.txId)) {
+        console.warn(`[poll] Skipping tx with invalid txId (expected 64 chars): ${tx.txId}`)
+        continue
+      }
       if (txQueueMap.has(tx.txId)) continue
       if (txQueue.length >= txQueueSize) {
         console.warn('[poll] Transaction queue full, skipping remaining coordinator results')
@@ -1677,7 +1688,7 @@ async function processCoinToToken(
 
   const txIdBytes32 = txId.startsWith('0x') ? txId : '0x' + txId
   const data = BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeIn', [
-    '0x' + to.slice(0, 40),
+    toEthereumAddress(to),
     value,
     targetChainId,
     txIdBytes32,
@@ -1896,7 +1907,7 @@ async function processTokenToCoin(
     amount: amountInBigInt,
     type: 'transfer',
     networkId: chainConfigs.liberdusNetworkId,
-    memo: `${txId}:${sourceChainId}`, // Include source chain info in memo
+    // memo: `${txId}:${sourceChainId}`, // Include source chain info in memo
   }
   tx.chatId = calculateChatId(tx.from, tx.to)
   const currentCycleRecord = await getLatestCycleRecord()
