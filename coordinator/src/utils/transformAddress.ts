@@ -27,3 +27,4 @@ export const toEthereumAddress = (address: string): string => {
   }
   return address // return original address even if it's not a valid address
 }
+

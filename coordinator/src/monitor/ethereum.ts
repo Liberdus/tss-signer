@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import * as TransactionDB from "../storage/transactiondb";
 import { toEthereumAddress } from "../utils/transformAddress";
+import { normalizeTxId } from "../utils/transformTxId";
 import { chainConfigsRaw, chainProviders, getChainConfigById } from "../config";
 import { monitorState, saveMonitorState } from "./state";
 
@@ -177,7 +178,7 @@ export async function monitorEthereumTransactionsQueryFilter(
             // Replay protection: only process events whose chainId matches the source chain
             if (parsedChainId !== chainId) continue;
 
-            const txId = event.transactionHash;
+            const txId = normalizeTxId(event.transactionHash);
 
             // Dedup via DB
             const existing = await TransactionDB.getTransactionById(txId);
@@ -203,7 +204,7 @@ export async function monitorEthereumTransactionsQueryFilter(
               : TransactionDB.TransactionType.BRIDGE_OUT;
 
             const tx: TransactionDB.Transaction = {
-              txId: txId.toLowerCase(),
+              txId,
               sender: toEthereumAddress(targetAddress),
               value: ethers.utils.hexValue(amount),
               type: txType,
@@ -263,10 +264,9 @@ export async function monitorEthereumTransactionsQueryFilter(
 // The BridgedOut scanner / Liberdus monitor will correct chainId, txTimestamp
 // (and sender for BRIDGE_IN) when they later encounter the source event.
 //
-// txId normalisation: the on-chain bytes32 txId comes as "0x"+64 hex chars.
-// Liberdus monitor stores txIds as plain 64 hex chars (no 0x prefix), so we
-// try both formats on lookup and persist with the format that matches the
-// source scanner convention.
+// txId normalisation: the on-chain bytes32 txId comes as "0x"+64 hex chars;
+// Liberdus txIds are plain 64-char hex (no 0x prefix). All are normalised to
+// plain 64-char lowercase hex via normalizeTxId before any DB lookup or save.
 // ---------------------------------------------------------------------------
 
 export async function monitorEthereumBridgeInQueryFilter(
@@ -382,20 +382,11 @@ export async function monitorEthereumBridgeInQueryFilter(
         for (const event of events) {
           if (!event.args) continue;
 
-          // bytes32 txId from event is always "0x"+64 hex chars.
-          // Liberdus monitor stores txIds as plain 64 hex chars (no 0x prefix),
-          // so try both formats to find the existing DB record.
-          const rawTxId = (event.args.txId as string).toLowerCase();
-          const strippedTxId = rawTxId.startsWith("0x")
-            ? rawTxId.slice(2)
-            : rawTxId;
+          // bytes32 txId from event is always "0x"+64 hex chars; normalise to
+          // plain 64-char lowercase hex to match the uniform storage format.
+          const txId = normalizeTxId(event.args.txId as string);
 
-          let existing = await TransactionDB.getTransactionById(rawTxId);
-          let lookupTxId = rawTxId;
-          if (!existing) {
-            existing = await TransactionDB.getTransactionById(strippedTxId);
-            if (existing) lookupTxId = strippedTxId;
-          }
+          const existing = await TransactionDB.getTransactionById(txId);
 
           if (existing) {
             if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
@@ -403,13 +394,13 @@ export async function monitorEthereumBridgeInQueryFilter(
             }
             // PENDING or PROCESSING: mark completed with this BridgedIn tx as receipt
             await TransactionDB.updateTransactionStatus(
-              lookupTxId,
+              txId,
               TransactionDB.TransactionStatus.COMPLETED,
-              event.transactionHash.toLowerCase(),
+              normalizeTxId(event.transactionHash),
               null
             );
             console.log(
-              `[coordinator/bridgeIn] Marked ${lookupTxId} COMPLETED on ${chainName}`
+              `[coordinator/bridgeIn] Marked ${txId} COMPLETED on ${chainName}`
             );
             continue;
           }
@@ -417,12 +408,7 @@ export async function monitorEthereumBridgeInQueryFilter(
           // No matching source record yet — early-save as COMPLETED.
           // chainId and txTimestamp will be corrected when the source event
           // (BridgedOut on vault chain, or Liberdus tx) is later observed.
-          //
-          // txId storage format must match what the source scanner uses:
-          //   BRIDGE_VAULT → BridgedOut scanner uses "0x..." (EVM tx hash)
-          //   BRIDGE_IN    → Liberdus monitor uses plain 64-char hex (no 0x)
           const isVaultMode = !chainConfigsRaw.enableLiberdusNetwork;
-          const saveTxId = isVaultMode ? rawTxId : strippedTxId;
 
           const txType = isVaultMode
             ? TransactionDB.TransactionType.BRIDGE_VAULT
@@ -433,7 +419,7 @@ export async function monitorEthereumBridgeInQueryFilter(
           ).toNumber();
 
           const earlyTx: TransactionDB.Transaction = {
-            txId: saveTxId,
+            txId,
             // For BRIDGE_IN: `to` is the EVM recipient, not the Liberdus sender.
             // The Liberdus monitor will correct this via updateTransactionMetadata.
             sender: toEthereumAddress(event.args.to as string),
@@ -449,13 +435,13 @@ export async function monitorEthereumBridgeInQueryFilter(
             chainId: isVaultMode
               ? 0
               : (event.args.chainId as ethers.BigNumber).toNumber(),
-            receiptId: event.transactionHash.toLowerCase(),
+            receiptId: normalizeTxId(event.transactionHash),
             status: TransactionDB.TransactionStatus.COMPLETED,
           };
 
           await TransactionDB.saveTransaction(earlyTx);
           console.log(
-            `[coordinator/bridgeIn] Early-saved COMPLETED ${isVaultMode ? "BRIDGE_VAULT" : "BRIDGE_IN"} tx ${saveTxId} on ${chainName} (metadata pending source event)`
+            `[coordinator/bridgeIn] Early-saved COMPLETED ${isVaultMode ? "BRIDGE_VAULT" : "BRIDGE_IN"} tx ${txId} on ${chainName} (metadata pending source event)`
           );
         }
 

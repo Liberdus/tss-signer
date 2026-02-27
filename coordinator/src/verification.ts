@@ -58,7 +58,7 @@ export async function verifyTxOnChain(
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         try {
-          const receipt = await provider.getTransactionReceipt(receiptId);
+          const receipt = await provider.getTransactionReceipt("0x" + receiptId);
           if (receipt) return receipt.status === 1;
         } catch (e) {
           console.warn(

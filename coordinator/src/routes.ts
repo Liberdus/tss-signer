@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
+import { isNormalizedTxId, normalizeTxId } from "./utils/transformTxId";
 import { verifyTxOnChain } from "./verification";
 import { monitorEthereumTransactionsQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
@@ -187,9 +188,9 @@ export function registerRoutes(app: express.Application): void {
         const { txId, status, receiptId, reason, party } = req.body;
 
         if (
-          !txId ||
+          !isNormalizedTxId(txId) ||
           !TransactionDB.isTransactionStatus(status) ||
-          !receiptId ||
+          !isNormalizedTxId(receiptId) ||
           typeof reason !== "string" ||
           !party
         ) {
@@ -294,7 +295,7 @@ export function registerRoutes(app: express.Application): void {
             res.status(400).json({ Err: "Invalid txId" });
             return;
           }
-          const transaction = await TransactionDB.getTransactionById(txId);
+          const transaction = await TransactionDB.getTransactionById(normalizeTxId(txId));
           if (transaction) transactions.push(transaction);
           res.json({
             Ok: {
