@@ -90,20 +90,25 @@ export async function saveTransaction(transaction: Transaction): Promise<void> {
 }
 
 /**
- * Correct source-side metadata on a transaction that was pre-populated by the
+ * Update the source-side fields of a transaction that was pre-populated by the
  * BridgedIn scanner before the originating source event (BridgedOut / Liberdus)
- * was observed.  Always updates chainId and txTimestamp; optionally updates
- * sender when the early-save used a placeholder (BRIDGE_IN where BridgedIn's
- * `to` ≠ the Liberdus originating address).
+ * was observed. Always updates chainId and txTimestamp; updates sender and
+ * txType with the authoritative source-side values when they differ from the
+ * early-saved placeholders.
  */
-export async function updateTransactionMetadata(
+export async function updateTransactionSource(
   txId: string,
-  chainId: number,
-  txTimestamp: number,
-  sender?: string
+  data: {
+    chainId: number;
+    txTimestamp: number;
+    sender?: string;
+    txType?: TransactionType;
+  }
 ): Promise<void> {
+  const { chainId, txTimestamp, sender, txType } = data;
   const fields: Record<string, number | string> = { chainId, txTimestamp };
   if (sender !== undefined) fields.sender = sender;
+  if (txType !== undefined) fields.type = txType;
   await db.update("transactions", fields, "txId = ?", [txId]);
 }
 

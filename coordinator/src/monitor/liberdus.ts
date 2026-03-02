@@ -10,35 +10,25 @@ import { monitorState, saveMonitorState } from "./state";
 // Liberdus monitoring (only active when enableLiberdusNetwork = true)
 // ---------------------------------------------------------------------------
 
-function validateCoinToTokenTx(receipt: any): {
-  from: string;
+type ParsedBridgeInTx = {
+  txType: TransactionDB.TransactionType.BRIDGE_IN;
+  sender: string; // Liberdus `from` address (user sending coins to bridge)
   value: ethers.BigNumber;
-  txId: string;
-  targetChainId: number;
-} | null {
-  try {
-    const { success, to, from, additionalInfo, type, txId } = receipt.data;
-    if (!success) return null;
-    if (type !== "transfer") return null;
+  txId: string;   // Liberdus txId — becomes the DB record's txId
+  status: TransactionDB.TransactionStatus; // PENDING (success) or FAILED
+};
 
-    let targetChainId: number | null = null;
-    for (const [chainIdStr, config] of Object.entries(
-      chainConfigsRaw.supportedChains
-    )) {
-      if (to === config.bridgeAddress) {
-        targetChainId = parseInt(chainIdStr);
-        break;
-      }
-    }
-    if (targetChainId === null) return null;
-
-    const value = ethers.BigNumber.from("0x" + additionalInfo.amount.value);
-    return { from, value, txId, targetChainId };
-  } catch (e) {
-    console.error("[coordinator/liberdus] validateCoinToTokenTx error:", e);
-    return null;
-  }
-}
+type ParsedBridgeOutTx = {
+  txType: TransactionDB.TransactionType.BRIDGE_OUT;
+  sender: string;    // Liberdus `to` address (user receiving coins from bridge)
+  value: ethers.BigNumber;
+  receiptId: string; // Liberdus txId — delivery receipt for the EVM deposit
+  status: TransactionDB.TransactionStatus; // COMPLETED (success) or FAILED
+  // NOTE: the source EVM deposit txId is not available in the Liberdus tx.
+  // TODO: once a mechanism exists to extract the sourceChain txId from
+  //       the Liberdus tx additionalInfo, use it to look up and update the
+  //       corresponding BRIDGE_OUT record in the DB.
+};
 
 export async function monitorLiberdusTransactions(): Promise<void> {
   console.log(
@@ -48,80 +38,144 @@ export async function monitorLiberdusTransactions(): Promise<void> {
   try {
     const collectorHost =
       chainConfigsRaw.collectorHost || "http://127.0.0.1:3035";
-    const bridgeAddresses = Object.values(chainConfigsRaw.supportedChains).map(
-      (c) => c.bridgeAddress
-    );
 
-    for (const bridgeAddress of bridgeAddresses) {
-      const query = `?accountId=${bridgeAddress}&afterTimestamp=${monitorState.lastLiberdusTimestamp}&page=1`;
-      const url = collectorHost + "/api/transaction" + query;
-      const response = await axios.get(url, { timeout: 30_000 });
-      const { success, totalTransactions, transactions } = response.data;
+    let maxTimestamp = monitorState.lastLiberdusTimestamp;
 
-      if (!success || totalTransactions === 0) continue;
+    for (const [chainIdStr, chainConfig] of Object.entries(
+      chainConfigsRaw.supportedChains
+    )) {
+      const chainId = parseInt(chainIdStr);
+      const { bridgeAddress } = chainConfig as any;
 
-      for (let i = 0; i < transactions.length; i++) {
-        const receipt = transactions[i];
-        const validated = validateCoinToTokenTx(receipt);
+      let page = 1;
+      while (true) {
+        const query = `?accountId=${bridgeAddress}&afterTimestamp=${monitorState.lastLiberdusTimestamp}&page=${page}`;
+        const url = collectorHost + "/api/transaction" + query;
+        const response = await axios.get(url, { timeout: 30_000 });
+        const { success, transactions } = response.data;
 
-        if (!validated) {
-          if (i === transactions.length - 1) {
-            monitorState.lastLiberdusTimestamp = receipt.timestamp;
-            saveMonitorState();
+        if (!success || !transactions || transactions.length === 0) break;
+
+        for (const receipt of transactions) {
+          if (receipt.timestamp > maxTimestamp) {
+            maxTimestamp = receipt.timestamp;
           }
-          continue;
-        }
 
-        const { from, value, txId, targetChainId } = validated;
+          const parsed = parseLiberdusBridgeTx(receipt, bridgeAddress);
+          if (!parsed) continue;
 
-        const txIdNorm = normalizeTxId(txId);
+          if (parsed.txType === TransactionDB.TransactionType.BRIDGE_IN) {
+            const { sender, value, txId, status } = parsed;
 
-        // Dedup via DB
-        const existing = await TransactionDB.getTransactionById(txIdNorm);
+            const existing = await TransactionDB.getTransactionById(txId);
+            if (existing) {
+              if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
+                // Pre-populated by BridgedIn early-save. Update source-side
+                // fields with the authoritative Liberdus timestamp and address.
+                const sourceSender = toEthereumAddress(sender);
+                const senderMismatch = existing.sender !== sourceSender;
+                const typeMismatch = existing.type !== TransactionDB.TransactionType.BRIDGE_IN;
+                const chainMismatch = existing.chainId !== chainId;
+                const timestampMismatch = existing.txTimestamp !== receipt.timestamp;
+                if (senderMismatch || typeMismatch || chainMismatch || timestampMismatch) {
+                  await TransactionDB.updateTransactionSource(existing.txId, {
+                    chainId,
+                    txTimestamp: receipt.timestamp,
+                    ...(senderMismatch && { sender: sourceSender }),
+                    ...(typeMismatch && { txType: TransactionDB.TransactionType.BRIDGE_IN }),
+                  });
+                  console.log(
+                    `[coordinator/liberdus] Updated source for early-saved BRIDGE_IN tx ${existing.txId}`
+                  );
+                }
+              }
+              continue;
+            }
 
-        if (existing) {
-          if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
-            // Pre-populated by BridgedIn early-save.  Correct chainId (destination
-            // EVM chain), txTimestamp (Liberdus source timestamp), and sender
-            // (Liberdus originating address, not the EVM recipient stored earlier).
-            await TransactionDB.updateTransactionMetadata(
-              existing.txId,
-              targetChainId,
-              receipt.timestamp,
-              toEthereumAddress(from)
-            );
+            const tx: TransactionDB.Transaction = {
+              txId,
+              sender: toEthereumAddress(sender),
+              value: ethers.utils.hexValue(value),
+              type: TransactionDB.TransactionType.BRIDGE_IN,
+              txTimestamp: receipt.timestamp,
+              chainId,
+              receiptId: "",
+              status,
+            };
+
+            await TransactionDB.saveTransaction(tx);
             console.log(
-              `[coordinator/liberdus] Corrected metadata for early-saved BRIDGE_IN tx ${existing.txId}`
+              `[coordinator/liberdus] Saved BRIDGE_IN tx ${txId} (${status === TransactionDB.TransactionStatus.PENDING ? "PENDING" : "FAILED"})`
+            );
+          } else {
+            // BRIDGE_OUT: bridge delivered Liberdus coins to user.
+            // The Liberdus txId is available as a delivery receipt (receiptId),
+            // but the originating EVM deposit txId is unknown from this tx alone.
+            // TODO: once a mechanism exists to extract the sourceChain txId from
+            //       the Liberdus tx additionalInfo, look up the BRIDGE_OUT record
+            //       in the DB and mark it COMPLETED/FAILED with this receiptId.
+            const { receiptId, status } = parsed;
+            console.log(
+              `[coordinator/liberdus] BRIDGE_OUT delivery observed receiptId=${receiptId} status=${status === TransactionDB.TransactionStatus.COMPLETED ? "COMPLETED" : "FAILED"} (sourceChain txId unknown — DB update deferred)`
             );
           }
-          if (i === transactions.length - 1) {
-            monitorState.lastLiberdusTimestamp = receipt.timestamp;
-            saveMonitorState();
-          }
-          continue;
         }
 
-        const tx: TransactionDB.Transaction = {
-          txId: txIdNorm,
-          sender: toEthereumAddress(from),
-          value: ethers.utils.hexValue(value),
-          type: TransactionDB.TransactionType.BRIDGE_IN,
-          txTimestamp: receipt.timestamp,
-          chainId: targetChainId,
-          receiptId: "",
-          status: TransactionDB.TransactionStatus.PENDING,
-        };
-
-        await TransactionDB.saveTransaction(tx);
-        console.log(`[coordinator/liberdus] Saved BRIDGE_IN tx ${txIdNorm}`);
-
-        if (i === transactions.length - 1) {
-          monitorState.lastLiberdusTimestamp = receipt.timestamp;
-          saveMonitorState();
-        }
+        page++;
       }
+    }
+
+    if (maxTimestamp > monitorState.lastLiberdusTimestamp) {
+      monitorState.lastLiberdusTimestamp = maxTimestamp;
+      saveMonitorState();
     }
   } catch (e) {
     console.error("[coordinator/liberdus] Error monitoring Liberdus:", e);
+  }
+}
+
+function parseLiberdusBridgeTx(
+  receipt: any,
+  bridgeAddress: string,
+): ParsedBridgeInTx | ParsedBridgeOutTx | null {
+  try {
+    const { success, to, from, additionalInfo, type, txId: rawTxId } = receipt.data;
+    if (type !== "transfer") return null;
+
+    const txId = normalizeTxId(rawTxId);
+    const value = ethers.BigNumber.from("0x" + additionalInfo.amount.value);
+
+    if (to === bridgeAddress) {
+      // BRIDGE_IN: user sends Liberdus coins to bridge → will receive EVM tokens
+      return {
+        txType: TransactionDB.TransactionType.BRIDGE_IN,
+        sender: from,
+        value,
+        txId,
+        status: success
+          ? TransactionDB.TransactionStatus.PENDING
+          : TransactionDB.TransactionStatus.FAILED,
+      };
+    }
+
+    if (from === bridgeAddress) {
+      // BRIDGE_OUT: bridge distributes Liberdus coins to user (EVM deposit delivered).
+      // The Liberdus txId serves as the delivery receipt.
+      // TODO: extract sourceChain txId from additionalInfo once Liberdus carries it.
+      return {
+        txType: TransactionDB.TransactionType.BRIDGE_OUT,
+        sender: to,
+        value,
+        receiptId: txId,
+        status: success
+          ? TransactionDB.TransactionStatus.COMPLETED
+          : TransactionDB.TransactionStatus.FAILED,
+      };
+    }
+
+    return null;
+  } catch (e) {
+    console.error("[coordinator/liberdus] parseLiberdusBridgeTx error:", e);
+    return null;
   }
 }
