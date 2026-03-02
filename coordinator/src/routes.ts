@@ -6,7 +6,7 @@ import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "./utils/transformTxId";
 import { verifyTxOnChain } from "./verification";
-import { monitorEthereumTransactionsQueryFilter } from "./monitor/ethereum";
+import { monitorEthereumBridgeOutQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
 import { syncReady } from "./monitor/state";
 
@@ -435,9 +435,9 @@ export function registerRoutes(app: express.Application): void {
       notifyLastPollAt.set(chainId, now);
 
       // Fire-and-forget: only scan the notified chain.
-      // Per-chain lock in monitorEthereumTransactionsQueryFilter safely
+      // Per-chain lock in monitorEthereumBridgeOutQueryFilter safely
       // skips this chain if a scan is already in progress for it.
-      monitorEthereumTransactionsQueryFilter(chainId).catch((err) => {
+      monitorEthereumBridgeOutQueryFilter(chainId).catch((err) => {
         console.error(`[notify-bridgeout] Poll error for chain ${chainId}:`, err);
       });
 
@@ -452,7 +452,7 @@ export function registerRoutes(app: express.Application): void {
         notifyPendingTimer.delete(chainId);
         notifyLastPollAt.set(chainId, Date.now());
 
-        monitorEthereumTransactionsQueryFilter(chainId).catch((err) => {
+        monitorEthereumBridgeOutQueryFilter(chainId).catch((err) => {
           console.error(
             `[notify-bridgeout] Deferred poll error for chain ${chainId}:`,
             err

@@ -5,7 +5,7 @@ import { registerRoutes } from "./routes";
 import { chainConfigsRaw } from "./config";
 import { initMonitorState, monitorState } from "./monitor/state";
 import {
-  monitorEthereumTransactionsQueryFilter,
+  monitorEthereumBridgeOutQueryFilter,
   monitorEthereumBridgeInQueryFilter,
 } from "./monitor/ethereum";
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
@@ -53,20 +53,23 @@ const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
     // Initial ordered sync before accepting pending transaction queries.
     //
     // Order matters on a cold start or restart:
-    //   1. BridgedOut  — creates PENDING transactions from source-side burn events.
-    //   2. Liberdus    — creates PENDING BRIDGE_IN transactions from Liberdus txs.
+    //   1. BridgedOut  — creates PENDING BRIDGE_OUT/BRIDGE_VAULT transactions from
+    //                    source-side burn events (EVM → Liberdus or vault chain).
+    //   2. Liberdus    — creates PENDING BRIDGE_IN transactions for coin-to-token txs
+    //                    (BRIDGE_IN txId = Liberdus txId); marks the correlated
+    //                    EVM deposit COMPLETED or adds entry as COMPLETED for token-to-coin txs.
     //   3. BridgedIn   — marks transactions COMPLETED; if the source record already
     //                    exists it updates its status; if not, it early-saves it as
     //                    COMPLETED so parties never re-process it.
     //
     // Running BridgedIn last (after the source scanners) maximises the chance that
     // the source record already exists, avoiding early-saves that need later
-    // metadata correction.  syncReady is set only after all three complete, which
+    // source correction.  syncReady is set only after all three complete, which
     // prevents GET /transaction?status=PENDING from returning transactions that are
     // already completed on-chain.
     // ---------------------------------------------------------------------------
     console.log("[monitor] Initial sync: scanning BridgedOut events...");
-    await monitorEthereumTransactionsQueryFilter();
+    await monitorEthereumBridgeOutQueryFilter();
 
     if (chainConfigsRaw.enableLiberdusNetwork) {
       console.log("[monitor] Initial sync: scanning Liberdus transactions...");
@@ -84,7 +87,7 @@ const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
     // Periodic schedulers: BridgedOut and BridgedIn are always run as a
     // sequential pair so the source record exists before the completion scan.
     startDriftResistantScheduler(async () => {
-      await monitorEthereumTransactionsQueryFilter();
+      await monitorEthereumBridgeOutQueryFilter();
       await monitorEthereumBridgeInQueryFilter();
     }, ETH_MONITOR_INTERVAL_MS);
 

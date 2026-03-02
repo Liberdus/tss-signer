@@ -24,14 +24,14 @@ const MAX_RETRIES_PER_BATCH = 5;
 // Per-chain running flags — allow chains to be scanned independently.
 // A notify-triggered scan for chain A does not block a concurrent scheduler
 // scan from processing chain B.
-const isChainRunning = new Map<number, boolean>();
-const chainBatchSizes = new Map<number, number>();
+const isBridgeOutChainRunning = new Map<number, boolean>();
+const bridgeOutBatchSizes = new Map<number, number>();
 
 const isBridgeInChainRunning = new Map<number, boolean>();
 const bridgeInBatchSizes = new Map<number, number>();
 
 // ---------------------------------------------------------------------------
-// Ethereum monitoring — queryFilter only (no WebSocket)
+// BridgedOut event monitoring — queryFilter only (no WebSocket)
 //
 // targetChainId (optional):
 //   If provided, only the specified chain is scanned. Used by the
@@ -39,7 +39,7 @@ const bridgeInBatchSizes = new Map<number, number>();
 //   If omitted (scheduled interval), all chains are scanned sequentially.
 // ---------------------------------------------------------------------------
 
-export async function monitorEthereumTransactionsQueryFilter(
+export async function monitorEthereumBridgeOutQueryFilter(
   targetChainId?: number
 ): Promise<void> {
   for (const [chainId, provider] of chainProviders.entries()) {
@@ -54,19 +54,19 @@ export async function monitorEthereumTransactionsQueryFilter(
         continue;
 
       // Per-chain lock: skip this chain if a scan is already in progress for it.
-      if (isChainRunning.get(chainId)) {
+      if (isBridgeOutChainRunning.get(chainId)) {
         console.log(
-          `[coordinator/queryFilter] Chain ${chainId} scan still active, skipping`
+          `[coordinator/bridgeOut] Chain ${chainId} scan still active, skipping`
         );
         continue;
       }
-      isChainRunning.set(chainId, true);
+      isBridgeOutChainRunning.set(chainId, true);
       console.log(
-        `[coordinator/queryFilter] Starting scan for chain ${chainId}`
+        `[coordinator/bridgeOut] Starting scan for chain ${chainId}`
       );
 
       const chainConfig = getChainConfigById(chainId);
-      if (!chainConfig) { isChainRunning.set(chainId, false); continue; }
+      if (!chainConfig) { isBridgeOutChainRunning.set(chainId, false); continue; }
       const chainName = chainConfig.name;
 
       // Use separate block maps so vault and Liberdus mode contracts on the
@@ -84,7 +84,7 @@ export async function monitorEthereumTransactionsQueryFilter(
 
         if (savedBlock >= newestBlock) {
           console.log(
-            `[coordinator/queryFilter] Already up to date for ${chainName}, skipping`
+            `[coordinator/bridgeOut] Already up to date for ${chainName}, skipping`
           );
           continue;
         }
@@ -95,7 +95,7 @@ export async function monitorEthereumTransactionsQueryFilter(
         );
         const toBlock = newestBlock;
         console.log(
-          `[coordinator/queryFilter] Scanning ${chainName} blocks ${fromBlock}–${toBlock}`
+          `[coordinator/bridgeOut] Scanning ${chainName} blocks ${fromBlock}–${toBlock}`
         );
 
         const bridgeInterface = new ethers.utils.Interface([
@@ -107,7 +107,7 @@ export async function monitorEthereumTransactionsQueryFilter(
           provider
         );
 
-        let batchSize = chainBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE;
+        let batchSize = bridgeOutBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE;
         let cursor = fromBlock;
         let retryCount = 0;
         let retryDelay = BASE_DELAY_MS;
@@ -133,9 +133,9 @@ export async function monitorEthereumTransactionsQueryFilter(
             if (isRateLimit) {
               if (batchSize > MIN_BATCH_SIZE) {
                 batchSize = Math.max(Math.floor(batchSize / 2), MIN_BATCH_SIZE);
-                chainBatchSizes.set(chainId, batchSize);
+                bridgeOutBatchSizes.set(chainId, batchSize);
                 console.warn(
-                  `[coordinator/queryFilter] RPC limit on ${chainName}, reducing batch to ${batchSize}`
+                  `[coordinator/bridgeOut] RPC limit on ${chainName}, reducing batch to ${batchSize}`
                 );
                 await new Promise((r) => setTimeout(r, retryDelay));
                 continue;
@@ -144,13 +144,13 @@ export async function monitorEthereumTransactionsQueryFilter(
               if (retryCount <= MAX_RETRIES_PER_BATCH) {
                 retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS);
                 console.warn(
-                  `[coordinator/queryFilter] Rate limited on ${chainName}, retry ${retryCount}/${MAX_RETRIES_PER_BATCH} after ${retryDelay}ms`
+                  `[coordinator/bridgeOut] Rate limited on ${chainName}, retry ${retryCount}/${MAX_RETRIES_PER_BATCH} after ${retryDelay}ms`
                 );
                 await new Promise((r) => setTimeout(r, retryDelay));
                 continue;
               }
               console.error(
-                `[coordinator/queryFilter] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
+                `[coordinator/bridgeOut] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
               );
               break;
             }
@@ -159,7 +159,7 @@ export async function monitorEthereumTransactionsQueryFilter(
 
           if (events.length > 0) {
             console.log(
-              `[coordinator/queryFilter] Found ${events.length} BridgedOut events on ${chainName} in blocks ${cursor}–${batchEnd}`
+              `[coordinator/bridgeOut] Found ${events.length} BridgedOut events on ${chainName} in blocks ${cursor}–${batchEnd}`
             );
           }
 
@@ -180,28 +180,37 @@ export async function monitorEthereumTransactionsQueryFilter(
 
             const txId = normalizeTxId(event.transactionHash);
 
+            const txType = !chainConfigsRaw.enableLiberdusNetwork
+              ? TransactionDB.TransactionType.BRIDGE_VAULT
+              : TransactionDB.TransactionType.BRIDGE_OUT;
+
             // Dedup via DB
             const existing = await TransactionDB.getTransactionById(txId);
             if (existing) {
               if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
                 // Pre-populated by BridgedIn early-save before BridgedOut was observed.
-                // Update chainId (vault source chain) and txTimestamp with correct
-                // values from the authoritative BridgedOut event.
-                await TransactionDB.updateTransactionMetadata(
-                  txId,
-                  chainId,
-                  eventTimestamp * 1000
-                );
-                console.log(
-                  `[coordinator/queryFilter] Corrected metadata for early-saved COMPLETED tx ${txId} on ${chainName}`
-                );
+                // Update source-side fields with the authoritative chainId and
+                // txTimestamp from the BridgedOut event.
+                const sourceSender = toEthereumAddress(targetAddress);
+                const eventTxTimestamp = eventTimestamp * 1000;
+                const senderMismatch = existing.sender !== sourceSender;
+                const typeMismatch = existing.type !== txType;
+                const chainMismatch = existing.chainId !== chainId;
+                const timestampMismatch = existing.txTimestamp !== eventTxTimestamp;
+                if (senderMismatch || typeMismatch || chainMismatch || timestampMismatch) {
+                  await TransactionDB.updateTransactionSource(txId, {
+                    chainId,
+                    txTimestamp: eventTxTimestamp,
+                    ...(senderMismatch && { sender: sourceSender }),
+                    ...(typeMismatch && { txType }),
+                  });
+                  console.log(
+                    `[coordinator/bridgeOut] Updated source for early-saved COMPLETED tx ${txId} on ${chainName}`
+                  );
+                }
               }
               continue;
             }
-
-            const txType = !chainConfigsRaw.enableLiberdusNetwork
-              ? TransactionDB.TransactionType.BRIDGE_VAULT
-              : TransactionDB.TransactionType.BRIDGE_OUT;
 
             const tx: TransactionDB.Transaction = {
               txId,
@@ -216,7 +225,7 @@ export async function monitorEthereumTransactionsQueryFilter(
 
             await TransactionDB.saveTransaction(tx);
             console.log(
-              `[coordinator/queryFilter] Saved ${
+              `[coordinator/bridgeOut] Saved ${
                 txType === TransactionDB.TransactionType.BRIDGE_VAULT
                   ? "BRIDGE_VAULT"
                   : "BRIDGE_OUT"
@@ -232,7 +241,7 @@ export async function monitorEthereumTransactionsQueryFilter(
           // Gradually recover batch size after a successful batch
           if (batchSize < INITIAL_BATCH_SIZE) {
             batchSize = Math.min(batchSize * 2, INITIAL_BATCH_SIZE);
-            chainBatchSizes.set(chainId, batchSize);
+            bridgeOutBatchSizes.set(chainId, batchSize);
           }
 
           if (cursor <= toBlock) {
@@ -241,13 +250,13 @@ export async function monitorEthereumTransactionsQueryFilter(
         }
       } catch (error) {
         console.error(
-          `[coordinator/queryFilter] Error for ${chainName}:`,
+          `[coordinator/bridgeOut] Error for ${chainName}:`,
           error
         );
       } finally {
         // Always release the per-chain lock, even if the scan threw or used
         // `continue` to skip to the next chain early.
-        isChainRunning.set(chainId, false);
+        isBridgeOutChainRunning.set(chainId, false);
       }
   }
 }
@@ -421,7 +430,7 @@ export async function monitorEthereumBridgeInQueryFilter(
           const earlyTx: TransactionDB.Transaction = {
             txId,
             // For BRIDGE_IN: `to` is the EVM recipient, not the Liberdus sender.
-            // The Liberdus monitor will correct this via updateTransactionMetadata.
+            // The Liberdus monitor will correct this via updateTransactionSource.
             sender: toEthereumAddress(event.args.to as string),
             value: ethers.utils.hexValue(event.args.amount as ethers.BigNumber),
             type: txType,
