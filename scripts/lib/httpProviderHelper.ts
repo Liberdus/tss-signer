@@ -8,6 +8,12 @@ export interface GetProviderOptions {
   chainId?: number;
 }
 
+function normalizeProviderChainId(chainId: number): number {
+  // [HACK] Local setup may configure secondary chain as 31338 while
+  // Hardhat network reports 31337.
+  return chainId === 31338 ? 31337 : chainId;
+}
+
 export function getHttpProviderForChain(
   httpUrls: string[],
   options: GetProviderOptions = {}
@@ -17,7 +23,9 @@ export function getHttpProviderForChain(
   if (!url) throw new Error("No HTTP RPC URL available and no fallback");
 
   const network =
-    options.chainId != null ? { chainId: options.chainId, name: "unknown" } : undefined;
+    options.chainId != null
+      ? { chainId: normalizeProviderChainId(options.chainId), name: "unknown" }
+      : undefined;
   return new providers.JsonRpcProvider(url, network);
 }
 
