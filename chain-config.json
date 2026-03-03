@@ -2,8 +2,8 @@
   "vaultChain": {
     "name": "Polygon Amoy Testnet",
     "chainId": 80002,
-    "rpcUrl": "https://polygon-amoy.infura.io/v3/",
-    "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
+    "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
+    "wsUrl": "wss://polygon-amoy-bor-rpc.publicnode.com",
     "contractAddress": "0x1469f20C91da50BF9Cc82d7cFB9A8D9EF1dEe86a",
     "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
     "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
@@ -16,7 +16,7 @@
   "secondaryChainConfig": {
     "name": "BSC Testnet",
     "chainId": 97,
-    "rpcUrl": "https://bsc-testnet.infura.io/v3/",
+    "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
     "wsUrl": "wss://bsc-testnet.publicnode.com",
     "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
     "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
@@ -31,8 +31,8 @@
     "80002": {
       "name": "Polygon Amoy Testnet",
       "chainId": 80002,
-      "rpcUrl": "https://polygon-amoy.infura.io/v3/",
-      "wsUrl": "wss://polygon-amoy.infura.io/ws/v3/",
+      "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
+      "wsUrl": "wss://polygon-amoy-bor-rpc.publicnode.com",
       "contractAddress": "0xD5409531c857AfD1b2fF6Cd527038e9981ef4863",
       "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
       "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
@@ -45,7 +45,7 @@
     "97": {
       "name": "BSC Testnet",
       "chainId": 97,
-      "rpcUrl": "https://bsc-testnet.infura.io/v3/",
+      "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
       "wsUrl": "wss://bsc-testnet.publicnode.com",
       "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
       "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",

@@ -43,12 +43,6 @@ export const chainConfigsRaw: ChainConfigs = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../../chain-config.json"), "utf8"),
 );
 
-export const infuraKey: string = (
-  JSON.parse(
-    fs.readFileSync(path.join(__dirname, "../../infura_keys.json"), "utf8"),
-  ) as string[]
-)[0];
-
 const chainsToMonitor: ChainConfig[] = chainConfigsRaw.enableLiberdusNetwork
   ? Object.values(chainConfigsRaw.supportedChains)
   : [chainConfigsRaw.vaultChain!, chainConfigsRaw.secondaryChainConfig!];
@@ -59,13 +53,11 @@ const rpcConfigByChainId: Record<string, { rpcUrl: string }> = {};
 const fallbackRpcUrlByChainId = new Map<number, string>();
 for (const config of chainsToMonitor) {
   rpcConfigByChainId[config.chainId.toString()] = { rpcUrl: config.rpcUrl };
-  const fallbackRpcUrl = config.rpcUrl.includes("infura.io")
-    ? `${config.rpcUrl}${infuraKey}`
-    : config.rpcUrl;
+  const fallbackRpcUrl = config.rpcUrl;
   fallbackRpcUrlByChainId.set(config.chainId, fallbackRpcUrl);
 }
-rpcUrls.initFromConfig(rpcConfigByChainId, infuraKey);
-rpcUrls.startHourlyChainlistFetch(monitoredChainIds, infuraKey);
+rpcUrls.initFromConfig(rpcConfigByChainId, "");
+rpcUrls.startHourlyChainlistFetch(monitoredChainIds, "");
 
 export function getHttpRpcUrlsForChain(chainId: number): string[] {
   return rpcUrls.getHttpUrls(chainId);
