@@ -9,8 +9,10 @@ import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
 import {isNormalizedTxId, normalizeTxId} from './transformTxId'
+import * as rpcUrls from './lib/rpcUrls'
+import {getHttpProviderForChain} from './lib/httpProviderHelper'
 
-const {BigNumber, utils: ethersUtils, providers} = ethers
+const {BigNumber, utils: ethersUtils} = ethers
 
 const gg18 = require('../pkg')
 const {stringify, parse} = require('../external/stringify-shardus')
@@ -238,21 +240,34 @@ const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''}
 
 const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1]
 
-// Initialize providers for all supported chains
-const chainProviders: Map<number, ChainProviders> = new Map()
-
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
 const chainsToInit: ChainConfig[] = chainConfigs.enableLiberdusNetwork
   ? Object.values(chainConfigs.supportedChains)
   : [chainConfigs.vaultChain!, chainConfigs.secondaryChainConfig!]
 
+const rpcConfigByChainId: Record<string, {rpcUrl: string; wsUrl: string}> = {}
+for (const config of chainsToInit) {
+  rpcConfigByChainId[config.chainId.toString()] = {
+    rpcUrl: config.rpcUrl,
+    wsUrl: config.wsUrl,
+  }
+}
+rpcUrls.initFromConfig(rpcConfigByChainId, ourInfurKey)
+rpcUrls.startHourlyChainlistFetch(chainsToInit.map((c) => c.chainId), ourInfurKey)
+
+// Initialize providers for all supported chains
+const chainProviders: Map<number, ChainProviders> = new Map()
+
 for (const config of chainsToInit) {
   const chainId = config.chainId
-  const rpcUrl = config.rpcUrl.includes('infura.io')
+  const fallbackRpcUrl = config.rpcUrl.includes('infura.io')
     ? `${config.rpcUrl}${ourInfurKey}`
     : config.rpcUrl
 
-  const provider = new providers.JsonRpcProvider(rpcUrl)
+  const provider = getHttpProviderForChain(rpcUrls.getHttpUrls(chainId), {
+    fallbackRpcUrl,
+    chainId,
+  })
 
   // Only create WebSocket provider if not in keygen mode, URL is valid, and local monitoring is enabled
   let wsProvider: ethers.providers.WebSocketProvider | null = null

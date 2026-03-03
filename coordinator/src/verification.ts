@@ -1,6 +1,10 @@
 import axios from "axios";
 import * as TransactionDB from "./storage/transactiondb";
-import { chainConfigsRaw, chainProviders } from "./config";
+import {
+  chainConfigsRaw,
+  hasChainHttpProviderConfig,
+  withChainHttpProvider,
+} from "./config";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000;
@@ -48,17 +52,20 @@ export async function verifyTxOnChain(
           ? chainConfigsRaw.secondaryChainConfig!.chainId
           : chainId;
 
-      const provider = chainProviders.get(targetChainId);
-      if (!provider) {
+      if (!hasChainHttpProviderConfig(targetChainId)) {
         console.error(
-          `[verifyTxOnChain] No provider for chainId ${targetChainId}`
+          `[verifyTxOnChain] No HTTP provider configured for chainId ${targetChainId}`
         );
         return false;
       }
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         try {
-          const receipt = await provider.getTransactionReceipt("0x" + receiptId);
+          const receipt = await withChainHttpProvider(
+            targetChainId,
+            (provider) => provider.getTransactionReceipt("0x" + receiptId),
+            { maxRetries: 1 }
+          );
           if (receipt) return receipt.status === 1;
         } catch (e) {
           console.warn(

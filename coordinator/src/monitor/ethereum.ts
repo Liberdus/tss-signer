@@ -2,7 +2,13 @@ import { ethers } from "ethers";
 import * as TransactionDB from "../storage/transactiondb";
 import { toEthereumAddress } from "../utils/transformAddress";
 import { normalizeTxId } from "../utils/transformTxId";
-import { chainConfigsRaw, chainProviders, getChainConfigById } from "../config";
+import {
+  chainConfigsRaw,
+  getChainConfigById,
+  invalidateChainHttpProvider,
+  monitoredChainIds,
+  withChainHttpProvider,
+} from "../config";
 import { monitorState, saveMonitorState } from "./state";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +48,7 @@ const bridgeInBatchSizes = new Map<number, number>();
 export async function monitorEthereumBridgeOutQueryFilter(
   targetChainId?: number
 ): Promise<void> {
-  for (const [chainId, provider] of chainProviders.entries()) {
+  for (const chainId of monitoredChainIds) {
       // If called with a specific chainId, skip all other chains.
       if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
@@ -77,7 +83,11 @@ export async function monitorEthereumBridgeOutQueryFilter(
       const chainKey = chainId.toString();
 
       try {
-        const newestBlock = await provider.getBlockNumber();
+        const newestBlock = await withChainHttpProvider(
+          chainId,
+          (provider) => provider.getBlockNumber(),
+          { maxRetries: 3 }
+        );
         const savedBlock =
           blockMap[chainKey] ??
           (chainConfig.deploymentBlock ?? 0);
@@ -101,11 +111,6 @@ export async function monitorEthereumBridgeOutQueryFilter(
         const bridgeInterface = new ethers.utils.Interface([
           BRIDGE_OUT_EVENT_ABI,
         ]);
-        const contract = new ethers.Contract(
-          chainConfig.contractAddress,
-          bridgeInterface,
-          provider
-        );
 
         let batchSize = bridgeOutBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE;
         let cursor = fromBlock;
@@ -117,10 +122,21 @@ export async function monitorEthereumBridgeOutQueryFilter(
           let events: ethers.Event[];
 
           try {
-            events = await contract.queryFilter(
-              contract.filters.BridgedOut(),
-              cursor,
-              batchEnd
+            events = await withChainHttpProvider(
+              chainId,
+              async (provider) => {
+                const contract = new ethers.Contract(
+                  chainConfig.contractAddress,
+                  bridgeInterface,
+                  provider
+                );
+                return contract.queryFilter(
+                  contract.filters.BridgedOut(),
+                  cursor,
+                  batchEnd
+                );
+              },
+              { maxRetries: 3 }
             );
             retryCount = 0;
             retryDelay = BASE_DELAY_MS;
@@ -152,6 +168,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
               console.error(
                 `[coordinator/bridgeOut] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
               );
+              invalidateChainHttpProvider(chainId);
               break;
             }
             throw error;
@@ -281,7 +298,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
 export async function monitorEthereumBridgeInQueryFilter(
   targetChainId?: number
 ): Promise<void> {
-  for (const [chainId, provider] of chainProviders.entries()) {
+  for (const chainId of monitoredChainIds) {
     if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
     // Vault mode: BridgedIn only on secondary chain.
@@ -304,7 +321,11 @@ export async function monitorEthereumBridgeInQueryFilter(
     const chainName = chainConfig.name;
 
     try {
-      const newestBlock = await provider.getBlockNumber();
+      const newestBlock = await withChainHttpProvider(
+        chainId,
+        (provider) => provider.getBlockNumber(),
+        { maxRetries: 3 }
+      );
       const savedBlock =
         monitorState.bridgeInBlocks[chainId.toString()] ??
         (chainConfig.deploymentBlock ?? 0);
@@ -326,11 +347,6 @@ export async function monitorEthereumBridgeInQueryFilter(
       );
 
       const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
-      const contract = new ethers.Contract(
-        chainConfig.contractAddress,
-        bridgeInterface,
-        provider
-      );
 
       let batchSize = bridgeInBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE;
       let cursor = fromBlock;
@@ -342,10 +358,21 @@ export async function monitorEthereumBridgeInQueryFilter(
         let events: ethers.Event[];
 
         try {
-          events = await contract.queryFilter(
-            contract.filters.BridgedIn(),
-            cursor,
-            batchEnd
+          events = await withChainHttpProvider(
+            chainId,
+            async (provider) => {
+              const contract = new ethers.Contract(
+                chainConfig.contractAddress,
+                bridgeInterface,
+                provider
+              );
+              return contract.queryFilter(
+                contract.filters.BridgedIn(),
+                cursor,
+                batchEnd
+              );
+            },
+            { maxRetries: 3 }
           );
           retryCount = 0;
           retryDelay = BASE_DELAY_MS;
@@ -377,6 +404,7 @@ export async function monitorEthereumBridgeInQueryFilter(
             console.error(
               `[coordinator/bridgeIn] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
             );
+            invalidateChainHttpProvider(chainId);
             break;
           }
           throw error;
