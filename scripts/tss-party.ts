@@ -226,10 +226,6 @@ function getChainConfigById(chainId: number): ChainConfig | undefined {
   return chainConfigs.supportedChains[chainId.toString()]
 }
 
-const infuraKeys = JSON.parse(
-  fs.readFileSync(path.join(__dirname, '../', 'infura_keys.json'), 'utf8'),
-)
-
 const coordinatorUrl = process.env.COORDINATOR_URL || chainConfigs.coordinatorUrl;
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigs.collectorHost;
 const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServerHost;
@@ -237,8 +233,6 @@ const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServe
 const tssPartyIdx =
   parsedIdx == null ? readline.question('Enter the party index (1 to 5): ') : parsedIdx
 const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''}
-
-const ourInfurKey = infuraKeys[parseInt(tssPartyIdx) - 1]
 
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
 const chainsToInit: ChainConfig[] = chainConfigs.enableLiberdusNetwork
@@ -252,17 +246,15 @@ for (const config of chainsToInit) {
     wsUrl: config.wsUrl,
   }
 }
-rpcUrls.initFromConfig(rpcConfigByChainId, ourInfurKey)
-rpcUrls.startHourlyChainlistFetch(chainsToInit.map((c) => c.chainId), ourInfurKey)
+rpcUrls.initFromConfig(rpcConfigByChainId, '')
+rpcUrls.startHourlyChainlistFetch(chainsToInit.map((c) => c.chainId), '')
 
 // Initialize providers for all supported chains
 const chainProviders: Map<number, ChainProviders> = new Map()
 
 for (const config of chainsToInit) {
   const chainId = config.chainId
-  const fallbackRpcUrl = config.rpcUrl.includes('infura.io')
-    ? `${config.rpcUrl}${ourInfurKey}`
-    : config.rpcUrl
+  const fallbackRpcUrl = config.rpcUrl
 
   const provider = getHttpProviderForChain(rpcUrls.getHttpUrls(chainId), {
     fallbackRpcUrl,
@@ -273,7 +265,7 @@ for (const config of chainsToInit) {
   let wsProvider: ethers.providers.WebSocketProvider | null = null
   if (!generateKeystore && enableLocalMonitoring) {
     try {
-      const wsUrl = config.wsUrl.includes('infura.io') ? `${config.wsUrl}${ourInfurKey}` : config.wsUrl
+      const wsUrl = config.wsUrl
       wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
       console.log(`WebSocket provider initialized for ${config.name} (Chain ID: ${chainId})`)
     } catch (error) {
@@ -2388,9 +2380,7 @@ function reconnectWebSocket(chainId: number) {
       }
     }
 
-    const wsUrl = chainProvider.config.wsUrl.includes('infura.io')
-      ? `${chainProvider.config.wsUrl}${ourInfurKey}`
-      : chainProvider.config.wsUrl
+    const wsUrl = chainProvider.config.wsUrl
 
     const newWsProvider = new ethers.providers.WebSocketProvider(wsUrl)
     chainProvider.wsProvider = newWsProvider
