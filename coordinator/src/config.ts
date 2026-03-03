@@ -56,8 +56,8 @@ for (const config of chainsToMonitor) {
   const fallbackRpcUrl = config.rpcUrl;
   fallbackRpcUrlByChainId.set(config.chainId, fallbackRpcUrl);
 }
-rpcUrls.initFromConfig(rpcConfigByChainId, "");
-rpcUrls.startHourlyChainlistFetch(monitoredChainIds, "");
+rpcUrls.initFromConfig(rpcConfigByChainId);
+rpcUrls.startHourlyChainlistFetch(monitoredChainIds);
 
 export function getHttpRpcUrlsForChain(chainId: number): string[] {
   return rpcUrls.getHttpUrls(chainId);
