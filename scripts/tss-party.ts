@@ -2771,8 +2771,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Legacy compatibility
-  if (loadExistingQueue) loadQueueFromFile(ourParty.idx)
+  // Legacy compatibility — skip when coordinator handles monitoring (it will push pending txns via poll)
+  if (loadExistingQueue && enableLocalMonitoring) loadQueueFromFile(ourParty.idx)
 
   // One-time cleanup of any existing transactions that might not have timestamps
   console.log('🧹 Running one-time cleanup of existing transactions...')
