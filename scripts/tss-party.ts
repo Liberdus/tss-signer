@@ -1369,7 +1369,7 @@ async function sendTxStatusToCoordinator(
 }
 
 async function pollPendingTransactionsFromCoordinator(): Promise<void> {
-  console.log('Polling pending transactions from coordinator...')
+  console.log('Polling pending transactions from coordinator...', new Date().toISOString())
   try {
     const url = `${coordinatorUrl}/transaction?unprocessed=true`
     const response = await axios.get(url, {timeout: COORDINATOR_POLL_INTERVAL})
@@ -1633,9 +1633,6 @@ async function injectLiberdusTx(
     console.log('Liberdus tx inject response:', res.data)
     if (res.status !== 200 || res.data?.result?.success !== true)
       throw new Error(res.data?.result?.reason || 'Transaction injection failed')
-    await sleep(10000)
-    const receipt = await getLiberdusReceipt(res.data.result.txId, 30)
-    if (receipt && receipt.success === false) throw new Error('Transaction failed')
     if (verboseLogs) {
       console.log('BridgeOut transaction sent successfully!', txId)
     }
@@ -1953,7 +1950,14 @@ async function processTokenToCoin(
     res = {success: false, reason}
   }
 
-  const receipt = await getLiberdusReceipt(signedTxId, 2)
+  let fetchReceiptRetry = 3
+  if (res.success === true) {
+    fetchReceiptRetry = 10 // Higher retries for successful transactions
+  }
+
+  await sleep(5000) // wait for 5 seconds
+  
+  const receipt = await getLiberdusReceipt(signedTxId, fetchReceiptRetry)
   if (receipt && receipt.success === true) {
     console.log(
       `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
