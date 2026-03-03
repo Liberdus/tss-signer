@@ -4,28 +4,28 @@
     "chainId": 80002,
     "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
     "wsUrl": "wss://polygon-amoy-bor-rpc.publicnode.com",
-    "contractAddress": "0x1469f20C91da50BF9Cc82d7cFB9A8D9EF1dEe86a",
+    "contractAddress": "0xaA2616CD3A3d3d63F8e1ac9c7d7BDc37f16709dA",
     "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
     "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [50, 100, 150, 200, 250, 300]
     },
-    "deploymentBlock": 34186958
+    "deploymentBlock": 34708788
   },
   "secondaryChainConfig": {
     "name": "BSC Testnet",
     "chainId": 97,
     "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
     "wsUrl": "wss://bsc-testnet.publicnode.com",
-    "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
+    "contractAddress": "0xabD7eBbDc5980e5E0c10a0B862CDfD8bcC397Ef2",
     "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
     "bridgeAddress": "43178f0e762433e8aa0e50eb6d691a3254f957ee000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [5, 10, 15, 20, 25, 30]
     },
-    "deploymentBlock": 91260194
+    "deploymentBlock": 93576346
   },
   "supportedChains": {
     "80002": {
@@ -47,14 +47,14 @@
       "chainId": 97,
       "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
       "wsUrl": "wss://bsc-testnet.publicnode.com",
-      "contractAddress": "0xA8Da42C5C915384e5d0938A0CbeC5720af736E27",
+      "contractAddress": "0xabD7eBbDc5980e5E0c10a0B862CDfD8bcC397Ef2",
       "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
       "bridgeAddress": "43178f0e762433e8aa0e50eb6d691a3254f957ee000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "deploymentBlock": 91260194
+      "deploymentBlock": 93576346
     }
   },
   "enableLiberdusNetwork": false,
