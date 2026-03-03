@@ -246,8 +246,8 @@ for (const config of chainsToInit) {
     wsUrl: config.wsUrl,
   }
 }
-rpcUrls.initFromConfig(rpcConfigByChainId, '')
-rpcUrls.startHourlyChainlistFetch(chainsToInit.map((c) => c.chainId), '')
+rpcUrls.initFromConfig(rpcConfigByChainId)
+rpcUrls.startHourlyChainlistFetch(chainsToInit.map((c) => c.chainId))
 
 // Initialize providers for all supported chains
 const chainProviders: Map<number, ChainProviders> = new Map()

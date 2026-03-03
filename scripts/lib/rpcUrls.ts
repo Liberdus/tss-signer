@@ -9,10 +9,8 @@ const wsUrlsByChain: Map<number, string[]> = new Map();
 const urlBlacklistExpiry = new Map<string, number>();
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
-export function applyInfuraKey(url: string, infuraKey: string): string {
+function normalizeRpcUrl(url: string): string {
   const trimmed = (url || "").trim();
-  if (!trimmed || !infuraKey) return trimmed;
-  if (/infura/i.test(trimmed)) return `${trimmed.replace(/\/+$/, "")}/${infuraKey}`;
   return trimmed;
 }
 
@@ -22,14 +20,13 @@ export interface ChainConfigForUrls {
 }
 
 export function initFromConfig(
-  chainConfigs: Record<string, ChainConfigForUrls>,
-  infuraKey: string
+  chainConfigs: Record<string, ChainConfigForUrls>
 ): void {
   for (const [chainIdStr, config] of Object.entries(chainConfigs)) {
     const chainId = parseInt(chainIdStr, 10);
     if (Number.isNaN(chainId)) continue;
 
-    const httpUrl = applyInfuraKey(config.rpcUrl, infuraKey);
+    const httpUrl = normalizeRpcUrl(config.rpcUrl);
     if (httpUrl) {
       const list = httpRpcUrlsByChain.get(chainId) ?? [];
       if (!list.includes(httpUrl)) list.push(httpUrl);
@@ -37,7 +34,7 @@ export function initFromConfig(
     }
 
     if (config.wsUrl) {
-      const wsUrl = applyInfuraKey(config.wsUrl, infuraKey);
+      const wsUrl = normalizeRpcUrl(config.wsUrl);
       if (wsUrl) {
         const list = wsUrlsByChain.get(chainId) ?? [];
         if (!list.includes(wsUrl)) list.push(wsUrl);
@@ -49,8 +46,7 @@ export function initFromConfig(
 
 export function mergeChainlistResponse(
   data: unknown,
-  supportedChainIds: Set<number>,
-  infuraKey: string
+  supportedChainIds: Set<number>
 ): void {
   if (!Array.isArray(data)) return;
 
@@ -70,7 +66,7 @@ export function mergeChainlistResponse(
         typeof entry === "string" ? entry : typeof entry?.url === "string" ? entry.url : null;
       if (!raw) continue;
 
-      const url = applyInfuraKey(raw.trim(), infuraKey);
+      const url = normalizeRpcUrl(raw.trim());
       if (!url) continue;
 
       if ((url.startsWith("http://") || url.startsWith("https://")) && !httpList.includes(url)) {
@@ -86,27 +82,25 @@ export function mergeChainlistResponse(
 }
 
 export async function fetchChainlistAndMerge(
-  supportedChainIds: number[],
-  infuraKey: string
+  supportedChainIds: number[]
 ): Promise<void> {
   try {
     const res = await axios.get(CHAINLIST_RPCS_URL, { timeout: 15_000 });
-    mergeChainlistResponse(res.data as unknown, new Set(supportedChainIds), infuraKey);
+    mergeChainlistResponse(res.data as unknown, new Set(supportedChainIds));
   } catch (error: any) {
     console.warn("[rpcUrls] Chainlist fetch failed:", error?.message || error);
   }
 }
 
 export function startHourlyChainlistFetch(
-  supportedChainIds: number[],
-  infuraKey: string
+  supportedChainIds: number[]
 ): () => void {
-  fetchChainlistAndMerge(supportedChainIds, infuraKey).then(() => {
+  fetchChainlistAndMerge(supportedChainIds).then(() => {
     console.log("[rpcUrls] Initial chainlist fetch completed");
   });
 
   const interval = setInterval(() => {
-    fetchChainlistAndMerge(supportedChainIds, infuraKey).then(() => {
+    fetchChainlistAndMerge(supportedChainIds).then(() => {
       if (process.env.NODE_ENV !== "test") {
         console.log("[rpcUrls] Hourly chainlist merge completed");
       }
