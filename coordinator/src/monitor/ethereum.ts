@@ -11,19 +11,20 @@ import {
 } from "../config";
 import { monitorState, saveMonitorState } from "./state";
 
-// ---------------------------------------------------------------------------
-// Adaptive-batch queryFilter constants
-// ---------------------------------------------------------------------------
-
 const BRIDGE_OUT_EVENT_ABI =
   "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)";
 
 const BRIDGE_IN_EVENT_ABI =
   "event BridgedIn(address indexed to, uint256 amount, uint256 indexed chainId, bytes32 indexed txId, uint256 timestamp)";
 
-const INITIAL_BATCH_SIZE = 1000;
+// ---------------------------------------------------------------------------
+// Adaptive-batch queryFilter constants
+// ---------------------------------------------------------------------------
+
+const INITIAL_BATCH_SIZE = 2000;
 const MIN_BATCH_SIZE = 100;
-const BASE_DELAY_MS = 500;
+const MAX_BATCH_SIZE = 5000;
+const BASE_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 30_000;
 const MAX_RETRIES_PER_BATCH = 5;
 
@@ -36,6 +37,14 @@ const bridgeOutBatchSizes = new Map<number, number>();
 const isBridgeInChainRunning = new Map<number, boolean>();
 const bridgeInBatchSizes = new Map<number, number>();
 
+function getInterBatchDelayMs(nextCursor: number, toBlock: number): number {
+  const remaining = toBlock - nextCursor + 1;
+  if (remaining > 100_000) return 0;
+  if (remaining > 10_000) return 25;
+  if (remaining > 1_000) return 100;
+  return BASE_DELAY_MS;
+}
+
 // ---------------------------------------------------------------------------
 // BridgedOut event monitoring — queryFilter only (no WebSocket)
 //
@@ -46,9 +55,12 @@ const bridgeInBatchSizes = new Map<number, number>();
 // ---------------------------------------------------------------------------
 
 export async function monitorEthereumBridgeOutQueryFilter(
-  targetChainId?: number
-): Promise<void> {
+  targetChainId?: number,
+  requireFullSync = false
+): Promise<boolean> {
+  let allChainsFullyScanned = true;
   for (const chainId of monitoredChainIds) {
+      let chainFullyScanned = true;
       // If called with a specific chainId, skip all other chains.
       if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
@@ -141,10 +153,13 @@ export async function monitorEthereumBridgeOutQueryFilter(
             retryCount = 0;
             retryDelay = BASE_DELAY_MS;
           } catch (error: any) {
+            const errorCode = error?.error?.code ?? error?.code;
+            const errorMessage = String(error?.message ?? "").toLowerCase();
             const isRateLimit =
-              error?.error?.code === -32005 ||
-              error?.code === -32005 ||
-              error?.message?.includes("limit exceeded");
+              errorCode === -32005 ||
+              errorCode === -16412 ||
+              errorMessage.includes("limit exceeded") ||
+              errorMessage.includes("requested range is over limit");
 
             if (isRateLimit) {
               if (batchSize > MIN_BATCH_SIZE) {
@@ -169,6 +184,9 @@ export async function monitorEthereumBridgeOutQueryFilter(
                 `[coordinator/bridgeOut] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
               );
               invalidateChainHttpProvider(chainId);
+              if (requireFullSync) {
+                chainFullyScanned = false;
+              }
               break;
             }
             throw error;
@@ -256,16 +274,22 @@ export async function monitorEthereumBridgeOutQueryFilter(
           saveMonitorState();
 
           // Gradually recover batch size after a successful batch
-          if (batchSize < INITIAL_BATCH_SIZE) {
-            batchSize = Math.min(batchSize * 2, INITIAL_BATCH_SIZE);
+          if (batchSize < MAX_BATCH_SIZE) {
+            batchSize = Math.min(batchSize * 2, MAX_BATCH_SIZE);
             bridgeOutBatchSizes.set(chainId, batchSize);
           }
 
           if (cursor <= toBlock) {
-            await new Promise((r) => setTimeout(r, BASE_DELAY_MS));
+            const delayMs = getInterBatchDelayMs(cursor, toBlock);
+            if (delayMs > 0) {
+              await new Promise((r) => setTimeout(r, delayMs));
+            }
           }
         }
       } catch (error) {
+        if (requireFullSync) {
+          chainFullyScanned = false;
+        }
         console.error(
           `[coordinator/bridgeOut] Error for ${chainName}:`,
           error
@@ -275,7 +299,11 @@ export async function monitorEthereumBridgeOutQueryFilter(
         // `continue` to skip to the next chain early.
         isBridgeOutChainRunning.set(chainId, false);
       }
+      if (requireFullSync && !chainFullyScanned) {
+        allChainsFullyScanned = false;
+      }
   }
+  return allChainsFullyScanned;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,9 +324,12 @@ export async function monitorEthereumBridgeOutQueryFilter(
 // ---------------------------------------------------------------------------
 
 export async function monitorEthereumBridgeInQueryFilter(
-  targetChainId?: number
-): Promise<void> {
+  targetChainId?: number,
+  requireFullSync = false
+): Promise<boolean> {
+  let allChainsFullyScanned = true;
   for (const chainId of monitoredChainIds) {
+    let chainFullyScanned = true;
     if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
     // Vault mode: BridgedIn only on secondary chain.
@@ -377,10 +408,13 @@ export async function monitorEthereumBridgeInQueryFilter(
           retryCount = 0;
           retryDelay = BASE_DELAY_MS;
         } catch (error: any) {
+          const errorCode = error?.error?.code ?? error?.code;
+          const errorMessage = String(error?.message ?? "").toLowerCase();
           const isRateLimit =
-            error?.error?.code === -32005 ||
-            error?.code === -32005 ||
-            error?.message?.includes("limit exceeded");
+            errorCode === -32005 ||
+            errorCode === -16412 ||
+            errorMessage.includes("limit exceeded") ||
+            errorMessage.includes("requested range is over limit");
 
           if (isRateLimit) {
             if (batchSize > MIN_BATCH_SIZE) {
@@ -405,6 +439,9 @@ export async function monitorEthereumBridgeInQueryFilter(
               `[coordinator/bridgeIn] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
             );
             invalidateChainHttpProvider(chainId);
+            if (requireFullSync) {
+              chainFullyScanned = false;
+            }
             break;
           }
           throw error;
@@ -488,19 +525,29 @@ export async function monitorEthereumBridgeInQueryFilter(
         saveMonitorState();
 
         // Gradually recover batch size after a successful batch
-        if (batchSize < INITIAL_BATCH_SIZE) {
-          batchSize = Math.min(batchSize * 2, INITIAL_BATCH_SIZE);
+        if (batchSize < MAX_BATCH_SIZE) {
+          batchSize = Math.min(batchSize * 2, MAX_BATCH_SIZE);
           bridgeInBatchSizes.set(chainId, batchSize);
         }
 
         if (cursor <= toBlock) {
-          await new Promise((r) => setTimeout(r, BASE_DELAY_MS));
+          const delayMs = getInterBatchDelayMs(cursor, toBlock);
+          if (delayMs > 0) {
+            await new Promise((r) => setTimeout(r, delayMs));
+          }
         }
       }
     } catch (error) {
+      if (requireFullSync) {
+        chainFullyScanned = false;
+      }
       console.error(`[coordinator/bridgeIn] Error for ${chainName}:`, error);
     } finally {
       isBridgeInChainRunning.set(chainId, false);
     }
+    if (requireFullSync && !chainFullyScanned) {
+      allChainsFullyScanned = false;
+    }
   }
+  return allChainsFullyScanned;
 }
