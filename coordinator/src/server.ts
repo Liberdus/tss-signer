@@ -12,6 +12,24 @@ import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "./utils/scheduler";
 import { setSyncReady } from "./monitor/state";
 
+function enableTimestampedConsoleLogs(): void {
+  const methods: Array<"log" | "info" | "warn" | "error"> = [
+    "log",
+    "info",
+    "warn",
+    "error",
+  ];
+
+  for (const method of methods) {
+    const original = console[method].bind(console);
+    console[method] = (...args: any[]) => {
+      original(`[${new Date().toISOString()}]`, ...args);
+    };
+  }
+}
+
+enableTimestampedConsoleLogs();
+
 const app = express();
 app.use(
   cors({ origin: true, methods: ["GET", "POST", "PATCH"], credentials: true })
@@ -38,6 +56,7 @@ registerRoutes(app);
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8000;
 const ETH_MONITOR_INTERVAL_MS = 60 * 1000;  // 1 minute
 const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
+const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
 
 (async () => {
   try {
@@ -69,7 +88,12 @@ const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
     // already completed on-chain.
     // ---------------------------------------------------------------------------
     console.log("[monitor] Initial sync: scanning BridgedOut events...");
-    await monitorEthereumBridgeOutQueryFilter();
+    while (!(await monitorEthereumBridgeOutQueryFilter(undefined, true))) {
+      console.warn(
+        `[monitor] Initial BridgedOut sync incomplete, retrying in ${INITIAL_SYNC_RETRY_DELAY_MS}ms...`
+      );
+      await new Promise((r) => setTimeout(r, INITIAL_SYNC_RETRY_DELAY_MS));
+    }
 
     if (chainConfigsRaw.enableLiberdusNetwork) {
       console.log("[monitor] Initial sync: scanning Liberdus transactions...");
@@ -77,7 +101,12 @@ const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
     }
 
     console.log("[monitor] Initial sync: scanning BridgedIn events...");
-    await monitorEthereumBridgeInQueryFilter();
+    while (!(await monitorEthereumBridgeInQueryFilter(undefined, true))) {
+      console.warn(
+        `[monitor] Initial BridgedIn sync incomplete, retrying in ${INITIAL_SYNC_RETRY_DELAY_MS}ms...`
+      );
+      await new Promise((r) => setTimeout(r, INITIAL_SYNC_RETRY_DELAY_MS));
+    }
 
     setSyncReady();
     console.log(
