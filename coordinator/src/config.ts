@@ -28,6 +28,7 @@ export interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>;
   vaultChain?: ChainConfig;
   secondaryChainConfig?: ChainConfig;
+  enableShardusCryptoAuth?: boolean;
   enableLiberdusNetwork: boolean;
   liberdusNetworkId: string;
   coordinatorUrl?: string;

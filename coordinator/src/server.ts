@@ -11,6 +11,7 @@ import {
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "./utils/scheduler";
 import { setSyncReady } from "./monitor/state";
+import { logCoordinatorAuthConfig } from "./auth";
 
 function enableTimestampedConsoleLogs(): void {
   const methods: Array<"log" | "info" | "warn" | "error"> = [
@@ -29,6 +30,7 @@ function enableTimestampedConsoleLogs(): void {
 }
 
 enableTimestampedConsoleLogs();
+logCoordinatorAuthConfig();
 
 const app = express();
 app.use(

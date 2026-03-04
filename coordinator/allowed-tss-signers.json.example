@@ -1,0 +1,5 @@
+{
+  "allowedTSSSigners": [
+    "replace_with_tss_signer_pub_key_hex"
+  ]
+}

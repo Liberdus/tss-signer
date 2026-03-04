@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 
 use crate::errors::Result;
+use crate::shardus_crypto::maybe_sign_request_body;
 
 pub type Key = String;
 
@@ -113,6 +114,7 @@ where
     T: serde::ser::Serialize,
 {
     let url = format!("{}/{}", addr, path);
+    let body = maybe_sign_request_body(body)?;
     let retries = 3;
     for _i in 1..retries {
         let res = client

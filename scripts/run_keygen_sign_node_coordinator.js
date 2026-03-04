@@ -28,6 +28,77 @@ const cryptoInitKey = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e
 crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
+const enableShardusCryptoAuth = process.env.ENABLE_SHARDUS_CRYPTO_AUTH === 'true'
+const signerKeyStoreDir = path.join(__dirname, '../keystores')
+const signerKeyPairFilePathFromEnv = (process.env.TSS_SIGNER_KEYPAIR_FILE || '').trim()
+const signerPartyIdx = parseInt((process.env.TSS_PARTY_IDX || process.argv[2] || '1').toString(), 10)
+
+function isHexWithLength(value, length) {
+  return typeof value === 'string' && value.length === length && /^[0-9a-fA-F]+$/.test(value)
+}
+
+function loadSignerKeyPairFromFile(filePath) {
+  if (!fs.existsSync(filePath)) return null
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    const publicKey = typeof parsed.publicKey === 'string' ? parsed.publicKey.trim() : ''
+    const secretKey = typeof parsed.secretKey === 'string' ? parsed.secretKey.trim() : ''
+    if (
+      isHexWithLength(publicKey, 64) &&
+      isHexWithLength(secretKey, 128)
+    ) {
+      return {
+        publicKey,
+        secretKey,
+      }
+    }
+    console.error(
+      `[auth] Invalid signer keyPair format in ${filePath}: expected publicKey=64 hex and secretKey=128 hex`
+    )
+  } catch (error) {
+    console.error(`[auth] Failed to read signer keyPair file ${filePath}:`, error)
+  }
+  return null
+}
+
+function resolveSignerKeyPairFilePath(partyIdx) {
+  if (signerKeyPairFilePathFromEnv) return signerKeyPairFilePathFromEnv
+  const partySpecificPath = path.join(signerKeyStoreDir, `tss-signer-keypair_party_${partyIdx}.json`)
+  if (fs.existsSync(partySpecificPath)) return partySpecificPath
+  return path.join(signerKeyStoreDir, 'tss-signer-keypair.json')
+}
+
+if (enableShardusCryptoAuth && typeof gg18.gg18_shardus_crypto_init === 'function') {
+  const shardusCryptoHashKey = (process.env.SHARDUS_CRYPTO_HASH_KEY || '').trim()
+  if (!shardusCryptoHashKey) {
+    throw new Error('[auth] SHARDUS_CRYPTO_HASH_KEY is required when ENABLE_SHARDUS_CRYPTO_AUTH=true')
+  }
+
+  const signerKeyPairFilePath = resolveSignerKeyPairFilePath(signerPartyIdx)
+  const fileKeyPair = loadSignerKeyPairFromFile(signerKeyPairFilePath)
+  const signerPublicKey =
+    (process.env.TSS_SIGNER_PUB_KEY || '').trim() || (fileKeyPair && fileKeyPair.publicKey) || ''
+  const signerSecretKey =
+    (process.env.TSS_SIGNER_SEC_KEY || '').trim() || (fileKeyPair && fileKeyPair.secretKey) || ''
+
+  if (!signerPublicKey || !signerSecretKey) {
+    throw new Error(
+      `[auth] TSS signer keyPair is required when ENABLE_SHARDUS_CRYPTO_AUTH=true (set TSS_SIGNER_PUB_KEY/TSS_SIGNER_SEC_KEY or provide ${signerKeyPairFilePath})`
+    )
+  }
+  if (!isHexWithLength(signerPublicKey, 64) || !isHexWithLength(signerSecretKey, 128)) {
+    throw new Error(
+      '[auth] Invalid TSS signer keyPair format: expected TSS_SIGNER_PUB_KEY=64 hex and TSS_SIGNER_SEC_KEY=128 hex'
+    )
+  }
+
+  gg18.gg18_shardus_crypto_init(shardusCryptoHashKey)
+  gg18.gg18_shardus_crypto_keys(signerPublicKey, signerSecretKey)
+  console.log('[auth] gg18 Shardus Crypto request signing enabled for coordinator calls')
+} else {
+  console.log('[auth] gg18 Shardus Crypto request signing disabled (local development mode)')
+}
+
 // Directory to store keystore files
 const KEYSTORE_DIR = path.join(__dirname, "../keystores");
 
