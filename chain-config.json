@@ -57,6 +57,7 @@
       "deploymentBlock": 93576346
     }
   },
+  "enableShardusCryptoAuth": true,
   "enableLiberdusNetwork": false,
   "coordinatorUrl": "http://127.0.0.1:8000",
   "collectorHost": "https://dev.liberdus.com:3035",

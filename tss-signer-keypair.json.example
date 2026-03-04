@@ -1,0 +1,4 @@
+{
+  "publicKey": "replace_with_tss_signer_pub_key_hex",
+  "secretKey": "replace_with_tss_signer_sec_key_hex"
+}

@@ -9,6 +9,7 @@ import { verifyTxOnChain } from "./verification";
 import { monitorEthereumBridgeOutQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
 import { syncReady } from "./monitor/state";
+import { verifySignedCoordinatorRequest } from "./auth";
 
 // --- Types ---
 interface Entry {
@@ -70,6 +71,7 @@ export function registerRoutes(app: express.Application): void {
   // POST /get — fetch an Entry by key
   app.post(
     "/get",
+    verifySignedCoordinatorRequest,
     (req: Request<{}, {}, Index>, res: Response<Result<Entry>>) => {
       const { key } = req.body;
       const v = db.get(key);
@@ -84,6 +86,7 @@ export function registerRoutes(app: express.Application): void {
   // POST /set — store an Entry
   app.post(
     "/set",
+    verifySignedCoordinatorRequest,
     (req: Request<{}, {}, Entry>, res: Response<Result<null>>) => {
       const { key, value } = req.body;
       db.set(key, value);
@@ -92,7 +95,7 @@ export function registerRoutes(app: express.Application): void {
   );
 
   // POST /signupkeygen — round-robin keygen signup
-  app.post("/signupkeygen", async (_req, res: Response<Result<PartySignup>>) => {
+  app.post("/signupkeygen", verifySignedCoordinatorRequest, async (_req, res: Response<Result<PartySignup>>) => {
     try {
       const { parties } = await loadParams();
       const max = parseInt(parties, 10);
@@ -125,7 +128,7 @@ export function registerRoutes(app: express.Application): void {
   });
 
   // POST /signupsign — round-robin sign signup
-  app.post("/signupsign", async (_req, res: Response<Result<PartySignup>>) => {
+  app.post("/signupsign", verifySignedCoordinatorRequest, async (_req, res: Response<Result<PartySignup>>) => {
     try {
       const { parties } = await loadParams();
       const max = parseInt(parties, 10);

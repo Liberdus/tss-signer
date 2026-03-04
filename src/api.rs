@@ -19,6 +19,7 @@ use crate::gg_2018::mta::*;
 use crate::gg_2018::party_i::*;
 use crate::log;
 use crate::paillier::EncryptionKey;
+use crate::shardus_crypto::{shardus_crypto_init, shardus_crypto_set_keys};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,16 @@ fn new_client_with_headers() -> Result<Client> {
     Ok(reqwest::Client::builder()
         .default_headers(headers)
         .build()?)
+}
+
+#[wasm_bindgen]
+pub fn gg18_shardus_crypto_init(hash_key: String) -> Result<()> {
+    shardus_crypto_init(&hash_key)
+}
+
+#[wasm_bindgen]
+pub fn gg18_shardus_crypto_keys(public_key: String, secret_key: String) -> Result<()> {
+    shardus_crypto_set_keys(&public_key, &secret_key)
 }
 
 #[wasm_bindgen]
