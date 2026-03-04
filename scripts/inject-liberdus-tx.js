@@ -101,7 +101,7 @@ function loadSignerKeyPairFromFile(filePath) {
 
 function resolveSignerKeyPairFilePath(partyIdx) {
   if (signerKeyPairFilePathFromEnv) return signerKeyPairFilePathFromEnv
-  return path.join(signerKeyStoreDir, `tss-signer-keypair_party_${partyIdx}.json`)
+  return path.join(signerKeyStoreDir, `tss_signer_keypair_party_${partyIdx}.json`)
 }
 
 function ensureSignerKeyPairTemplate(filePath) {
