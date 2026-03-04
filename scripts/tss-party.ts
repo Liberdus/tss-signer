@@ -26,7 +26,6 @@ interface ChainConfig {
   name: string
   chainId: number
   rpcUrl: string
-  wsUrl: string
   contractAddress: string
   tssSenderAddress: string
   bridgeAddress: string
@@ -51,9 +50,7 @@ interface ChainConfigs {
 
 interface ChainProviders {
   provider: ethers.providers.JsonRpcProvider
-  wsProvider: ethers.providers.WebSocketProvider
   config: ChainConfig
-  lastCheckedBlockNumber: number
   contract?: ethers.Contract
   // Bridge contract state (cooldown, max amount, last bridge-in time)
   bridgeInCooldown: number         // seconds
@@ -87,14 +84,6 @@ interface KeyShare {
   chainId?: number // Add chainId to identify which chain this keystore is for
 }
 
-
-interface BridgeOutEvent {
-  from: string
-  amount: ethers.BigNumber
-  targetAddress: string
-  chainId: number
-  txId: string
-}
 
 interface LiberdusTx {
   from: string
@@ -135,11 +124,6 @@ export interface Transaction {
   updatedAt?: string
 }
 
-// Transaction data sent to the coordinator
-interface TxData extends Omit<Transaction, 'createdAt' | 'updatedAt' | 'reason'> {
-  party: number;
-}
-
 interface TxStatusData
   extends Omit<
     Transaction,
@@ -174,11 +158,7 @@ const recoveryTimestamp = process.argv[4] // Optional timestamp for emergency re
 const generateKeystore = operationFlag === '--keygen'
 const verifyKeystores = operationFlag === '--verify'
 const recoverFromBackup = operationFlag === '--recover'
-const loadExistingQueue = true
 const verboseLogs = true
-const addOldTxToQueue = true
-const useQueryFilter = true // Use queryFilter for efficient event scanning (vs block-by-block getBlockWithTransactions)
-const enableLocalMonitoring = false // When false, coordinator handles EVM/Liberdus monitoring; TSS party polls coordinator instead
 
 const serverStartTime = Date.now()
 
@@ -201,8 +181,6 @@ let t = params.threshold
 let n = params.parties
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
-const BRIDGE_OUT_EVENT_ABI = 'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)'
-
 // Shared bridge contract ABI for state reads and bridgeIn
 const BRIDGE_CONTRACT_ABI = [
   'function bridgeInCooldown() view returns (uint256)',
@@ -240,11 +218,10 @@ const chainsToInit: ChainConfig[] = chainConfigs.enableLiberdusNetwork
   ? Object.values(chainConfigs.supportedChains)
   : [chainConfigs.vaultChain!, chainConfigs.secondaryChainConfig!]
 
-const rpcConfigByChainId: Record<string, {rpcUrl: string; wsUrl: string}> = {}
+const rpcConfigByChainId: Record<string, {rpcUrl: string}> = {}
 for (const config of chainsToInit) {
   rpcConfigByChainId[config.chainId.toString()] = {
     rpcUrl: config.rpcUrl,
-    wsUrl: config.wsUrl,
   }
 }
 rpcUrls.initFromConfig(rpcConfigByChainId)
@@ -262,24 +239,9 @@ for (const config of chainsToInit) {
     chainId,
   })
 
-  // Only create WebSocket provider if not in keygen mode, URL is valid, and local monitoring is enabled
-  let wsProvider: ethers.providers.WebSocketProvider | null = null
-  if (!generateKeystore && enableLocalMonitoring) {
-    try {
-      const wsUrl = config.wsUrl
-      wsProvider = new ethers.providers.WebSocketProvider(wsUrl)
-      console.log(`WebSocket provider initialized for ${config.name} (Chain ID: ${chainId})`)
-    } catch (error) {
-      console.warn(`Failed to initialize WebSocket provider for ${config.name}: ${error}`)
-      console.log(`Will use HTTP provider only for ${config.name}`)
-    }
-  }
-
   chainProviders.set(chainId, {
     provider,
-    wsProvider: wsProvider!,
     config,
-    lastCheckedBlockNumber: 0,
     bridgeInCooldown: 0,
     maxBridgeInAmount: ethers.BigNumber.from(0),
     lastBridgeInTime: 0,
@@ -368,8 +330,6 @@ for (const [chainId] of chainProviders.entries()) {
     console.warn(`Failed to fetch bridge state for chain ${chainId}:`, err)
   )
 }
-
-let lastCheckedTimestamp = serverStartTime
 
 const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc'
 crypto.init(cryptoInitKey)
@@ -492,8 +452,6 @@ const txQueue: TransactionQueueItem[] = []
 const txQueueMap: Map<string, TxQueueMapValue> = new Map()
 const txQueueSize = 10
 const txQueueProcessingInterval = 10000
-const liberdusTxMonitorInterval = 10000
-const ethereumTxMonitorInterval = 10000
 const COORDINATOR_POLL_INTERVAL = 10 * 1000 // 10s
 
 // Define maximum concurrent transactions
@@ -693,29 +651,6 @@ const loadQueueFromFile = (partyIdx: number): void => {
   }
 }
 
-interface BlockStateFile {
-  [chainId: string]: number | undefined
-}
-
-const saveBlockState = async (partyIdx: number): Promise<void> => {
-  const party = partyIdx === undefined ? 'all' : String(partyIdx)
-  const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
-  const state: BlockStateFile = {}
-  for (const [chainId, cp] of chainProviders.entries()) {
-    state[chainId.toString()] = cp.lastCheckedBlockNumber
-  }
-  await writeFile(filePath, JSON.stringify(state), 'utf8')
-}
-
-const loadBlockState = (partyIdx: number): BlockStateFile | null => {
-  const party = partyIdx === undefined ? 'all' : String(partyIdx)
-  const filePath = path.join(KEYSTORE_DIR, `block_state_party_${party}.json`)
-  if (fs.existsSync(filePath)) {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
-  }
-  return null
-}
-
 // Function to recover from emergency backup if needed
 const recoverFromEmergencyBackup = (partyIdx: number, backupTimestamp?: number): boolean => {
   try {
@@ -856,115 +791,6 @@ function verifyEthereumTx(obj: SignedTx): boolean {
   return isValid
 }
 
-async function validateTokenToCoinTx(
-  tx: ethers.providers.TransactionResponse,
-  targetChainId: number,
-): Promise<BridgeOutEvent | false> {
-  const chainProvider = chainProviders.get(targetChainId)
-  if (!chainProvider) {
-    console.log(`[validateTokenToCoinTx] Chain provider not found for chainId ${targetChainId}`)
-    return false
-  }
-
-  const receipt = await chainProvider.provider.getTransactionReceipt(tx.hash)
-  console.log('receipt', receipt)
-  console.log(`Starting block: ${chainProvider.lastCheckedBlockNumber}`)
-  console.log(`Transaction block number: ${receipt.blockNumber}`)
-
-  if (!addOldTxToQueue) {
-    if (receipt.blockNumber < chainProvider.lastCheckedBlockNumber) {
-      console.log('Transaction is older than the server start block')
-      return false
-    }
-  }
-  if (receipt.status !== 1) {
-    console.log('Transaction is not successful')
-    return false
-  }
-  const expectedContract = chainProvider.config.contractAddress.toLowerCase()
-  if (receipt.to?.toLowerCase() !== expectedContract) {
-    console.log(`Transaction is not for the ${chainProvider.config.name} bridge contract address`)
-    return false
-  }
-
-  const bridgeInterface = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
-
-  const bridgeOutLog = receipt.logs.find((log: any) => {
-    try {
-      if (log.address.toLowerCase() !== expectedContract)
-        return false
-      const parsedLog = bridgeInterface.parseLog(log)
-      return parsedLog.name === 'BridgedOut'
-    } catch (e) {
-      return false
-    }
-  })
-
-  if (!bridgeOutLog) {
-    console.log('No BridgedOut event found in transaction logs')
-    return false
-  }
-  const parsedLog = bridgeInterface.parseLog(bridgeOutLog)
-  const from = parsedLog.args.from
-  const amount = parsedLog.args.amount
-  const targetAddress = parsedLog.args.targetAddress
-  const parsedChainId = parsedLog.args.chainId.toNumber()
-
-  console.log('BridgedOut event data:', { from, amount: amount.toString(), targetAddress, chainId: parsedChainId })
-
-  if (parsedChainId === targetChainId) {
-    console.log('Transaction is trying to bridge to the same chain')
-    return false
-  }
-
-  return {
-    from,
-    targetAddress,
-    amount,
-    chainId: parsedChainId,
-    txId: receipt.transactionHash,
-  }
-}
-
-function validateCoinToTokenTx(
-  receipt: any,
-): { from: string; value: ethers.BigNumber; txId: string; targetChainId: number } | false {
-  console.log('receipt', receipt)
-  const {success, to, from, additionalInfo, type, txId, timestamp} = receipt.data
-
-  if (!addOldTxToQueue) {
-    if (timestamp < serverStartTime) {
-      console.log('Transaction is older than the server start time')
-      return false
-    }
-  }
-  if (!success) {
-    console.log('Transaction is not successful')
-    return false
-  }
-
-  // Find which chain this transaction is targeting based on the bridge address
-  let targetChainId: number | null = null
-  for (const [chainIdStr, config] of Object.entries(chainConfigs.supportedChains)) {
-    if (to === config.bridgeAddress) {
-      targetChainId = parseInt(chainIdStr)
-      break
-    }
-  }
-
-  if (targetChainId === null) {
-    console.log('Transaction is not for any known bridge address')
-    return false
-  }
-
-  if (type !== 'transfer') {
-    console.log('Transaction type is not transfer')
-    return false
-  }
-  const transferAmountInBigInt = BigNumber.from('0x' + additionalInfo.amount.value)
-  return {from, value: transferAmountInBigInt, txId, targetChainId}
-}
-
 async function keygen(m: any, delay: number, operationId?: string): Promise<string> {
   const keygenOperationId = operationId || cryptoInitKey.slice(2, 8)
   let context = await m.gg18_keygen_client_new_context(
@@ -1049,406 +875,6 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
     }
     
     throw error
-  }
-}
-
-async function monitorEthereumTransactions(): Promise<void> {
-  if (!enableLocalMonitoring) return
-  // Monitor all supported EVM chains
-  for (const [chainId, chainProvider] of chainProviders.entries()) {
-    try {
-      console.log(
-        `Monitoring Ethereum transactions for bridgeOut calls on ${chainProvider.config.name}...`,
-      )
-      const newestBlockNumber = await chainProvider.provider.getBlockNumber()
-      if (verboseLogs) console.log(`Newest block number for ${chainProvider.config.name}:`, newestBlockNumber)
-
-      if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
-        console.log(
-          `This block has already been checked for ${chainProvider.config.name}, skipping...`,
-          chainProvider.lastCheckedBlockNumber,
-          newestBlockNumber,
-        )
-        continue
-      }
-
-      // Start from lastCheckedBlockNumber - 10 for redundancy (duplicates skipped via txQueueMap)
-      const deploymentBlock = chainProvider.config.deploymentBlock ?? 0
-      const scanStart = Math.max(deploymentBlock, chainProvider.lastCheckedBlockNumber - 10)
-      for (let i = scanStart; i <= newestBlockNumber; i++) {
-        const block = await chainProvider.provider.getBlockWithTransactions(i)
-        if (verboseLogs) console.log(`Processing block ${i} on ${chainProvider.config.name}`, block.number)
-        if (verboseLogs) console.log('Found block with transactions:', block.transactions.length)
-
-        const transactions = block.transactions.filter(
-          (tx: any) =>
-            tx.to && tx.to.toLowerCase() === chainProvider.config.contractAddress.toLowerCase(),
-        )
-        console.log(
-          `Filtered transactions for ${chainProvider.config.name} contract:`,
-          transactions.length,
-        )
-
-        let validTransactions: BridgeOutEvent[] = []
-        if (transactions.length > 0) {
-          for (const tx of transactions) {
-            if (!tx.data.startsWith('0xeca34900')) continue
-            const validateResult = await validateTokenToCoinTx(tx, chainId)
-            if (!validateResult) continue
-            validTransactions.push(validateResult)
-          }
-        }
-
-        if (txQueue.length + validTransactions.length > txQueueSize) {
-          throw new Error('Not enough space in the transaction queue')
-        }
-
-        for (const validTx of validTransactions) {
-          if (txQueueMap.has(validTx.txId)) continue
-
-          // In vault mode, events on vaultChain → vaultBridge; in Liberdus mode → tokenToCoin
-          const bridgeType: TransactionQueueItem['type'] =
-            !chainConfigs.enableLiberdusNetwork ? 'vaultBridge' : 'tokenToCoin'
-
-          const txData: TransactionQueueItem = {
-            receipt: validTx,
-            from: validTx.targetAddress,
-            value: validTx.amount,
-            txId: validTx.txId,
-            type: bridgeType,
-            chainId: chainId,
-          }
-          txQueue.push(txData)
-          txQueueMap.set(validTx.txId, {
-            status: 'pending',
-            from: validTx.from,
-            value: validTx.amount,
-            txId: validTx.txId,
-            chainId: chainId,
-            timestamp: Date.now(), // Add timestamp for cleanup
-          })
-          saveQueueToFile(ourParty.idx)
-          if (verboseLogs) {
-            console.log(
-              `Ethereum transaction added to queue from ${chainProvider.config.name}:`,
-              validTx,
-            )
-          }
-          sendTxDataToCoordinator(txData, block.timestamp * 1000)
-        }
-        chainProvider.lastCheckedBlockNumber = i
-        await saveBlockState(ourParty.idx)
-      }
-    } catch (error) {
-      console.error(
-        `Error monitoring Ethereum transactions on ${chainProvider.config.name}:`,
-        error,
-      )
-    }
-  }
-}
-
-// Concurrency guard — prevents overlapping invocations from the scheduler
-let isQueryFilterRunning = false
-
-// Persistent adaptive batch size per chain (survives across scheduler invocations)
-const chainBatchSizes: Map<number, number> = new Map()
-const INITIAL_BATCH_SIZE = 1000
-const MIN_BATCH_SIZE = 100
-const BASE_DELAY_MS = 500
-const MAX_RETRY_DELAY_MS = 30000
-const MAX_RETRIES_PER_BATCH = 5
-
-async function monitorEthereumTransactionsQueryFilter(): Promise<void> {
-  if (!enableLocalMonitoring) return
-  if (isQueryFilterRunning) {
-    if (verboseLogs) console.log('[queryFilter] Previous invocation still running, skipping this interval')
-    return
-  }
-  isQueryFilterRunning = true
-
-  try {
-    for (const [chainId, chainProvider] of chainProviders.entries()) {
-      // In vault mode, only vaultChain emits events — skip secondaryChainConfig
-      if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.secondaryChainConfig!.chainId) continue
-
-      try {
-        const chainName = chainProvider.config.name
-        const newestBlockNumber = await chainProvider.provider.getBlockNumber()
-
-        if (chainProvider.lastCheckedBlockNumber >= newestBlockNumber) {
-          if (verboseLogs) console.log(`Already up to date for ${chainName}, skipping...`)
-          continue
-        }
-
-        // Start from lastCheckedBlockNumber - 10 for redundancy (duplicates skipped via txQueueMap)
-        const deploymentBlock = chainProvider.config.deploymentBlock ?? 0
-        const fromBlock = Math.max(deploymentBlock, chainProvider.lastCheckedBlockNumber - 10)
-        const toBlock = newestBlockNumber
-        console.log(`[queryFilter] Scanning ${chainName} from block ${fromBlock} to ${toBlock} (${toBlock - fromBlock + 1} blocks)`)
-
-        const contractAddress = chainProvider.config.contractAddress
-
-        console.log(`[queryFilter] Contract address: ${contractAddress}`)
-
-        const bridgeInterface = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
-
-        const contract = new ethers.Contract(
-          contractAddress,
-          bridgeInterface,
-          chainProvider.provider,
-        )
-
-        // Use persistent batch size for this chain (remembers across invocations)
-        let batchSize = chainBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE
-        let cursor = fromBlock
-        let retryCount = 0
-        let retryDelay = BASE_DELAY_MS
-
-        while (cursor <= toBlock) {
-          const batchEnd = Math.min(cursor + batchSize - 1, toBlock)
-          if (verboseLogs) console.log(`[queryFilter] Batch: ${chainName} blocks ${cursor}-${batchEnd} (size: ${batchSize})`)
-
-          let events: ethers.Event[]
-          try {
-            events = await contract.queryFilter(
-              contract.filters.BridgedOut(),
-              cursor,
-              batchEnd,
-            )
-            console.log(`[queryFilter] Found ${events.length} events in batch`)
-            // Reset retry state on success
-            retryCount = 0
-            retryDelay = BASE_DELAY_MS
-          } catch (error: any) {
-            // Check for RPC limit exceeded error (-32005) and handle with backoff
-            if (error?.error?.code === -32005 || error?.code === -32005 || error?.message?.includes('limit exceeded')) {
-              // First try reducing batch size
-              if (batchSize > MIN_BATCH_SIZE) {
-                batchSize = Math.max(Math.floor(batchSize / 2), MIN_BATCH_SIZE)
-                chainBatchSizes.set(chainId, batchSize) // Persist reduced batch size
-                console.warn(`[queryFilter] RPC limit exceeded for ${chainName}, reducing batch size to ${batchSize}`)
-                await delay_ms(retryDelay)
-                continue // Retry same cursor with smaller batch
-              }
-              // At min batch size — use exponential backoff instead of skipping
-              retryCount++
-              if (retryCount <= MAX_RETRIES_PER_BATCH) {
-                retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS)
-                console.warn(`[queryFilter] Rate limited on ${chainName} at min batch size, retry ${retryCount}/${MAX_RETRIES_PER_BATCH} after ${retryDelay}ms delay`)
-                await delay_ms(retryDelay)
-                continue // Retry same cursor after delay
-              }
-              // Exhausted retries — stop processing this chain for now and let the next scheduler interval resume
-              console.error(`[queryFilter] Rate limit retries exhausted for ${chainName} at block ${cursor}, will resume next interval`)
-              break
-            }
-            throw error // Re-throw non-limit errors
-          }
-
-          if (events.length > 0) {
-            console.log(`[queryFilter] Found ${events.length} BridgedOut events on ${chainName} in blocks ${cursor}-${batchEnd}`)
-          }
-
-          for (const event of events) {
-            if (!event.args) continue
-
-            const eventFrom = event.args.from as string
-            const amount = event.args.amount as ethers.BigNumber
-            const targetAddress = event.args.targetAddress as string
-            const parsedChainId = (event.args.chainId as ethers.BigNumber).toNumber()
-            const eventTimestamp = event.args.timestamp as ethers.BigNumber
-
-            // Only process events from the current chain (replay protection)
-            if (parsedChainId !== chainId) continue
-
-            // Dedup check
-            if (txQueueMap.has(event.transactionHash)) continue
-
-            const validTx: BridgeOutEvent = {
-              from: eventFrom,
-              amount,
-              targetAddress,
-              chainId: parsedChainId,
-              txId: event.transactionHash,
-            }
-
-            // In vault mode, events on vaultChain → vaultBridge; in Liberdus mode → tokenToCoin
-            const bridgeType: TransactionQueueItem['type'] =
-              !chainConfigs.enableLiberdusNetwork ? 'vaultBridge' : 'tokenToCoin'
-
-            if (txQueue.length >= txQueueSize) {
-              console.warn(`Transaction queue full, stopping scan for ${chainName} at block ${event.blockNumber}`)
-              break
-            }
-
-            const txData: TransactionQueueItem = {
-              receipt: validTx,
-              from: validTx.targetAddress,
-              value: validTx.amount,
-              txId: validTx.txId,
-              type: bridgeType,
-              chainId: chainId,
-            }
-            txQueue.push(txData)
-            txQueueMap.set(validTx.txId, {
-              status: 'pending',
-              from: validTx.from,
-              value: validTx.amount,
-              txId: validTx.txId,
-              chainId: chainId,
-              timestamp: Date.now(),
-            })
-            saveQueueToFile(ourParty.idx)
-            if (verboseLogs) {
-              console.log(`[queryFilter] BridgedOut event added to queue from ${chainName}:`, validTx.txId)
-            }
-            sendTxDataToCoordinator(txData, eventTimestamp.toNumber() * 1000)
-          }
-
-          // Batch succeeded — advance cursor and try growing batch size back
-          cursor = batchEnd + 1
-          chainProvider.lastCheckedBlockNumber = batchEnd
-          await saveBlockState(ourParty.idx)
-
-          // Gradually increase batch size back up after success (up to initial)
-          if (batchSize < INITIAL_BATCH_SIZE) {
-            batchSize = Math.min(batchSize * 2, INITIAL_BATCH_SIZE)
-            chainBatchSizes.set(chainId, batchSize)
-          }
-
-          // Add delay between batches to avoid triggering rate limits
-          if (cursor <= toBlock) {
-            await delay_ms(BASE_DELAY_MS)
-          }
-        }
-      } catch (error) {
-        console.error(`Error in queryFilter monitoring for ${chainProvider.config.name}:`, error)
-      }
-    }
-  } finally {
-    isQueryFilterRunning = false
-  }
-}
-
-async function monitorLiberdusTransactions(): Promise<void> {
-  if (!enableLocalMonitoring) return
-  console.log('Running monitorLiberdusTransactions', new Date().toISOString())
-  try {
-    // Query for transactions to all bridge addresses
-    const bridgeAddresses = Object.values(chainConfigs.supportedChains).map(
-      (config) => config.bridgeAddress,
-    )
-
-    for (const bridgeAddress of bridgeAddresses) {
-      // console.log('Updated lastCheckedTimestamp:', new Date(lastCheckedTimestamp).toISOString())
-      const query = `?accountId=${bridgeAddress}&afterTimestamp=${lastCheckedTimestamp}&page=1`
-      const url = collectorHost + '/api/transaction' + query
-      const response = await axios.get(url)
-      const {success, totalTransactions, transactions} = response.data
-
-      if (success && totalTransactions > 0) {
-        if (transactions.length > 0) {
-          transactions.forEach((receipt: any, index: number) => {
-            const validateResult = validateCoinToTokenTx(receipt)
-            console.log('validateResult', validateResult)
-            if (!validateResult) {
-              console.log('Transaction validation failed, skipping:', receipt.txId)
-              // Set lastCheckedTimestamp to the timestamp of the last transaction
-              if (index === transactions.length - 1) {
-                lastCheckedTimestamp = receipt.timestamp
-              }
-              return
-            }
-            if (txQueue.length > txQueueSize) {
-              console.error('Transaction queue is full, cannot add more transactions')
-              return
-            }
-            if (txQueueMap.has(validateResult.txId)) {
-              console.log('Transaction already exists in the queue, skipping:', validateResult.txId)
-              return
-            }
-            if (txQueue.length > txQueueSize) {
-              console.error('Transaction queue is full, cannot add more transactions')
-              return
-            }
-            if (txQueueMap.has(validateResult.txId)) {
-              console.log('Transaction already exists in the queue, skipping:', validateResult.txId)
-              return
-            }
-
-            const txData: TransactionQueueItem = {
-              receipt,
-              from: validateResult.from,
-              value: validateResult.value,
-              txId: validateResult.txId,
-              type: 'coinToToken',
-              chainId: validateResult.targetChainId,
-            }
-            txQueue.push(txData)
-            txQueueMap.set(validateResult.txId, {
-              status: 'pending',
-              from: validateResult.from,
-              value: validateResult.value,
-              txId: validateResult.txId,
-              chainId: validateResult.targetChainId,
-              timestamp: Date.now(), // Add timestamp for cleanup
-            })
-            saveQueueToFile(ourParty.idx)
-            if (verboseLogs) {
-              const targetChainName = getChainConfigById(validateResult.targetChainId)?.name || 'Unknown'
-              console.log(
-                `Liberdus transaction added to queue (target: ${targetChainName}):`,
-                validateResult,
-              )
-            }
-            sendTxDataToCoordinator(txData, receipt.timestamp)
-            // Set lastCheckedTimestamp to the timestamp of the last transaction
-            if (index === transactions.length - 1) {
-              lastCheckedTimestamp = receipt.timestamp
-            }
-          })
-        }
-      }
-    }
-  } catch (e) {
-    console.error('Error monitoring Liberdus transactions:', e)
-  }
-}
-
-async function sendTxDataToCoordinator(
-  txData: TransactionQueueItem,
-  timestamp: number,
-): Promise<void> {
-  const tx: TxData = {
-    txId: txData.txId,
-    sender: toEthereumAddress(txData.from),
-    value: ethersUtils.hexValue(txData.value),
-    type: txData.type === 'coinToToken'
-      ? TransactionType.BRIDGE_IN
-      : txData.type === 'vaultBridge'
-        ? TransactionType.BRIDGE_VAULT
-        : TransactionType.BRIDGE_OUT,
-    txTimestamp: timestamp,
-    status: TransactionStatus.PENDING,
-    receiptId: '',
-    party: ourParty.idx,
-    chainId: txData.chainId,
-  }
-  try {
-    const url = `${coordinatorUrl}/transaction`
-    const response = await axios.post(url, tx)
-    console.log('response', response.status)
-    if (response.status !== 202 && response.status !== 200) {
-      console.error('Failed to send txData to coordinator:', response.data)
-      return
-    }
-    if (verboseLogs) {
-      const chainName = getChainConfigById(txData.chainId)?.name || 'Unknown'
-      console.log(`Sent txData to coordinator (${chainName}):`, response.data)
-    }
-  } catch (error) {
-    console.error('Error sending txData to coordinator:', error)
   }
 }
 
@@ -2459,263 +1885,6 @@ function calculateChatId(from: string, to: string): string {
   return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
 }
 
-// Track which chains are currently reconnecting to prevent concurrent reconnects
-const reconnectingChains: Set<number> = new Set()
-
-function reconnectWebSocket(chainId: number) {
-  const chainProvider = chainProviders.get(chainId)
-  if (!chainProvider) return
-
-  if (reconnectingChains.has(chainId)) return
-  reconnectingChains.add(chainId)
-
-  try {
-    // Clean up old contract listeners
-    if (chainProvider.contract) {
-      chainProvider.contract.removeAllListeners('BridgedOut')
-    }
-
-    // Clean up old provider listeners
-    if (chainProvider.wsProvider) {
-      chainProvider.wsProvider.removeAllListeners()
-      // @ts-ignore access raw websocket to clear low-level listeners
-      if (chainProvider.wsProvider._websocket) {
-        chainProvider.wsProvider._websocket.removeAllListeners?.()
-        chainProvider.wsProvider._websocket.close?.()
-      }
-    }
-
-    const wsUrl = chainProvider.config.wsUrl
-
-    const newWsProvider = new ethers.providers.WebSocketProvider(wsUrl)
-    chainProvider.wsProvider = newWsProvider
-
-    // Attach low-level error/close handlers to trigger further reconnects
-    newWsProvider.on('error', (error) => {
-      console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error)
-      reconnectWebSocket(chainId)
-    })
-    newWsProvider.on('close', () => {
-      console.warn(`⚠️ WebSocket closed for ${chainProvider.config.name}, reconnecting...`)
-      reconnectWebSocket(chainId)
-    })
-    newWsProvider.on('open', () => {
-      console.log(`🟢 WebSocket connection opened for ${chainProvider.config.name}`)
-    })
-
-    console.log(`🔄 WebSocket reconnected for ${chainProvider.config.name}`)
-
-    // Re-subscribe to events on the new provider
-    subscribeToChainEvents(chainId)
-  } catch (reconnectError) {
-    console.error(`❌ Failed to reconnect WebSocket for ${chainProvider.config.name}:`, reconnectError)
-  } finally {
-    reconnectingChains.delete(chainId)
-  }
-}
-
-// Add connection health monitoring with ping/pong keepalive
-function monitorWebSocketHealth() {
-  for (const [chainId, chainProvider] of chainProviders.entries()) {
-    if (!chainProvider.wsProvider) continue
-
-    try {
-      // @ts-ignore access raw websocket for state check
-      const rawWs = chainProvider.wsProvider._websocket
-      if (rawWs && rawWs.readyState !== 1) {
-        // readyState 1 = OPEN; anything else means dead/closing/connecting
-        console.warn(`⚠️ WebSocket for ${chainProvider.config.name} not open (state: ${rawWs.readyState}), reconnecting...`)
-        reconnectWebSocket(chainId)
-        continue
-      }
-
-      // Send a ping to detect silent connection drops.
-      // If the pong doesn't come back in 10s, the connection is stale.
-      if (rawWs && typeof rawWs.ping === 'function') {
-        let pongReceived = false
-        const pongHandler = () => { pongReceived = true }
-        rawWs.once('pong', pongHandler)
-        rawWs.ping()
-
-        setTimeout(() => {
-          rawWs.removeListener('pong', pongHandler)
-          if (!pongReceived) {
-            console.warn(`⚠️ WebSocket for ${chainProvider.config.name} ping timeout, reconnecting...`)
-            reconnectWebSocket(chainId)
-          }
-        }, 10000)
-      } else {
-        // Fallback: test via RPC call with a timeout
-        const timeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 10000)
-        )
-        Promise.race([chainProvider.wsProvider.getBlockNumber(), timeout]).catch((error) => {
-          console.warn(`⚠️ WebSocket for ${chainProvider.config.name} health check failed: ${error.message}, reconnecting...`)
-          reconnectWebSocket(chainId)
-        })
-      }
-    } catch (error) {
-      console.error(`❌ Error monitoring WebSocket for ${chainProvider.config.name}:`, error)
-    }
-  }
-}
-
-function subscribeToChainEvents(chainId: number) {
-  const chainProvider = chainProviders.get(chainId)
-  if (!chainProvider || !chainProvider.wsProvider) return
-
-  // Clean up old contract listeners to avoid duplicates after reconnection
-  if (chainProvider.contract) {
-    chainProvider.contract.removeAllListeners('BridgedOut')
-  }
-
-  const contractAddress = chainProvider.config.contractAddress
-  const bridgeInterface = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
-
-  const contract = new ethers.Contract(
-    contractAddress,
-    bridgeInterface,
-    chainProvider.wsProvider,
-  )
-  chainProvider.contract = contract
-  const chainName = chainProvider.config.name
-
-  contract.on(
-    'BridgedOut',
-    async (
-      from: string,
-      amount: ethers.BigNumber,
-      targetAddress: string,
-      parsedChainId: ethers.BigNumber,
-      timestamp: ethers.BigNumber,
-      event: ethers.Event,
-    ) => {
-      try {
-        if (verboseLogs) {
-          console.log(`BridgedOut event received from ${chainName}:`, {
-            from,
-            amount: amount.toString(),
-            targetAddress,
-            chainId: parsedChainId.toString(),
-            txHash: event.transactionHash,
-          })
-        }
-
-        // Debug: Log all event details for analysis
-        console.log(`🔍 BridgedOut event analysis for ${chainName}:`, {
-          eventChainId: parsedChainId.toNumber(),
-          currentChainId: chainId,
-          shouldProcess: parsedChainId.toNumber() === chainId,
-          eventData: {
-            from,
-            targetAddress,
-            amount: amount.toString(),
-            timestamp: timestamp.toString(),
-            blockNumber: event.blockNumber,
-            txHash: event.transactionHash
-          }
-        });
-
-        // Only process events from the current chain (for replay protection)
-        if (parsedChainId.toNumber() !== chainId) {
-          console.log(`❌ Skipping event: chainId mismatch (event: ${parsedChainId.toNumber()}, current: ${chainId}) on ${chainName}`)
-          return
-        }
-
-        console.log(`✅ Processing valid bridge event on ${chainName}`);
-
-        // Validate block number if needed
-        if (!addOldTxToQueue && event.blockNumber < chainProvider.lastCheckedBlockNumber) {
-          if (verboseLogs)
-            console.log(`Event is older than the server start block for ${chainName}, skipping`)
-          return
-        }
-
-        // Check if already in queue
-        if (txQueueMap.has(event.transactionHash)) return
-
-        // In vault mode, events on vaultChain → vaultBridge; in Liberdus mode → tokenToCoin
-        const bridgeType: TransactionQueueItem['type'] =
-          !chainConfigs.enableLiberdusNetwork ? 'vaultBridge' : 'tokenToCoin'
-
-        const validTx: BridgeOutEvent = {
-          from,
-          amount,
-          targetAddress,
-          chainId: parsedChainId.toNumber(),
-          txId: event.transactionHash,
-        }
-
-        const txData: TransactionQueueItem = {
-          receipt: validTx,
-          from: validTx.targetAddress,
-          value: validTx.amount,
-          txId: validTx.txId,
-          type: bridgeType,
-          chainId: chainId,
-        }
-        txQueue.push(txData)
-        txQueueMap.set(validTx.txId, {
-          status: 'pending',
-          from: validTx.from,
-          value: validTx.amount,
-          txId: validTx.txId,
-          chainId: chainId,
-          timestamp: Date.now(),
-        })
-        saveQueueToFile(ourParty.idx)
-        if (verboseLogs) {
-          console.log(`BridgedOut event added to queue from ${chainName}:`, validTx)
-        }
-        sendTxDataToCoordinator(txData, timestamp.toNumber() * 1000)
-      } catch (err) {
-        console.error(`Error processing BridgedOut event from ${chainName}:`, err)
-      }
-    },
-  )
-
-  console.log(`📡 Subscribed to BridgedOut events on ${chainName} at ${contractAddress}`)
-}
-
-function subscribeEthereumTransactions() {
-  if (!enableLocalMonitoring) return
-
-  // Subscribe to events from all supported chains
-  for (const [chainId, chainProvider] of chainProviders.entries()) {
-    // In vault mode, only vaultChain emits events we subscribe to
-    if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.secondaryChainConfig!.chainId) continue
-
-    if (!chainProvider.wsProvider) {
-      console.warn(`⚠️ No WebSocket provider available for ${chainProvider.config.name}, skipping event subscription`)
-      continue
-    }
-
-    // Add WebSocket error handling and monitoring with reconnect
-    chainProvider.wsProvider.on('error', (error) => {
-      console.error(`❌ WebSocket error for ${chainProvider.config.name}:`, error)
-      reconnectWebSocket(chainId)
-    });
-
-    chainProvider.wsProvider.on('close', () => {
-      console.warn(`⚠️ WebSocket connection closed for ${chainProvider.config.name}`)
-      reconnectWebSocket(chainId)
-    });
-
-    chainProvider.wsProvider.on('open', () => {
-      console.log(`🟢 WebSocket connection opened for ${chainProvider.config.name}`)
-    });
-
-    // Subscribe to events for this chain
-    subscribeToChainEvents(chainId)
-
-    if (verboseLogs) {
-      console.log(`📡 Subscribed to BridgedOut events from ${chainProvider.config.name} via WebSocket`)
-      console.log(`📋 Contract address: ${chainProvider.config.contractAddress}`)
-      console.log(`🔗 WebSocket URL: ${chainProvider.config.wsUrl}`)
-    }
-  }
-}
-
 async function main(): Promise<void> {
   // Show help if no valid operation flag is provided
   if (!generateKeystore && !verifyKeystores && !recoverFromBackup && !process.argv[3]) {
@@ -2852,32 +2021,7 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  // set starting block number for all chains, resuming from saved state if available
-  const savedBlockState = loadBlockState(ourParty.idx)
-  for (const [chainId, chainProvider] of chainProviders.entries()) {
-    try {
-      const currentBlock = await chainProvider.provider.getBlockNumber()
-      const savedBlock: number | undefined = savedBlockState?.[chainId.toString()] as number | undefined
-      if (savedBlock != null && savedBlock < currentBlock) {
-        chainProvider.lastCheckedBlockNumber = savedBlock
-        console.log(`Resuming ${chainProvider.config.name} from saved block ${savedBlock} (current: ${currentBlock})`)
-      } else if (savedBlock != null) {
-        // Saved state exists but block is at or ahead of current — start at current
-        chainProvider.lastCheckedBlockNumber = currentBlock
-        console.log(`Starting ${chainProvider.config.name} at current block ${currentBlock}`)
-      } else {
-        // No saved state for this chain — start from the deployment block
-        const deploymentBlock = chainProvider.config.deploymentBlock || 0
-        chainProvider.lastCheckedBlockNumber = deploymentBlock
-        console.log(`No saved block state for ${chainProvider.config.name}, starting from deployment block ${deploymentBlock} (current: ${currentBlock})`)
-      }
-    } catch (error) {
-      console.error(`Failed to get starting block for ${chainProvider.config.name}:`, error)
-    }
-  }
-
-  // Legacy compatibility — skip when coordinator handles monitoring (it will push pending txns via poll)
-  if (loadExistingQueue && enableLocalMonitoring) loadQueueFromFile(ourParty.idx)
+  loadQueueFromFile(ourParty.idx)
 
   // One-time cleanup of any existing transactions that might not have timestamps
   console.log('🧹 Running one-time cleanup of existing transactions...')
@@ -3168,17 +2312,8 @@ async function main(): Promise<void> {
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
   startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
 
-  if (enableLocalMonitoring) {
-    // Local monitoring: this party scans EVM chains and Liberdus directly
-    if (chainConfigs.enableLiberdusNetwork) startDriftResistantScheduler(monitorLiberdusTransactions, liberdusTxMonitorInterval)
-    startDriftResistantScheduler(monitorWebSocketHealth, 2 * 60 * 1000)
-    const ethMonitorFn = useQueryFilter ? monitorEthereumTransactionsQueryFilter : monitorEthereumTransactions
-    startDriftResistantScheduler(ethMonitorFn, ethereumTxMonitorInterval)
-    subscribeEthereumTransactions()
-  } else {
-    // Coordinator-monitored mode: poll coordinator for pending transactions
-    startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, COORDINATOR_POLL_INTERVAL)
-  }
+  // Coordinator-monitored mode: poll coordinator for pending transactions
+  startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, COORDINATOR_POLL_INTERVAL)
 }
 
 main()
