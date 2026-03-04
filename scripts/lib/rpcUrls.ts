@@ -4,7 +4,6 @@ const CHAINLIST_RPCS_URL = "https://chainlist.org/rpcs.json";
 const HOURLY_MS = 60 * 60 * 1000;
 
 const httpRpcUrlsByChain: Map<number, string[]> = new Map();
-const wsUrlsByChain: Map<number, string[]> = new Map();
 
 const urlBlacklistExpiry = new Map<string, number>();
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
@@ -16,7 +15,6 @@ function normalizeRpcUrl(url: string): string {
 
 export interface ChainConfigForUrls {
   rpcUrl: string;
-  wsUrl?: string;
 }
 
 export function initFromConfig(
@@ -31,15 +29,6 @@ export function initFromConfig(
       const list = httpRpcUrlsByChain.get(chainId) ?? [];
       if (!list.includes(httpUrl)) list.push(httpUrl);
       httpRpcUrlsByChain.set(chainId, list);
-    }
-
-    if (config.wsUrl) {
-      const wsUrl = normalizeRpcUrl(config.wsUrl);
-      if (wsUrl) {
-        const list = wsUrlsByChain.get(chainId) ?? [];
-        if (!list.includes(wsUrl)) list.push(wsUrl);
-        wsUrlsByChain.set(chainId, list);
-      }
     }
   }
 }
@@ -59,7 +48,6 @@ export function mergeChainlistResponse(
     if (!Array.isArray(rpc)) continue;
 
     const httpList = httpRpcUrlsByChain.get(chainId) ?? [];
-    const wsList = wsUrlsByChain.get(chainId) ?? [];
 
     for (const entry of rpc) {
       const raw =
@@ -71,13 +59,10 @@ export function mergeChainlistResponse(
 
       if ((url.startsWith("http://") || url.startsWith("https://")) && !httpList.includes(url)) {
         httpList.push(url);
-      } else if ((url.startsWith("ws://") || url.startsWith("wss://")) && !wsList.includes(url)) {
-        wsList.push(url);
       }
     }
 
     if (httpList.length) httpRpcUrlsByChain.set(chainId, httpList);
-    if (wsList.length) wsUrlsByChain.set(chainId, wsList);
   }
 }
 
@@ -157,8 +142,4 @@ export function shouldBlacklistForError(error: unknown): boolean {
 
 export function getHttpUrls(chainId: number): string[] {
   return httpRpcUrlsByChain.get(chainId) ?? [];
-}
-
-export function getWsUrls(chainId: number): string[] {
-  return wsUrlsByChain.get(chainId) ?? [];
 }

@@ -16,7 +16,6 @@ export interface ChainConfig {
   name: string;
   chainId: number;
   rpcUrl: string;
-  wsUrl: string;
   contractAddress: string;
   tssSenderAddress: string;
   bridgeAddress: string;

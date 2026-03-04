@@ -69,7 +69,6 @@ async function addChain(chainId) {
         
         const name = await question('Chain name (e.g., "Ethereum Mainnet"): ');
         const rpcUrl = await question('RPC URL (include placeholder for API key if needed): ');
-        const wsUrl = await question('WebSocket URL (include placeholder for API key if needed): ');
         const contractAddress = await question('Bridge contract address (0x...): ');
         const tssSenderAddress = await question('TSS sender address (0x...): ');
         const gasLimit = await question('Gas limit (default: 200000): ') || '200000';
@@ -84,7 +83,6 @@ async function addChain(chainId) {
             name: name.trim(),
             chainId: parseInt(chainId),
             rpcUrl: rpcUrl.trim(),
-            wsUrl: wsUrl.trim(),
             contractAddress: contractAddress.trim(),
             tssSenderAddress: tssSenderAddress.trim(),
             bridgeAddress: bridgeAddress,
@@ -133,7 +131,7 @@ function validateConfig() {
         Object.entries(config.supportedChains).forEach(([chainId, chainConfig]) => {
             console.log(`Validating ${chainConfig.name} (${chainId})...`);
             
-            const required = ['name', 'chainId', 'rpcUrl', 'wsUrl', 'contractAddress', 'tssSenderAddress', 'bridgeAddress'];
+            const required = ['name', 'chainId', 'rpcUrl', 'contractAddress', 'tssSenderAddress', 'bridgeAddress'];
             const missing = required.filter(field => !chainConfig[field]);
             
             if (missing.length > 0) {
