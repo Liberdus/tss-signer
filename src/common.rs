@@ -101,7 +101,7 @@ pub async fn sleep(ms: u32) {
             .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
             .unwrap();
     });
-    wasm_bindgen_futures::JsFuture::from(promise).await;
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -114,17 +114,28 @@ where
     T: serde::ser::Serialize,
 {
     let url = format!("{}/{}", addr, path);
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("postb -> {}", url);
     let body = maybe_sign_request_body(body)?;
+    let body_json = serde_json::to_string(&body)?;
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("postb body bytes={} path={}", body_json.len(), path);
     let retries = 3;
     for _i in 1..retries {
         let res = client
             .post(url.clone())
             .header("Content-Type", "application/json; charset=utf-8")
-            .json(&body)
+            .header("Accept", "application/json; charset=utf-8")
+            .body(body_json.clone())
             .send()
             .await;
         if let Ok(res) = res {
+            #[cfg(target_arch = "wasm32")]
+            crate::debug_console_log!("postb <- {} status {}", path, res.status().as_u16());
             return Ok(res.text().await?);
+        } else {
+            #[cfg(target_arch = "wasm32")]
+            crate::debug_console_log!("postb retry {} failed for {}", _i, path);
         }
     }
     Err(TssError::UnknownError {
@@ -144,8 +155,14 @@ pub async fn broadcast(
     let key = format!("{}-{}-{}", party_num, round, sender_uuid);
     let entry = Entry { key, value: data };
     let res_body = postb(client, addr, "set", entry).await?;
-    let u: std::result::Result<(), ()> = serde_json::from_str(&res_body)?;
-    Ok(u.unwrap())
+    let response: serde_json::Value = serde_json::from_str(&res_body)?;
+    if response.get("Ok").is_some() {
+        return Ok(());
+    }
+    Err(TssError::UnknownError {
+        msg: format!("broadcast failed: {}", res_body),
+        line: line!(),
+    })
 }
 
 pub async fn sendp2p(
@@ -162,8 +179,14 @@ pub async fn sendp2p(
     let entry = Entry { key, value: data };
 
     let res_body = postb(client, addr, "set", entry).await?;
-    let u: std::result::Result<(), ()> = serde_json::from_str(&res_body)?;
-    Ok(u.unwrap())
+    let response: serde_json::Value = serde_json::from_str(&res_body)?;
+    if response.get("Ok").is_some() {
+        return Ok(());
+    }
+    Err(TssError::UnknownError {
+        msg: format!("sendp2p failed: {}", res_body),
+        line: line!(),
+    })
 }
 
 pub async fn poll_for_broadcasts(

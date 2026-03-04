@@ -73,6 +73,7 @@ export function registerRoutes(app: express.Application): void {
     "/get",
     verifySignedCoordinatorRequest,
     (req: Request<{}, {}, Index>, res: Response<Result<Entry>>) => {
+      // console.log("get:", req.body);
       const { key } = req.body;
       const v = db.get(key);
       if (v !== undefined) {
@@ -88,6 +89,7 @@ export function registerRoutes(app: express.Application): void {
     "/set",
     verifySignedCoordinatorRequest,
     (req: Request<{}, {}, Entry>, res: Response<Result<null>>) => {
+      // console.log("set:", req.body);
       const { key, value } = req.body;
       db.set(key, value);
       res.json({ Ok: null });
@@ -95,7 +97,7 @@ export function registerRoutes(app: express.Application): void {
   );
 
   // POST /signupkeygen — round-robin keygen signup
-  app.post("/signupkeygen", verifySignedCoordinatorRequest, async (_req, res: Response<Result<PartySignup>>) => {
+  app.post("/signupkeygen", verifySignedCoordinatorRequest, async (_req: Request, res: Response<Result<PartySignup>>) => {
     try {
       const { parties } = await loadParams();
       const max = parseInt(parties, 10);
@@ -128,7 +130,7 @@ export function registerRoutes(app: express.Application): void {
   });
 
   // POST /signupsign — round-robin sign signup
-  app.post("/signupsign", verifySignedCoordinatorRequest, async (_req, res: Response<Result<PartySignup>>) => {
+  app.post("/signupsign", verifySignedCoordinatorRequest, async (_req: Request, res: Response<Result<PartySignup>>) => {
     try {
       const { parties } = await loadParams();
       const max = parseInt(parties, 10);

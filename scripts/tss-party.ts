@@ -417,12 +417,33 @@ function loadSignerKeyPairFromFile(filePath: string): SignerKeyPair | null {
 
 function resolveSignerKeyPairFilePath(partyIdx: number): string {
   if (signerKeyPairFilePathFromEnv) return signerKeyPairFilePathFromEnv
-  const partySpecificPath = path.join(signerKeyStoreDir, `tss-signer-keypair_party_${partyIdx}.json`)
-  if (fs.existsSync(partySpecificPath)) return partySpecificPath
-  return path.join(signerKeyStoreDir, 'tss-signer-keypair.json')
+  return path.join(signerKeyStoreDir, `tss-signer-keypair_party_${partyIdx}.json`)
 }
 
-if (enableShardusCryptoAuth && typeof gg18.gg18_shardus_crypto_init === 'function') {
+function ensureSignerKeyPairTemplate(filePath: string): void {
+  if (fs.existsSync(filePath)) return
+  fs.mkdirSync(path.dirname(filePath), {recursive: true})
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify(
+      {
+        publicKey: '',
+        secretKey: '',
+      },
+      null,
+      2
+    ) + '\n'
+  )
+  console.warn(`[auth] Created missing signer keyPair template at ${filePath}`)
+}
+
+if (enableShardusCryptoAuth) {
+  if (typeof gg18.gg18_shardus_crypto_init !== 'function' || typeof gg18.gg18_shardus_crypto_keys !== 'function') {
+    throw new Error(
+      '[auth] ENABLE_SHARDUS_CRYPTO_AUTH is true but gg18 Shardus Crypto exports are unavailable'
+    )
+  }
+
   const shardusCryptoHashKey = cryptoInitKey
   if (!shardusCryptoHashKey) {
     throw new Error(
@@ -438,8 +459,11 @@ if (enableShardusCryptoAuth && typeof gg18.gg18_shardus_crypto_init === 'functio
     (process.env.TSS_SIGNER_SEC_KEY || '').trim() || fileKeyPair?.secretKey || ''
 
   if (!signerPublicKey || !signerSecretKey) {
+    if (!signerKeyPairFilePathFromEnv) {
+      ensureSignerKeyPairTemplate(signerKeyPairFilePath)
+    }
     throw new Error(
-      `[auth] TSS signer keyPair is required when ENABLE_SHARDUS_CRYPTO_AUTH=true (set TSS_SIGNER_PUB_KEY/TSS_SIGNER_SEC_KEY or provide ${signerKeyPairFilePath})`
+      `[auth] TSS signer keyPair is required when ENABLE_SHARDUS_CRYPTO_AUTH=true (set TSS_SIGNER_PUB_KEY/TSS_SIGNER_SEC_KEY or fill ${signerKeyPairFilePath})`
     )
   }
   if (!isHexWithLength(signerPublicKey, 64) || !isHexWithLength(signerSecretKey, 128)) {

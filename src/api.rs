@@ -14,13 +14,12 @@ use crate::curv::{
     },
     elliptic::curves::secp256_k1::{Secp256k1Point as Point, Secp256k1Scalar as Scalar},
 };
-use crate::errors::Result;
+use crate::errors::{Result, TssError};
 use crate::gg_2018::mta::*;
 use crate::gg_2018::party_i::*;
 use crate::log;
 use crate::paillier::EncryptionKey;
 use crate::shardus_crypto::{shardus_crypto_init, shardus_crypto_set_keys};
-use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -47,19 +46,7 @@ pub struct GG18KeygenClientContext {
 }
 
 fn new_client_with_headers() -> Result<Client> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_static("Content-Type:application/json; charset=utf-8"),
-    );
-    headers.insert(
-        "Accept",
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-
-    Ok(reqwest::Client::builder()
-        .default_headers(headers)
-        .build()?)
+    Ok(reqwest::Client::new())
 }
 
 #[wasm_bindgen]
@@ -404,18 +391,38 @@ pub async fn signup_keygen(client: &Client, addr: &str, operationId: &str) -> Re
     // key from operationId and "signup-keygen"
     let key = format!("{}-{}", operationId, "signup-keygen");
     // let key = "signup-keygen".to_string();
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("signup_keygen request key={}", key);
     let res_body = postb(client, addr, "signupkeygen", key).await?;
-    let u: std::result::Result<PartySignup, ()> = serde_json::from_str(&res_body)?;
-    Ok(u.unwrap())
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("signup_keygen response={}", res_body);
+    let response: serde_json::Value = serde_json::from_str(&res_body)?;
+    if let Some(ok) = response.get("Ok") {
+        return Ok(serde_json::from_value(ok.clone())?);
+    }
+    Err(TssError::UnknownError {
+        msg: format!("signup_keygen failed: {}", res_body),
+        line: line!(),
+    })
 }
 
 pub async fn signup_sign(client: &Client, addr: &str, operationId: &str) -> Result<PartySignup> {
     // key from operationId and "signup-sign"
     let key = format!("{}-{}", operationId, "signup-sign");
     // let key = "signup-sign".to_string();
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("signup_sign request key={}", key);
     let res_body = postb(client, addr, "signupsign", key).await?;
-    let u: std::result::Result<PartySignup, ()> = serde_json::from_str(&res_body)?;
-    Ok(u.unwrap())
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("signup_sign response={}", res_body);
+    let response: serde_json::Value = serde_json::from_str(&res_body)?;
+    if let Some(ok) = response.get("Ok") {
+        return Ok(serde_json::from_value(ok.clone())?);
+    }
+    Err(TssError::UnknownError {
+        msg: format!("signup_sign failed: {}", res_body),
+        line: line!(),
+    })
 }
 
 #[wasm_bindgen]
@@ -470,12 +477,18 @@ pub async fn gg18_sign_client_new_context(
     message_str: String,
     operationId: String,
 ) -> Result<String> {
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("gg18_sign_client_new_context start operationId={}", operationId);
     let message = match hex::decode(message_str.clone()) {
         Ok(x) => x,
         Err(_e) => message_str.as_bytes().to_vec(),
     };
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("gg18_sign_client_new_context message bytes={}", message.len());
     // let message = &message[..];
     let client = new_client_with_headers()?;
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("gg18_sign_client_new_context client ready");
 
     let (party_keys, shared_keys, party_id, vss_scheme_vec, paillier_key_vector, y_sum): (
         Keys,
@@ -485,9 +498,14 @@ pub async fn gg18_sign_client_new_context(
         Vec<EncryptionKey>,
         Point,
     ) = serde_json::from_str(&key_store)?;
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("gg18_sign_client_new_context key_store parsed");
 
     //signup:
-    let (party_num_int, uuid) = match signup_sign(&client, &addr, &operationId).await? {
+    let signup = signup_sign(&client, &addr, &operationId).await?;
+    #[cfg(target_arch = "wasm32")]
+    crate::debug_console_log!("gg18_sign_client_new_context signup ok");
+    let (party_num_int, uuid) = match signup {
         PartySignup { number, uuid } => (number, uuid),
     };
 

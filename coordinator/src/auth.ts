@@ -41,7 +41,7 @@ const allowedTssSignerFilePath =
   process.env.COORDINATOR_ALLOWED_TSS_SIGNER_FILE ||
   path.resolve(__dirname, "../allowed-tss-signers.json");
 
-const shardusHashKey = process.env.SHARDUS_CRYPTO_HASH_KEY || "";
+const shardusHashKey = process.env.SHARDUS_CRYPTO_HASH_KEY || "69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc";
 
 const whitelist = new Set<string>();
 
@@ -136,20 +136,25 @@ export function verifySignedCoordinatorRequest(
     next();
     return;
   }
+  // console.log(`[auth] Verifying signed request for ${req.path}`);
+  // console.log("[auth] Request body:", req.body);
 
   if (!isSignedRequestBody(req.body)) {
+    console.warn(`[auth] Reject ${req.path}: missing or invalid signed request body`);
     res.status(401).json({ Err: "Missing or invalid signed request body" });
     return;
   }
 
   const owner = req.body.sign.owner.toLowerCase();
   if (!whitelist.has(owner)) {
+    console.warn(`[auth] Reject ${req.path}: signer not whitelisted owner=${owner}`);
     res.status(403).json({ Err: "Signer public key is not whitelisted" });
     return;
   }
 
   const verified = shardusCrypto.verifyObj(req.body as any);
   if (!verified) {
+    console.warn(`[auth] Reject ${req.path}: invalid request signature owner=${owner}`);
     res.status(401).json({ Err: "Invalid request signature" });
     return;
   }
