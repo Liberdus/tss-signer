@@ -26,6 +26,10 @@ pub mod api;
 pub mod errors;
 pub mod shardus_crypto;
 
+// Toggle verbose Rust/WASM debug logs for coordinator request signing flow.
+// Set to `true` when debugging low-level request/signing issues.
+pub const GG18_SHARDUS_CRYPTO_DEBUG_LOGS: bool = false;
+
 #[cfg(target_arch = "wasm32")]
 extern crate wasm_bindgen;
 
@@ -60,4 +64,14 @@ macro_rules! console_log {
     // Note that this is using the `log` function imported above during
     // `bare_bones`
     ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[macro_export]
+macro_rules! debug_console_log {
+    ($($t:tt)*) => {
+        if $crate::GG18_SHARDUS_CRYPTO_DEBUG_LOGS {
+            $crate::console_log!($($t)*);
+        }
+    }
 }
