@@ -68,14 +68,9 @@ interface TransactionQueueItem {
   txTimestamp?: number // Optional: populated when sourced from coordinator, used for queue ordering
 }
 
-interface TxQueueMapValue {
+interface TxQueueEntry {
+  txTimestamp: number // milliseconds, from coordinator (blockchain time * 1000)
   status: 'pending' | 'processing' | 'completed' | 'failed'
-  from: string
-  value: ethers.BigNumber | bigint
-  txId: string
-  chainId?: number // Add chainId to track which chain this transaction belongs to
-  timestamp?: number // Add timestamp for cleanup purposes
-  [key: string]: any
 }
 
 interface KeyShare {
@@ -448,15 +443,17 @@ if (!fs.existsSync(KEYSTORE_DIR)) {
   fs.mkdirSync(KEYSTORE_DIR, {recursive: true})
 }
 
-const txQueue: TransactionQueueItem[] = []
-const txQueueMap: Map<string, TxQueueMapValue> = new Map()
-const txQueueSize = 10
+const pendingTxQueue: TransactionQueueItem[] = []
+const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const txQueueProcessingInterval = 10000
 const COORDINATOR_POLL_INTERVAL = 10 * 1000 // 10s
+const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
+const TX_DATA_STORE_MAX_ENTRIES = 1000
+const TX_DATA_STORE_MAX_FILES = 10
 
 // Define maximum concurrent transactions
 const MAX_CONCURRENT_TXS = 1
-const processingTransactionIds = new Set<string>()
+const processingTransactionIds = new Map<string, TransactionQueueItem>()
 
 const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -477,53 +474,34 @@ axios.defaults.httpsAgent = httpsAgent
 // Add this cleanup function for memory management
 function cleanupOldTransactions() {
   const now = Date.now()
-  const maxAge = 2 * 60 * 60 * 1000 // Reduced to 2 hours for more aggressive cleanup
-  const maxPendingAge = 30 * 60 * 1000 // 30 minutes for pending transactions
   let removedCount = 0
-  let statusCounts = { pending: 0, processing: 0, completed: 0, failed: 0, unknown: 0 }
-  
-  for (const [txId, txData] of txQueueMap.entries()) {
-    // Count transaction statuses for debugging
-    statusCounts[txData.status as keyof typeof statusCounts] = (statusCounts[txData.status as keyof typeof statusCounts] || 0) + 1
-    
-    const txTimestamp = txData.timestamp || 0
-    const txAge = now - txTimestamp
-    
-    let shouldRemove = false
-    
-    if (txData.status === 'completed' || txData.status === 'failed') {
-      // Remove completed/failed transactions older than 2 hours
-      shouldRemove = txAge > maxAge
-    } else if (txData.status === 'pending' && txTimestamp > 0) {
-      // Remove pending transactions older than 30 minutes (likely stuck)
-      shouldRemove = txAge > maxPendingAge
-    } else if (txTimestamp === 0) {
-      // Remove transactions without timestamps that are older than server start
-      shouldRemove = now - serverStartTime > maxAge
-    }
-    
-    if (shouldRemove) {
+
+  for (const [txId, entry] of txQueueMap.entries()) {
+    const txAge = entry.txTimestamp > 0 ? now - entry.txTimestamp : now - serverStartTime
+    if (txAge > TX_CLEANUP_MAX_AGE) {
       txQueueMap.delete(txId)
       processingTransactionIds.delete(txId)
       removedCount++
-      
       if (verboseLogs) {
-        console.log(`🗑️ Removed ${txData.status} transaction ${txId} (age: ${Math.round(txAge / 60000)}min)`)
+        console.log(`🗑️ Removed ${entry.status} transaction ${txId} (age: ${Math.round(txAge / 60000)}min)`)
       }
     }
   }
-  
-  // Always log cleanup results for monitoring
-  console.log(`🧹 Cleanup complete. Removed ${removedCount} transactions. Status counts:`, statusCounts)
-  console.log(`📊 Current txQueueMap size: ${txQueueMap.size}, processingSet size: ${processingTransactionIds.size}`)
-  
+
+  const statusCounts = {
+    pending: pendingTxQueue.length,
+    processing: processingTransactionIds.size,
+    done: txQueueMap.size - pendingTxQueue.length - processingTransactionIds.size,
+  }
+  console.log(`🧹 Cleanup complete. Removed ${removedCount} transactions. Counts:`, statusCounts)
+  console.log(`📊 txQueueMap size: ${txQueueMap.size}, pendingTxQueue: ${pendingTxQueue.length}, processing: ${processingTransactionIds.size}`)
+
   // Force garbage collection more aggressively
   if (global.gc && (removedCount > 0 || process.memoryUsage().heapUsed > 256 * 1024 * 1024)) { // 256MB threshold
     const beforeGC = process.memoryUsage().heapUsed
     global.gc()
     const afterGC = process.memoryUsage().heapUsed
     const freedMB = Math.round((beforeGC - afterGC) / 1024 / 1024)
-    
     if (freedMB > 0) {
       console.log(`🗑️ Forced garbage collection freed ${freedMB} MB`)
     }
@@ -631,8 +609,12 @@ const saveQueueToFile = (partyIdx: number): void => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `queue_party_${party}.json`)
   const data = {
-    queue: txQueue,
     map: Array.from(txQueueMap.entries()),
+    pending: pendingTxQueue.map(tx => ({
+      ...tx,
+      value: tx.value.toString(),
+      receipt: undefined,
+    })),
   }
   fs.writeFileSync(filePath, JSON.stringify(data))
   console.log(`Queue for party ${party} saved to ${filePath}`)
@@ -641,14 +623,142 @@ const saveQueueToFile = (partyIdx: number): void => {
 const loadQueueFromFile = (partyIdx: number): void => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `queue_party_${party}.json`)
-  if (fs.existsSync(filePath)) {
+  if (!fs.existsSync(filePath)) return
+
+  try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-    txQueue.push(...data.queue)
-    data.map.forEach(([key, value]: [string, TxQueueMapValue]) => {
-      txQueueMap.set(key, value)
-    })
-    console.log(`Queue for party ${party} loaded from ${filePath}`)
+
+    // Restore txQueueMap
+    if (Array.isArray(data.map)) {
+      for (const [txId, entry] of data.map as [string, TxQueueEntry][]) {
+        txQueueMap.set(txId, entry)
+      }
+    }
+
+    // Restore pendingTxQueue — parse BigNumber from string
+    if (Array.isArray(data.pending)) {
+      for (const tx of data.pending) {
+        pendingTxQueue.push({
+          ...tx,
+          value: ethers.BigNumber.from(tx.value),
+        })
+      }
+    }
+
+    // Legacy format support: old files used "queue" key
+    if (!data.pending && Array.isArray(data.queue)) {
+      for (const tx of data.queue) {
+        pendingTxQueue.push({ ...tx, value: ethers.BigNumber.from(tx.value?.hex ?? tx.value ?? '0') })
+      }
+      if (Array.isArray(data.map)) {
+        for (const [txId, oldEntry] of data.map) {
+          txQueueMap.set(txId, {
+            txTimestamp: oldEntry.txTimestamp ?? oldEntry.timestamp ?? Date.now(),
+            status: oldEntry.status ?? 'pending',
+          })
+        }
+      }
+    }
+
+    console.log(`Queue for party ${party} loaded from ${filePath}: ${txQueueMap.size} map entries, ${pendingTxQueue.length} pending`)
+  } catch (err) {
+    console.error(`Failed to load queue from ${filePath}:`, err)
   }
+}
+
+function appendToTxDataStore(txData: TransactionQueueItem): void {
+  try {
+    const pattern = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.json$`)
+    const existingFiles = fs.readdirSync(KEYSTORE_DIR)
+      .filter(f => pattern.test(f))
+      .sort() // lexicographic = chronological since we use timestamps
+
+    let currentFile = existingFiles.length > 0
+      ? path.join(KEYSTORE_DIR, existingFiles[existingFiles.length - 1])
+      : null
+
+    // Check if current file is full or doesn't exist
+    let needsNewFile = !currentFile
+    if (currentFile && fs.existsSync(currentFile)) {
+      const existing = JSON.parse(fs.readFileSync(currentFile, 'utf8'))
+      if (existing.entries.length >= TX_DATA_STORE_MAX_ENTRIES) needsNewFile = true
+    }
+
+    if (needsNewFile) {
+      currentFile = path.join(KEYSTORE_DIR, `tx_data_store_${ourParty.idx}_${Date.now()}.json`)
+      fs.writeFileSync(currentFile, JSON.stringify({ createdAt: Date.now(), entries: [] }))
+
+      // Delete oldest files if over the limit
+      const allFiles = fs.readdirSync(KEYSTORE_DIR)
+        .filter(f => pattern.test(f))
+        .sort()
+      while (allFiles.length > TX_DATA_STORE_MAX_FILES) {
+        fs.unlinkSync(path.join(KEYSTORE_DIR, allFiles.shift()!))
+      }
+    }
+
+    const fileData = JSON.parse(fs.readFileSync(currentFile!, 'utf8'))
+    fileData.entries.push({
+      txId: txData.txId,
+      from: txData.from,
+      value: txData.value.toString(),
+      type: txData.type,
+      chainId: txData.chainId,
+      txTimestamp: txData.txTimestamp,
+      addedAt: Date.now(),
+    })
+    fs.writeFileSync(currentFile!, JSON.stringify(fileData))
+  } catch (err) {
+    console.error('[txDataStore] Failed to append tx data:', err)
+  }
+}
+
+function appendToFailedTxs(txData: TransactionQueueItem, error: string): void {
+  try {
+    const filePath = path.join(KEYSTORE_DIR, `failedtxs_party_${ourParty.idx}.json`)
+    const line = JSON.stringify({
+      txId: txData.txId,
+      from: txData.from,
+      value: txData.value.toString(),
+      type: txData.type,
+      chainId: txData.chainId,
+      txTimestamp: txData.txTimestamp,
+      failedAt: Date.now(),
+      error,
+    }) + '\n'
+    fs.appendFileSync(filePath, line)
+  } catch (err) {
+    console.error('[failedTxs] Failed to append failed tx:', err)
+  }
+}
+
+function findInTxDataStoreFiles(txId: string): TransactionQueueItem | null {
+  try {
+    const pattern = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.json$`)
+    const files = fs.readdirSync(KEYSTORE_DIR)
+      .filter(f => pattern.test(f))
+      .sort()
+      .reverse() // most recent first
+
+    for (const file of files) {
+      const fileData = JSON.parse(fs.readFileSync(path.join(KEYSTORE_DIR, file), 'utf8'))
+      const entry = fileData.entries?.find((e: any) => e.txId === txId)
+      if (entry) {
+        return {
+          receipt: null as any,
+          from: entry.from,
+          value: ethers.BigNumber.from(entry.value),
+          txId: entry.txId,
+          type: entry.type,
+          chainId: entry.chainId,
+          txTimestamp: entry.txTimestamp,
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[txDataStore] Failed to search for tx ${txId}:`, err)
+  }
+  return null
 }
 
 // Function to recover from emergency backup if needed
@@ -685,15 +795,24 @@ const recoverFromEmergencyBackup = (partyIdx: number, backupTimestamp?: number):
     console.log(`📊 Backup info: ${backupData.reason}, original size: ${backupData.originalSize}`)
     
     // Clear current queue and load from backup
-    txQueue.length = 0
+    pendingTxQueue.length = 0
     txQueueMap.clear()
     processingTransactionIds.clear()
-    
-    txQueue.push(...backupData.queue)
-    backupData.map.forEach(([key, value]: [string, TxQueueMapValue]) => {
-      txQueueMap.set(key, value)
-    })
-    
+
+    if (Array.isArray(backupData.pending)) {
+      for (const tx of backupData.pending) {
+        pendingTxQueue.push({ ...tx, value: ethers.BigNumber.from(tx.value?.hex ?? tx.value ?? '0') })
+      }
+    }
+    if (Array.isArray(backupData.map)) {
+      for (const [txId, entry] of backupData.map as [string, any][]) {
+        txQueueMap.set(txId, {
+          txTimestamp: entry.txTimestamp ?? entry.timestamp ?? Date.now(),
+          status: entry.status ?? 'pending',
+        })
+      }
+    }
+
     console.log(`✅ Successfully recovered ${txQueueMap.size} transactions from emergency backup`)
     
     // Save the recovered state as the current queue
@@ -933,10 +1052,20 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         console.warn(`[poll] Skipping tx with invalid txId (expected 64 chars): ${tx.txId}`)
         continue
       }
-      if (txQueueMap.has(tx.txId)) continue
-      if (txQueue.length >= txQueueSize) {
-        console.warn('[poll] Transaction queue full, skipping remaining coordinator results')
-        break
+      if (!tx.txTimestamp || !tx.sender || !tx.value || tx.chainId == null) {
+        console.warn(`[poll] Skipping tx ${tx.txId} — missing required fields (txTimestamp/sender/value/chainId)`, tx)
+        continue
+      }
+      const existingEntry = txQueueMap.get(tx.txId)
+      if (existingEntry) {
+        // If we previously marked it failed but the coordinator still shows it pending, retry
+        if (existingEntry.status === 'failed' && !pendingTxQueue.some(t => t.txId === tx.txId)) {
+          console.log(`[poll] Retrying tx ${tx.txId} — previously failed locally but coordinator reports pending`)
+          existingEntry.status = 'pending'
+          // fall through to re-queue below
+        } else {
+          continue
+        }
       }
 
       const bridgeType: TransactionQueueItem['type'] =
@@ -958,25 +1087,20 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         txTimestamp: tx.txTimestamp,
       }
 
-      txQueue.push(txData)
-      txQueueMap.set(tx.txId, {
-        status: 'pending',
-        from: tx.sender,
-        value,
-        txId: tx.txId,
-        chainId: tx.chainId,
-        timestamp: Date.now(),
-      })
+      pendingTxQueue.push(txData)
+      if (!existingEntry) {
+        txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'pending' })
+      }
+      appendToTxDataStore(txData)
 
       if (verboseLogs) {
         const chainName = getChainConfigById(tx.chainId)?.name || 'Unknown'
-        console.log(`[poll] Added ${bridgeType} tx ${tx.txId} from coordinator (${chainName})`)
+        console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from coordinator (${chainName})`)
       }
     }
 
     // Re-sort the queue so newly inserted items are in txTimestamp order.
-    // Items without a txTimestamp (from local monitoring) are placed last.
-    txQueue.sort((a, b) => {
+    pendingTxQueue.sort((a, b) => {
       const ta = a.txTimestamp ?? Infinity
       const tb = b.txTimestamp ?? Infinity
       return ta - tb
@@ -1281,6 +1405,8 @@ async function processCoinToToken(
       console.log(
         `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
+      const txData = processingTransactionIds.get(txId)
+      if (txData) appendToFailedTxs(txData, `failed in execution on ${targetChainName}`)
       sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
     }
   } else {
@@ -1288,6 +1414,8 @@ async function processCoinToToken(
       `Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       res.reason,
     )
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxs(txData, res.reason ?? `send failed on ${targetChainName}`)
     // Send tx status to coordinator
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
   }
@@ -1404,6 +1532,8 @@ async function processVaultBridge(
       console.log(
         `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
+      const txData = processingTransactionIds.get(txId)
+      if (txData) appendToFailedTxs(txData, `failed in execution on ${destChainName}`)
       sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
     }
   } else {
@@ -1411,6 +1541,8 @@ async function processVaultBridge(
       `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       res.reason,
     )
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxs(txData, res.reason ?? `send failed on ${destChainName}`)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
   }
 }
@@ -1605,8 +1737,8 @@ function logMemoryUsage() {
     heapUsed: formatMB(usage.heapUsed),
     external: formatMB(usage.external),
     txQueueMapSize: txQueueMap.size,
-    processingSetSize: processingTransactionIds.size,
-    txQueueLength: txQueue.length,
+    processingSize: processingTransactionIds.size,
+    pendingTxQueueLength: pendingTxQueue.length,
     recentlyCompletedSize: recentlyCompletedTxs.size
   })
   
@@ -1639,14 +1771,12 @@ function logMemoryUsage() {
   }
   
   // Warn about potential memory leaks
-  if (txQueueMap.size > 100) {
-    console.warn(`⚠️ Large txQueueMap detected: ${txQueueMap.size} entries. Running emergency cleanup.`)
-    emergencyCleanup()
+  if (txQueueMap.size > 2000) {
+    console.warn(`⚠️ Large txQueueMap detected: ${txQueueMap.size} entries. Check for stale data.`)
   }
-  
-  if (processingTransactionIds.size > 10) {
-    console.warn(`⚠️ Large processing set detected: ${processingTransactionIds.size} entries. Potential stuck transactions.`)
-    cleanupStuckTransactions()
+
+  if (processingTransactionIds.size > MAX_CONCURRENT_TXS) {
+    console.warn(`⚠️ processingTransactionIds has ${processingTransactionIds.size} entries, expected ≤ ${MAX_CONCURRENT_TXS}.`)
   }
 }
 
@@ -1731,7 +1861,7 @@ function emergencyCleanup() {
     timestamp: now,
     reason: 'emergency_cleanup',
     originalSize: txQueueMap.size,
-    queue: txQueue,
+    pending: pendingTxQueue.map(tx => ({ ...tx, value: tx.value.toString(), receipt: undefined })),
     map: Array.from(txQueueMap.entries()),
   }
   
@@ -1745,19 +1875,12 @@ function emergencyCleanup() {
     return
   }
   
-  // Count pending transactions before cleanup for reporting
-  for (const [txId, txData] of txQueueMap.entries()) {
-    if (txData.status === 'pending') {
-      backupCount++
-    }
-  }
-  
-  // More aggressive cleanup - remove anything older than 1 hour regardless of status
-  for (const [txId, txData] of txQueueMap.entries()) {
-    const txAge = now - (txData.timestamp || serverStartTime)
-    const oneHour = 60 * 60 * 1000
-    
-    if (txAge > oneHour) {
+  backupCount = pendingTxQueue.length
+
+  // Aggressive cleanup — remove anything older than 24h
+  for (const [txId, entry] of txQueueMap.entries()) {
+    const txAge = entry.txTimestamp > 0 ? now - entry.txTimestamp : now - serverStartTime
+    if (txAge > TX_CLEANUP_MAX_AGE) {
       txQueueMap.delete(txId)
       processingTransactionIds.delete(txId)
       removedCount++
@@ -1779,39 +1902,8 @@ function emergencyCleanup() {
 
 // Add function to clean up stuck transactions
 function cleanupStuckTransactions() {
-  const now = Date.now()
-  const stuckThreshold = 5 * 60 * 1000 // 5 minutes
-  let cleanedCount = 0
-  
-  console.log('🔧 Cleaning up stuck transactions in processing set')
-  
-  for (const txId of processingTransactionIds) {
-    const txData = txQueueMap.get(txId)
-    
-    if (!txData) {
-      // Remove from processing set if not in map
-      processingTransactionIds.delete(txId)
-      cleanedCount++
-      continue
-    }
-    
-    const txAge = now - (txData.timestamp || 0)
-    
-    // If transaction has been processing for too long, consider it stuck
-    if (txData.status === 'processing' && txAge > stuckThreshold) {
-      console.warn(`⚠️ Found stuck transaction ${txId}, removing from processing set`)
-      processingTransactionIds.delete(txId)
-      
-      // Update status to failed
-      txData.status = 'failed'
-      txData.timestamp = now
-      
-      cleanedCount++
-    }
-  }
-  
-  if (cleanedCount > 0) {
-    console.log(`🔧 Cleaned up ${cleanedCount} stuck transactions`)
+  if (processingTransactionIds.size > MAX_CONCURRENT_TXS) {
+    console.warn(`⚠️ processingTransactionIds has ${processingTransactionIds.size} entries, expected ≤ ${MAX_CONCURRENT_TXS}. Potential stuck transactions.`)
   }
 }
 
@@ -2021,22 +2113,58 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // Load persisted queue state
   loadQueueFromFile(ourParty.idx)
 
-  // One-time cleanup of any existing transactions that might not have timestamps
-  console.log('🧹 Running one-time cleanup of existing transactions...')
-  let fixedCount = 0
-  for (const [txId, txData] of txQueueMap.entries()) {
-    if (!txData.timestamp) {
-      txData.timestamp = Date.now() - (24 * 60 * 60 * 1000) // Set to 24 hours ago so they get cleaned up
-      fixedCount++
+  // Startup recovery: verify pending/processing entries against coordinator
+  console.log('🔄 Running startup recovery check against coordinator...')
+  const txIdsToCheck = [...txQueueMap.entries()]
+    .filter(([, entry]) => entry.status === 'pending' || entry.status === 'processing')
+    .map(([txId]) => txId)
+
+  for (const txId of txIdsToCheck) {
+    try {
+      const coordinatorStatus = await checkTxStatusFromCoordinator(txId)
+      const entry = txQueueMap.get(txId)!
+
+      if (coordinatorStatus === TransactionStatus.COMPLETED) {
+        entry.status = 'completed'
+        // Remove from pendingTxQueue if present
+        const idx = pendingTxQueue.findIndex(t => t.txId === txId)
+        if (idx !== -1) pendingTxQueue.splice(idx, 1)
+        console.log(`[startup] ${txId} already COMPLETED on coordinator, skipping`)
+      } else if (coordinatorStatus === TransactionStatus.FAILED) {
+        entry.status = 'failed'
+        const idx = pendingTxQueue.findIndex(t => t.txId === txId)
+        if (idx !== -1) pendingTxQueue.splice(idx, 1)
+        console.log(`[startup] ${txId} already FAILED on coordinator, skipping`)
+      } else {
+        // PENDING or PROCESSING on coordinator — ensure txData is in pendingTxQueue
+        const alreadyInQueue = pendingTxQueue.some(t => t.txId === txId)
+        if (!alreadyInQueue) {
+          // Was processing when we crashed — look up txData in txDataStore files
+          const txData = findInTxDataStoreFiles(txId)
+          if (txData) {
+            pendingTxQueue.push(txData)
+            entry.status = 'pending'
+            console.log(`[startup] Recovered in-flight tx ${txId} from txDataStore, re-queued`)
+          } else {
+            entry.status = 'failed'
+            console.warn(`[startup] Cannot recover txData for ${txId}, marking failed`)
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[startup] Coordinator check failed for ${txId}, skipping`, err)
     }
   }
-  if (fixedCount > 0) {
-    console.log(`🔧 Fixed ${fixedCount} transactions without timestamps`)
-    // Run immediate cleanup
-    cleanupOldTransactions()
-  }
+
+  // Sort pendingTxQueue by txTimestamp
+  pendingTxQueue.sort((a, b) => (a.txTimestamp ?? Infinity) - (b.txTimestamp ?? Infinity))
+  console.log(`[startup] Recovery complete. pendingTxQueue: ${pendingTxQueue.length}, txQueueMap: ${txQueueMap.size}`)
+
+  // Run initial cleanup
+  cleanupOldTransactions()
 
   async function processTransaction(validTx: any): Promise<void> {
     const {txId} = validTx
@@ -2045,14 +2173,7 @@ async function main(): Promise<void> {
     // Check if this transaction was recently completed to avoid duplicate processing
     if (isRecentlyCompleted(txId)) {
       console.log(`⏩ Transaction ${txId} was recently completed, skipping duplicate processing`)
-      txQueueMap.set(txId, {
-        status: 'completed',
-        from: validTx.from,
-        value: validTx.amount,
-        txId: validTx.txId,
-        chainId: validTx.chainId,
-        timestamp: Date.now(),
-      })
+      txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       processingTransactionIds.delete(txId)
       return
     }
@@ -2065,16 +2186,19 @@ async function main(): Promise<void> {
       console.error(`Coordinator check failed for ${txId}, leaving in queue for later:`, error)
       return
     }
-    if (coordinatorStatus === TransactionStatus.COMPLETED || coordinatorStatus === TransactionStatus.PROCESSING) {
-      console.log(`⏩ Transaction ${txId} already has status ${coordinatorStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'PROCESSING'} on coordinator, skipping`)
-      txQueueMap.set(txId, {
-        status: coordinatorStatus === TransactionStatus.COMPLETED ? 'completed' : 'processing',
-        from: validTx.from,
-        value: validTx.amount,
-        txId: validTx.txId,
-        chainId: validTx.chainId,
-        timestamp: Date.now(),
-      })
+    if (
+      coordinatorStatus === TransactionStatus.COMPLETED ||
+      coordinatorStatus === TransactionStatus.PROCESSING ||
+      coordinatorStatus === TransactionStatus.FAILED
+    ) {
+      const statusLabel =
+        coordinatorStatus === TransactionStatus.COMPLETED ? 'COMPLETED' :
+        coordinatorStatus === TransactionStatus.PROCESSING ? 'PROCESSING' : 'FAILED'
+      console.log(`⏩ Transaction ${txId} already has status ${statusLabel} on coordinator, skipping`)
+      const localStatus =
+        coordinatorStatus === TransactionStatus.COMPLETED ? 'completed' :
+        coordinatorStatus === TransactionStatus.PROCESSING ? 'processing' : 'failed'
+      txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: localStatus })
       processingTransactionIds.delete(txId)
       if (coordinatorStatus === TransactionStatus.COMPLETED) {
         markTransactionCompleted(txId)
@@ -2125,14 +2249,7 @@ async function main(): Promise<void> {
       // wait for either the transaction to be processed or the timeout
       await Promise.race(promises)
       // if the transaction was processed successfully, remove it from the queue
-      txQueueMap.set(validTx.txId, {
-        status: 'completed',
-        from: validTx.from,
-        value: validTx.amount,
-        txId: validTx.txId,
-        chainId: validTx.chainId,
-        timestamp: Date.now(), // Add timestamp for cleanup
-      })
+      txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       console.log('Transaction processed successfully:', validTx)
       
       // Mark transaction as completed to prevent duplicate processing
@@ -2149,14 +2266,7 @@ async function main(): Promise<void> {
       if (error.message === enoughPartyError) {
         // Handle the "enough party" error - this means other parties already completed the signing
         console.log('Transaction already signed by enough parties, marking as completed:', validTx)
-        txQueueMap.set(validTx.txId, {
-          status: 'completed',
-          from: validTx.from,
-          value: validTx.amount,
-          txId: validTx.txId,
-          chainId: validTx.chainId,
-          timestamp: Date.now(), // Add timestamp for cleanup
-        })
+        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         
         // Mark transaction as completed to prevent duplicate processing
         markTransactionCompleted(validTx.txId)
@@ -2171,15 +2281,8 @@ async function main(): Promise<void> {
         // Handle timeout errors more gracefully
         console.warn('⏱️ Transaction timed out, marking as failed and cleaning up:', validTx.txId)
         checkPostTransactionMemory(validTx.txId, 'timeout-error')
-        txQueueMap.set(validTx.txId, {
-          status: 'failed',
-          from: validTx.from,
-          value: validTx.amount,
-          txId: validTx.txId,
-          chainId: validTx.chainId,
-          timestamp: Date.now(),
-          error: 'timeout'
-        })
+        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+        appendToFailedTxs(validTx, 'timeout')
         
         // Force cleanup after timeout
         if (global.gc) {
@@ -2188,15 +2291,8 @@ async function main(): Promise<void> {
       } else {
         // Handle other errors
         console.error('❌ Error processing transaction:', error)
-        txQueueMap.set(validTx.txId, {
-          status: 'failed',
-          from: validTx.from,
-          value: validTx.amount,
-          txId: validTx.txId,
-          chainId: validTx.chainId,
-          timestamp: Date.now(), // Add timestamp for cleanup
-          error: error.message
-        })
+        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+        appendToFailedTxs(validTx, error.message ?? 'unknown')
         
         // Force cleanup after any error
         if (global.gc) {
@@ -2216,29 +2312,20 @@ async function main(): Promise<void> {
 
   const handleTransactionQueue = () => {
     console.log('Running handleTransactionQueue', new Date().toISOString())
-    // Clean up any stale transaction IDs that might have completed/failed but aren't reflected in our processing set
-    for (const txId of processingTransactionIds) {
-      const txStatus = txQueueMap.get(txId)
-      if (txStatus && (txStatus.status === 'completed' || txStatus.status === 'failed')) {
-        processingTransactionIds.delete(txId)
-      }
-    }
 
-    // console.log(`Queue length: ${txQueue.length}`, processing);
     // Process new transactions while we have available slots
-    while (txQueue.length > 0 && processingTransactionIds.size < MAX_CONCURRENT_TXS) {
-      const validTx = txQueue.shift()!
+    while (pendingTxQueue.length > 0 && processingTransactionIds.size < MAX_CONCURRENT_TXS) {
+      const validTx = pendingTxQueue.shift()!
 
       // Update transaction status to processing
       txQueueMap.set(validTx.txId, {
-        status: 'processing', 
-        ...validTx,
-        timestamp: Date.now() // Update timestamp when moving to processing
+        txTimestamp: validTx.txTimestamp!,
+        status: 'processing',
       })
       saveQueueToFile(ourParty.idx)
 
-      // Add to processing set
-      processingTransactionIds.add(validTx.txId)
+      // Store full txData in processingTransactionIds for crash recovery
+      processingTransactionIds.set(validTx.txId, validTx)
 
       // Start processing the transaction (fire and forget)
       processTransaction(validTx).catch((error) => {
@@ -2249,7 +2336,7 @@ async function main(): Promise<void> {
     }
     if (processingTransactionIds.size)
       console.log(
-        `Currently processing ${processingTransactionIds.size} transactions, ${txQueue.length} in queue`,
+        `Currently processing ${processingTransactionIds.size} transactions, ${pendingTxQueue.length} in queue`,
       )
   }
 
