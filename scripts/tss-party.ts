@@ -447,9 +447,15 @@ const pendingTxQueue: TransactionQueueItem[] = []
 const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const txQueueProcessingInterval = 10000
 const COORDINATOR_POLL_INTERVAL = 10 * 1000 // 10s
+
 const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
-const TX_DATA_STORE_MAX_ENTRIES = 1000
-const TX_DATA_STORE_MAX_FILES = 10
+
+const TX_DATA_STORE_MAX_ENTRIES = 500
+const TX_DATA_STORE_MAX_FILES = 5
+// Compiled once at startup; ourParty.idx is known at module-init time
+const TX_DATA_STORE_FILE_PATTERN = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.json$`)
+// Tracks the active tx_data_store file path in memory to avoid readdirSync on every append
+let txDataStoreCurrentFile: string | null = null
 
 // Define maximum concurrent transactions
 const MAX_CONCURRENT_TXS = 1
@@ -668,36 +674,34 @@ const loadQueueFromFile = (partyIdx: number): void => {
 
 function appendToTxDataStore(txData: TransactionQueueItem): void {
   try {
-    const pattern = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.json$`)
-    const existingFiles = fs.readdirSync(KEYSTORE_DIR)
-      .filter(f => pattern.test(f))
-      .sort() // lexicographic = chronological since we use timestamps
-
-    let currentFile = existingFiles.length > 0
-      ? path.join(KEYSTORE_DIR, existingFiles[existingFiles.length - 1])
-      : null
-
-    // Check if current file is full or doesn't exist
-    let needsNewFile = !currentFile
-    if (currentFile && fs.existsSync(currentFile)) {
-      const existing = JSON.parse(fs.readFileSync(currentFile, 'utf8'))
-      if (existing.entries.length >= TX_DATA_STORE_MAX_ENTRIES) needsNewFile = true
-    }
-
-    if (needsNewFile) {
-      currentFile = path.join(KEYSTORE_DIR, `tx_data_store_${ourParty.idx}_${Date.now()}.json`)
-      fs.writeFileSync(currentFile, JSON.stringify({ createdAt: Date.now(), entries: [] }))
-
-      // Delete oldest files if over the limit
-      const allFiles = fs.readdirSync(KEYSTORE_DIR)
-        .filter(f => pattern.test(f))
+    // On first call after startup, do a one-time scan to find the current file
+    if (txDataStoreCurrentFile === null) {
+      const existing = fs.readdirSync(KEYSTORE_DIR)
+        .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
         .sort()
-      while (allFiles.length > TX_DATA_STORE_MAX_FILES) {
-        fs.unlinkSync(path.join(KEYSTORE_DIR, allFiles.shift()!))
+      if (existing.length > 0) {
+        txDataStoreCurrentFile = path.join(KEYSTORE_DIR, existing[existing.length - 1])
       }
     }
 
-    const fileData = JSON.parse(fs.readFileSync(currentFile!, 'utf8'))
+    // Single read: get file contents and check entry count in one pass
+    let fileData: { createdAt: number; entries: object[] } | null = null
+    if (txDataStoreCurrentFile) {
+      fileData = JSON.parse(fs.readFileSync(txDataStoreCurrentFile, 'utf8'))
+    }
+
+    if (!fileData || fileData.entries.length >= TX_DATA_STORE_MAX_ENTRIES) {
+      // Roll to a new file; scan once here to prune oldest if over the limit
+      const allFiles = fs.readdirSync(KEYSTORE_DIR)
+        .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
+        .sort()
+      while (allFiles.length >= TX_DATA_STORE_MAX_FILES) {
+        fs.unlinkSync(path.join(KEYSTORE_DIR, allFiles.shift()!))
+      }
+      txDataStoreCurrentFile = path.join(KEYSTORE_DIR, `tx_data_store_${ourParty.idx}_${Date.now()}.json`)
+      fileData = { createdAt: Date.now(), entries: [] }
+    }
+
     fileData.entries.push({
       txId: txData.txId,
       from: txData.from,
@@ -707,15 +711,15 @@ function appendToTxDataStore(txData: TransactionQueueItem): void {
       txTimestamp: txData.txTimestamp,
       addedAt: Date.now(),
     })
-    fs.writeFileSync(currentFile!, JSON.stringify(fileData))
+    fs.writeFileSync(txDataStoreCurrentFile, JSON.stringify(fileData))
   } catch (err) {
     console.error('[txDataStore] Failed to append tx data:', err)
   }
 }
 
-function appendToFailedTxs(txData: TransactionQueueItem, error: string): void {
+function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): void {
   try {
-    const filePath = path.join(KEYSTORE_DIR, `failedtxs_party_${ourParty.idx}.json`)
+    const filePath = path.join(KEYSTORE_DIR, `failed_txs_logs_party_${ourParty.idx}.json`)
     const line = JSON.stringify({
       txId: txData.txId,
       from: txData.from,
@@ -728,15 +732,14 @@ function appendToFailedTxs(txData: TransactionQueueItem, error: string): void {
     }) + '\n'
     fs.appendFileSync(filePath, line)
   } catch (err) {
-    console.error('[failedTxs] Failed to append failed tx:', err)
+    console.error('[failedTxsLogs] Failed to append failed tx:', err)
   }
 }
 
 function findInTxDataStoreFiles(txId: string): TransactionQueueItem | null {
   try {
-    const pattern = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.json$`)
     const files = fs.readdirSync(KEYSTORE_DIR)
-      .filter(f => pattern.test(f))
+      .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
       .sort()
       .reverse() // most recent first
 
@@ -1406,7 +1409,7 @@ async function processCoinToToken(
         `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
-      if (txData) appendToFailedTxs(txData, `failed in execution on ${targetChainName}`)
+      if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
       sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
     }
   } else {
@@ -1415,7 +1418,7 @@ async function processCoinToToken(
       res.reason,
     )
     const txData = processingTransactionIds.get(txId)
-    if (txData) appendToFailedTxs(txData, res.reason ?? `send failed on ${targetChainName}`)
+    if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${targetChainName}`)
     // Send tx status to coordinator
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
   }
@@ -1533,7 +1536,7 @@ async function processVaultBridge(
         `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
-      if (txData) appendToFailedTxs(txData, `failed in execution on ${destChainName}`)
+      if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
       sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
     }
   } else {
@@ -1542,7 +1545,7 @@ async function processVaultBridge(
       res.reason,
     )
     const txData = processingTransactionIds.get(txId)
-    if (txData) appendToFailedTxs(txData, res.reason ?? `send failed on ${destChainName}`)
+    if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${destChainName}`)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
   }
 }
@@ -2282,7 +2285,7 @@ async function main(): Promise<void> {
         console.warn('⏱️ Transaction timed out, marking as failed and cleaning up:', validTx.txId)
         checkPostTransactionMemory(validTx.txId, 'timeout-error')
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        appendToFailedTxs(validTx, 'timeout')
+        appendToFailedTxsLogs(validTx, 'timeout')
         
         // Force cleanup after timeout
         if (global.gc) {
@@ -2292,7 +2295,7 @@ async function main(): Promise<void> {
         // Handle other errors
         console.error('❌ Error processing transaction:', error)
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        appendToFailedTxs(validTx, error.message ?? 'unknown')
+        appendToFailedTxsLogs(validTx, error.message ?? 'unknown')
         
         // Force cleanup after any error
         if (global.gc) {
