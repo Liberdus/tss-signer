@@ -154,6 +154,10 @@ const generateKeystore = operationFlag === '--keygen'
 const verifyKeystores = operationFlag === '--verify'
 const recoverFromBackup = operationFlag === '--recover'
 const verboseLogs = true
+// When true, transactions older than TX_CLEANUP_MAX_AGE (24h) received from the
+// coordinator are archived to the data store and failed-tx log and skipped instead
+// of being queued.  Matches the txQueue eviction logic.
+const rejectOldTransactions = true
 
 const serverStartTime = Date.now()
 
@@ -1240,6 +1244,23 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         type: bridgeType,
         chainId: tx.chainId,
         txTimestamp: tx.txTimestamp,
+      }
+
+      if (rejectOldTransactions) {
+        const currentTimestamp = Date.now()
+        if (currentTimestamp - tx.txTimestamp > TX_CLEANUP_MAX_AGE) {
+          console.warn(
+            `[poll] Tx ${tx.txId} is older than 24h (age: ${Math.floor((currentTimestamp - tx.txTimestamp) / 3_600_000)}h) — archiving and skipping`,
+          )
+          appendToTxDataStore(txData)
+          appendToFailedTxsLogs(txData, 'tx older than 24h max age — skipped by poll')
+          if (existingEntry) {
+            existingEntry.status = 'failed'
+          } else {
+            txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'failed' })
+          }
+          continue
+        }
       }
 
       pendingTxQueue.push(txData)
