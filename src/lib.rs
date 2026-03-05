@@ -21,6 +21,8 @@ pub mod paillier;
 
 #[macro_use]
 pub mod common;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod common_tests;
 
 pub mod api;
 pub mod errors;
