@@ -458,7 +458,12 @@ export async function monitorEthereumBridgeInQueryFilter(
         }
 
         for (const event of events) {
-          if (!event.args) continue;
+          if (!event.args) {
+            console.error(
+              `[coordinator/bridgeIn] Invalid event ${JSON.stringify(event)}`
+            );
+            continue;
+          }
 
           // bytes32 txId from event is always "0x"+64 hex chars; normalise to
           // plain 64-char lowercase hex to match the uniform storage format.
@@ -468,6 +473,9 @@ export async function monitorEthereumBridgeInQueryFilter(
 
           if (existing) {
             if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
+              console.log(
+                `[coordinator/bridgeIn] Already completed ${txId} on ${chainName}`
+              )
               continue; // Already completed — nothing to do
             }
             // PENDING or PROCESSING: mark completed with this BridgedIn tx as receipt
