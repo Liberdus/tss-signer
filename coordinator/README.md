@@ -1,153 +1,238 @@
-# TSS Coordinator Node
+# TSS Coordinator
 
-A secure, highly available coordinator implementation for Threshold Signature Scheme (TSS) in Node.js, designed to replace the single-point-of-failure server manager in the original Rust implementation.
+An Express.js server that acts as the coordination hub for the Liberdus TSS bridge signer. It handles two distinct responsibilities:
 
-## Features
+1. **Round relay** — Relays keygen/signing round data between TSS party nodes via an in-memory key-value store.
+2. **Transaction lifecycle** — Monitors EVM chains and Liberdus for bridge events, persists transactions to SQLite, and serves pending transactions to TSS parties for signing.
 
-- **Distributed Architecture**: Multiple coordinator nodes work together for high availability
-- **Secure Communication**: JWT-based authentication and authorization
-- **State Synchronization**: Redis-based distributed state management
-- **Load Balancing**: NGINX load balancer for distributing requests
-- **Rate Limiting**: Protection against DoS attacks
-- **Detailed Logging**: Structured logging for monitoring and debugging
-- **Docker Ready**: Easy deployment with Docker and Docker Compose
+The coordinator must be running before any TSS party node can perform keygen or signing.
 
 ## Prerequisites
 
-- Node.js 18+ (for development)
-- Docker and Docker Compose (for containerized deployment)
-- Redis (automatically set up with Docker Compose)
+- Node.js 18+
 
-## Getting Started
-
-### Local Development
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-2. Create a `.env` file based on `.env.example`:
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Start Redis locally or use Docker:
-   ```bash
-   docker run -d -p 6379:6379 redis:alpine
-   ```
-
-4. Run the development server:
-   ```bash
-   npm run dev
-   ```
-
-### Docker Deployment
-
-Use Docker Compose to start the entire system:
+## Setup
 
 ```bash
-docker-compose up -d
+npm install
 ```
 
-This will start:
-- 3 coordinator nodes (ports 8000, 8001, 8002)
-- Redis instance (port 6379)
-- NGINX load balancer (port 80)
+### Configuration files
 
-## API Endpoints
+The coordinator reads two config files from the repository root (one level up from `coordinator/`):
 
-### Public Endpoints
+- **`../params.json`** — TSS parameters (`parties`, `threshold`). Used by signup endpoints.
+- **`../chain-config.json`** — RPC endpoints, contract addresses, deployment blocks, and feature flags. Used for on-chain monitoring.
 
-- `GET /health`: Check service health
+### Authentication (optional)
 
-### Authentication Required Endpoints
+The coordinator supports optional request authentication using Shardus Crypto signatures. When enabled, all round-relay endpoints (`/get`, `/set`, `/signupkeygen`, `/signupsign`) require requests to be signed by a whitelisted TSS party key.
 
-All endpoints except `/health` require authentication:
+**To enable auth:**
 
-- For signup endpoints (`/signupkeygen`, `/signupsign`): API Key via `X-API-Key` header
-- For communication endpoints (`/get`, `/set`): JWT via `Authorization: Bearer <token>` header
+Set `"enableShardusCryptoAuth": true` in `chain-config.json` (or set env var `ENABLE_SHARDUS_CRYPTO_AUTH=true`).
 
-### Endpoints
+**Whitelist file:**
 
-- `POST /signupkeygen`: Register for key generation
-  - Request: `{ "threshold": number, "parties": number }`
-  - Response: `{ "number": number, "uuid": string, "sessionId": string, "timestamp": number, "expiresAt": number }`
-
-- `POST /signupsign`: Register for signing
-  - Request: `{ "threshold": number, "parties": number }`
-  - Response: `{ "number": number, "uuid": string, "sessionId": string, "timestamp": number, "expiresAt": number }`
-
-- `POST /get`: Get a message by key
-  - Request: `{ "key": string }`
-  - Response: `{ "key": string, "value": string }`
-
-- `POST /set`: Set a message
-  - Request: `{ "key": string, "value": string }`
-  - Response: `{ "success": true }`
-
-## Integration with TSS-WASM
-
-To integrate this coordinator with the TSS-WASM library:
-
-1. Update the client-side code to use the new API endpoints
-2. Adapt the communication protocols to include JWT authentication
-3. Use the load balancer endpoint instead of the single server manager
-
-## Error Handling
-
-All API responses use structured error format:
+Create `coordinator/allowed-tss-signers.json` listing the 64-char hex public keys of all TSS party nodes:
 
 ```json
 {
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human readable error message",
-    "requestId": "unique-request-id",
-    "timestamp": 1620000000000
+  "allowedTSSSigners": [
+    "<64-char-hex-pubkey-party-1>",
+    "<64-char-hex-pubkey-party-2>",
+    ...
+  ]
+}
+```
+
+The file path can be overridden with the `COORDINATOR_ALLOWED_TSS_SIGNER_FILE` environment variable.
+
+When auth is **disabled** (default for local development), all requests are accepted without verification.
+
+## Running
+
+```bash
+# Development — ts-node + nodemon (auto-restart on file changes)
+npm run dev
+
+# Production — compile first, then run
+npm run build
+npm start
+```
+
+The server listens on port `8000` by default. Override with the `PORT` environment variable.
+
+## Startup Sequence
+
+On startup the coordinator performs an **ordered initial sync** before accepting pending transaction queries from TSS parties:
+
+1. Scan all chains for `BridgedOut` events (EVM burn events → PENDING BRIDGE_OUT/BRIDGE_VAULT records)
+2. Scan Liberdus for coin-to-token transfers (→ PENDING BRIDGE_IN records) *(if `enableLiberdusNetwork` is set)*
+3. Scan all chains for `BridgedIn` events (marks matching records COMPLETED)
+
+Once all three scans complete, `GET /transaction?unprocessed=true` begins returning results. This prevents TSS parties from re-processing transactions that are already completed on-chain.
+
+After the initial sync, periodic polling runs on a drift-resistant scheduler:
+- EVM BridgedOut + BridgedIn: every **60 seconds**
+- Liberdus: every **10 seconds**
+
+## API Endpoints
+
+All responses follow the pattern `{ Ok: <value> }` on success or `{ Err: "<message>" }` on error.
+
+---
+
+### Round relay (in-memory, keygen/signing)
+
+#### `POST /set`
+Store a round data entry by key. Used by TSS parties to post commitments, shares, and proofs each round.
+
+**Request:** `{ "key": string, "value": string }`
+**Response:** `{ "Ok": null }`
+
+#### `POST /get`
+Retrieve a round data entry by key.
+
+**Request:** `{ "key": string }`
+**Response:** `{ "Ok": { "key": string, "value": string } }` or `404` if not found.
+
+---
+
+### Party signup (round-robin assignment)
+
+#### `POST /signupkeygen`
+Assigns a party number (1–N) for a keygen session. Resets to party 1 with a new UUID after all N parties have signed up.
+
+**Request body:** the signup key string (plain text body)
+**Response:** `{ "Ok": { "number": number, "uuid": string } }`
+
+#### `POST /signupsign`
+Same as `/signupkeygen` but for signing sessions.
+
+**Request body:** the signup key string (plain text body)
+**Response:** `{ "Ok": { "number": number, "uuid": string } }`
+
+---
+
+### Transaction management (SQLite-backed)
+
+#### `GET /transaction`
+Query bridge transactions with optional filters. Returns 10 transactions per page.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `txId` | string | Exact lookup by transaction ID (64-char hex or `0x`-prefixed 66-char) |
+| `sender` | string | Filter by Ethereum address |
+| `type` | number | `0` = BRIDGE_IN, `1` = BRIDGE_OUT, `2` = BRIDGE_VAULT |
+| `status` | number | `0` = PENDING, `1` = PROCESSING, `2` = COMPLETED, `3` = FAILED |
+| `unprocessed` | `"true"` | Returns PENDING + PROCESSING ordered by `txTimestamp ASC` |
+| `page` | number | Page number (default: 1) |
+
+**Response:**
+```json
+{
+  "Ok": {
+    "transactions": [ ... ],
+    "totalTranactions": 42,
+    "totalPages": 5
   }
 }
 ```
 
-## Architecture
+> Returns empty results if the initial sync has not yet completed and `status=0` or `unprocessed=true` is requested.
 
-```
-┌─────────────────────────┐
-│     NGINX (Port 80)     │
-└───────────┬─────────────┘
-            │
-┌───────────┼───────────────────────────┐
-│           │                           │
-│  ┌────────▼───────┐  ┌────────────┐   │
-│  │ Coordinator 1  │  │    Redis   │   │
-│  └────────────────┘  └──────┬─────┘   │
-│                             │         │
-│  ┌────────────────┐         │         │
-│  │ Coordinator 2  ◄─────────┘         │
-│  └────────────────┘                   │
-│                                       │
-│  ┌────────────────┐                   │
-│  │ Coordinator 3  │                   │
-│  └────────────────┘                   │
-│                                       │
-└───────────────────────────────────────┘
+#### `POST /transaction`
+No-op. The coordinator discovers transactions itself via on-chain monitoring; party submissions are ignored. Returns `{ "Ok": null }`.
+
+#### `POST /transaction/status`
+Update the status of a transaction. Called by TSS parties after completing or failing a signing attempt.
+
+**Request body:**
+```json
+{
+  "txId": "string",
+  "status": 2,
+  "receiptId": "string",
+  "reason": "string",
+  "party": 1
+}
 ```
 
-## Security Considerations
+- For `status = 2` (COMPLETED): the coordinator verifies the `receiptId` on-chain before accepting.
+- A COMPLETED transaction cannot be downgraded to FAILED.
 
-- JWT tokens are used for authentication
-- API keys are used for initial registration
-- All communications should be over HTTPS in production
-- Redis should be password-protected in production
-- Docker containers run as non-root users
-- Rate limiting is applied to all endpoints
+---
 
-## Production Deployment
+### Timestamp consensus
 
-For production, you should:
+#### `POST /future-timestamp`
+First-write-wins timestamp agreement. The first party to submit a timestamp for a given key wins; subsequent parties receive the already-set value. Used to coordinate transaction timing across parties.
 
-1. Use a managed Redis service with proper security
-2. Set secure values for JWT_SECRET and API_KEY
-3. Configure proper SSL termination in NGINX
-4. Set up monitoring and alerts
-5. Implement backup and disaster recovery procedures
+**Request:** `{ "key": string, "value": string }` (value = timestamp as string)
+**Response:** `{ "timestamp": number }`
+
+---
+
+### Notifications
+
+#### `POST /notify-bridgeout`
+Triggers an immediate BridgedOut scan for the specified chain, bypassing the 60-second polling interval. Intended to be called by external clients (e.g. a UI or relayer) when they observe a `BridgedOut` event on-chain and want faster pickup without waiting for the next scheduled poll.
+
+Includes per-chain throttling: if called within 5 seconds of a recent poll, the scan is deferred rather than dropped, ensuring no event is silently missed.
+
+**Request:** `{ "chainId": number }`
+**Response:** `{ "Ok": "triggered" | "queued" | "cooldown" }`
+
+---
+
+## Data Model
+
+```
+Transaction {
+  txId:         string   -- normalized 64-char hex
+  sender:       string   -- lowercase Ethereum address
+  value:        string   -- amount (as string)
+  type:         number   -- 0=BRIDGE_IN, 1=BRIDGE_OUT, 2=BRIDGE_VAULT
+  txTimestamp:  number   -- Unix ms timestamp of the source event
+  chainId:      number   -- source chain ID (0 = Liberdus)
+  status:       number   -- 0=PENDING, 1=PROCESSING, 2=COMPLETED, 3=FAILED
+  receiptId:    string   -- on-chain receipt/tx hash after completion
+  reason:       string?  -- failure reason if FAILED
+  createdAt:    string   -- ISO timestamp
+  updatedAt:    string   -- ISO timestamp
+}
+```
+
+Transactions are stored in `transactions.sqlite` in the coordinator working directory. Monitor state (last scanned block per chain, last Liberdus timestamp) is persisted to `block_state.json`.
+
+## Project Structure
+
+```
+coordinator/
+  src/
+    server.ts          -- entry point, startup sequence, schedulers
+    routes.ts          -- all Express route handlers
+    auth.ts            -- Shardus Crypto request verification middleware
+    config.ts          -- chain-config.json loader
+    verification.ts    -- on-chain receipt verification for COMPLETED status
+    monitor/
+      ethereum.ts      -- BridgedOut/BridgedIn queryFilter scanning
+      liberdus.ts      -- Liberdus collector API polling
+      state.ts         -- monitor state load/save (block_state.json)
+    storage/
+      transactiondb.ts -- SQLite transaction CRUD
+      sqliteManager.ts -- SQLite wrapper
+    utils/
+      scheduler.ts     -- drift-resistant interval scheduler
+      transformAddress.ts
+      transformTxId.ts
+    lib/
+      httpProviderHelper.ts
+      rpcUrls.ts
+  allowed-tss-signers.json   -- whitelisted party public keys (auth)
+  package.json
+  tsconfig.json
+```

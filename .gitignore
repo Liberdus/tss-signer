@@ -12,5 +12,6 @@ pkg
 Cargo.lock
 *.log
 tx.json
-tss-signer-keypair.json
+tss_signer_keypair.json
+
 
