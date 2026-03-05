@@ -1263,6 +1263,12 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
           console.log(`[poll] Retrying tx ${tx.txId} — previously failed locally but coordinator reports pending`)
           existingEntry.status = 'pending'
           // fall through to re-queue below
+        } else if (existingEntry.status === 'completed' && !pendingTxQueue.some(t => t.txId === tx.txId)) {
+          // Locally marked completed but coordinator still shows it pending — likely marked completed
+          // prematurely (e.g. via enoughPartyError when other parties also failed). Re-queue it.
+          console.warn(`[poll] Retrying tx ${tx.txId} — marked completed locally but coordinator still reports pending`)
+          existingEntry.status = 'pending'
+          // fall through to re-queue below
         } else {
           continue
         }
@@ -2480,12 +2486,19 @@ async function main(): Promise<void> {
       }
     } catch (error: any) {
       if (error.message === enoughPartyError) {
-        // Handle the "enough party" error - this means other parties already completed the signing
-        console.log('Transaction already signed by enough parties, marking as completed:', validTx)
-        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
-        
-        // Mark transaction as completed to prevent duplicate processing
-        markTransactionCompleted(validTx.txId)
+        // Enough parties joined the signing session, but that doesn't guarantee the tx succeeded.
+        // Check coordinator to confirm before marking completed; if still pending, mark failed so
+        // the poll loop can re-queue it.
+        console.log('Enough parties joined signing session for tx, verifying coordinator status:', validTx.txId)
+        const statusAfter = await checkTxStatusFromCoordinator(validTx.txId).catch(() => null)
+        if (statusAfter === TransactionStatus.COMPLETED) {
+          console.log('Transaction confirmed completed on coordinator:', validTx.txId)
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+          markTransactionCompleted(validTx.txId)
+        } else {
+          console.warn(`[enoughParty] Coordinator status is ${statusAfter} for ${validTx.txId} — marking failed so poll can retry`)
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+        }
         
         // Additional cleanup for "enough party" scenarios to prevent memory leaks
         console.log('🧹 Performing cleanup after "enough party" error')
