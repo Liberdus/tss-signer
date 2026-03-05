@@ -164,6 +164,7 @@ export function registerRoutes(app: express.Application): void {
   // POST /future-timestamp — first-write-wins timestamp agreement
   app.post(
     "/future-timestamp",
+    verifySignedCoordinatorRequest,
     (req: Request<{}, {}, Entry>, res: Response<{ timestamp: number }>) => {
       const { key, value } = req.body;
       const dbKey = "future-timestamp" + key;
@@ -177,14 +178,10 @@ export function registerRoutes(app: express.Application): void {
     }
   );
 
-  // POST /transaction — no-op: coordinator discovers transactions itself now
-  app.post("/transaction", (_req, res) => {
-    res.status(200).json({ Ok: null });
-  });
-
   // POST /transaction/status — update the status of a transaction
   app.post(
     "/transaction/status",
+    verifySignedCoordinatorRequest,
     async (
       req: Request<{}, {}, TxStatusData>,
       res: Response<Result<null>>

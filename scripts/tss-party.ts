@@ -448,6 +448,9 @@ function ensureSignerKeyPairTemplate(filePath: string): void {
   console.warn(`[auth] Created missing signer keyPair template at ${filePath}`)
 }
 
+let signerPublicKey = ''
+let signerSecretKey = ''
+
 if (enableShardusCryptoAuth) {
   if (typeof gg18.gg18_shardus_crypto_init !== 'function' || typeof gg18.gg18_shardus_crypto_keys !== 'function') {
     throw new Error(
@@ -464,9 +467,9 @@ if (enableShardusCryptoAuth) {
 
   const signerKeyPairFilePath = resolveSignerKeyPairFilePath(ourParty.idx)
   const fileKeyPair = loadSignerKeyPairFromFile(signerKeyPairFilePath)
-  const signerPublicKey =
+  signerPublicKey =
     (process.env.TSS_SIGNER_PUB_KEY || '').trim() || fileKeyPair?.publicKey || ''
-  const signerSecretKey =
+  signerSecretKey =
     (process.env.TSS_SIGNER_SEC_KEY || '').trim() || fileKeyPair?.secretKey || ''
 
   if (!signerPublicKey || !signerSecretKey) {
@@ -488,6 +491,13 @@ if (enableShardusCryptoAuth) {
   console.log('[auth] gg18 Shardus Crypto request signing enabled for coordinator calls')
 } else {
   console.log('[auth] gg18 Shardus Crypto request signing disabled (local development mode)')
+}
+
+function buildSignedCoordinatorRequest(payload: unknown): unknown {
+  if (!enableShardusCryptoAuth) return payload
+  const obj: any = { payload, ts: Date.now() }
+  crypto.signObj(obj, signerSecretKey, signerPublicKey)
+  return obj
 }
 
 const KEYSTORE_DIR = path.join(__dirname, '../keystores')
@@ -1069,7 +1079,7 @@ async function sendTxStatusToCoordinator(
       reason: failedReason,
       party: ourParty.idx,
     }
-    const response = await axios.post(url, data)
+    const response = await axios.post(url, buildSignedCoordinatorRequest(data))
     if (response.status !== 202 && response.status !== 200) {
       console.error('Failed to update transaction status to coordinator:', response.data)
       return
@@ -2210,10 +2220,10 @@ function cleanupStuckTransactions() {
 }
 
 async function confirmFutureTimestamp(operationId: string, timestamp: number): Promise<number> {
-  const res = await axios.post(coordinatorUrl + '/future-timestamp', {
-    key: operationId,
-    value: timestamp,
-  })
+  const res = await axios.post(
+    coordinatorUrl + '/future-timestamp',
+    buildSignedCoordinatorRequest({ key: operationId, value: timestamp }),
+  )
   if (res.status !== 200) {
     throw new Error('Failed to confirm future timestamp')
   }
