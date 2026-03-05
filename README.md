@@ -42,6 +42,8 @@ Supports bridging between the Liberdus network and EVM chains (Polygon Amoy, BSC
 
 ## Setup
 
+> For a full walkthrough of the multi-operator setup process (keypair generation, keygen, verify, start), see [PARTY_SETUP.md](PARTY_SETUP.md).
+
 ### 1. Build the WASM module
 
 ```bash
