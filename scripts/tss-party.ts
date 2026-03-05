@@ -1400,7 +1400,7 @@ async function waitForCoordinatorFinalStatus(
   }
 }
 
-async function refreshBridgeStateForCompletedTx(
+async function refreshBridgeState(
   txId: string,
   txType: TransactionQueueItem['type'],
   chainId: number,
@@ -1417,38 +1417,17 @@ async function refreshBridgeStateForCompletedTx(
 }
 
 async function reconcileTxStatusWithCoordinator(
-  txData: {
-    txId: string
-    txType: TransactionQueueItem['type']
-    chainId: number
-    txTimestamp?: number
-  },
+  txId: string,
   context: 'pre-process' | 'pre-sign',
 ): Promise<null | 'completed' | 'failed'> {
-  const { txId, txTimestamp } = txData
   try {
     const status = await checkTxStatusFromCoordinator(txId)
-    if (status == null || status === TransactionStatus.PENDING) {
+    if (status == null || status === TransactionStatus.PENDING || status === TransactionStatus.PROCESSING) {
       return null
     }
-
-    const localStatus: TxQueueEntry['status'] =
-      status === TransactionStatus.COMPLETED
-        ? 'completed'
-        : status === TransactionStatus.FAILED
-          ? 'failed'
-          : 'processing'
-    const statusLabel =
-      status === TransactionStatus.COMPLETED
-        ? 'COMPLETED'
-        : status === TransactionStatus.FAILED
-          ? 'FAILED'
-          : 'PROCESSING'
-
+    const statusLabel = TransactionStatus.COMPLETED ? 'completed' : 'failed'
     console.log(`⏩ ${txId} already ${statusLabel} on coordinator (${context}), skipping`)
-    txQueueMap.set(txId, { txTimestamp: txTimestamp ?? Date.now(), status: localStatus })
-    saveQueueToFile(ourParty.idx)
-    return status === TransactionStatus.COMPLETED ? 'completed' : 'failed'
+    return statusLabel
   } catch (error: any) {
     console.warn(`[${context}] Coordinator status check failed for ${txId}, proceeding with tx:`, error)
     return null
@@ -1671,10 +1650,7 @@ async function processCoinToToken(
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
 
-  const coordinatorStatusCoinToToken = await reconcileTxStatusWithCoordinator(
-    { txId, txType: 'coinToToken', chainId: targetChainId, txTimestamp: txQueueMap.get(txId)?.txTimestamp },
-    'pre-sign',
-  )
+  const coordinatorStatusCoinToToken = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing
@@ -1806,10 +1782,7 @@ async function processVaultBridge(
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
 
-  const coordinatorStatusVaultBridge = await reconcileTxStatusWithCoordinator(
-    { txId, txType: 'vaultBridge', chainId: sourceChainId, txTimestamp: txQueueMap.get(txId)?.txTimestamp },
-    'pre-sign',
-  )
+  const coordinatorStatusVaultBridge = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : 'skipped_coordinator_failed'
 
   // Use destination chain's keystore for signing
@@ -1915,10 +1888,7 @@ async function processTokenToCoin(
   const hashMessage = crypto.hashObj(tx)
   let digest = ethersUtils.hashMessage(hashMessage)
 
-  const coordinatorStatusTokenToCoin = await reconcileTxStatusWithCoordinator(
-    { txId, txType: 'tokenToCoin', chainId: sourceChainId, txTimestamp: txQueueMap.get(txId)?.txTimestamp },
-    'pre-sign',
-  )
+  const coordinatorStatusTokenToCoin = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
@@ -2513,15 +2483,16 @@ async function main(): Promise<void> {
     }
 
     // Verify with coordinator that this tx hasn't already been completed/is being processed
-    const preProcessStatus = await reconcileTxStatusWithCoordinator(
-      { txId, txType: validTx.type as TransactionQueueItem['type'], chainId: validTx.chainId, txTimestamp: validTx.txTimestamp },
-      'pre-process',
-    )
+    const preProcessStatus = await reconcileTxStatusWithCoordinator(txId, 'pre-process')
     if (preProcessStatus != null) {
+      processingTransactionIds.delete(txId)
       if (preProcessStatus === 'completed') {
         markTransactionCompleted(txId)
-        await refreshBridgeStateForCompletedTx(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+      } else if (preProcessStatus === 'failed') {
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
       }
+      await refreshBridgeState(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       return
     }
 
@@ -2570,15 +2541,16 @@ async function main(): Promise<void> {
       } else if (outcome === 'failed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         console.warn(`Transaction ${validTx.txId} reported failed outcome during processing`)
-        saveQueueToFile(ourParty.idx)
       } else if (outcome === 'skipped_coordinator_completed') {
         console.log(`Transaction ${validTx.txId} was already completed on coordinator (pre-sign), skipping`)
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         markTransactionCompleted(validTx.txId)
-        await refreshBridgeStateForCompletedTx(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+        await refreshBridgeState(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_coordinator_failed') {
         console.log(`Transaction ${validTx.txId} was already failed on coordinator (pre-sign), skipping`)
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed on coordinator before signing')
-        await refreshBridgeStateForCompletedTx(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+        await refreshBridgeState(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
       
       // Check memory usage after successful transaction
