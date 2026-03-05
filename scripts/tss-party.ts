@@ -14,6 +14,22 @@ import {getHttpProviderForChain} from './lib/httpProviderHelper'
 
 const {BigNumber, utils: ethersUtils} = ethers
 
+;(function enableTimestampedConsoleLogs() {
+  const methods: Array<'log' | 'info' | 'warn' | 'error'> = ['log', 'info', 'warn', 'error']
+  for (const method of methods) {
+    const original = console[method].bind(console)
+    console[method] = (...args: any[]) => {
+      const ts = `[${new Date().toISOString()}]`
+      const first = args[0]
+      if (typeof first === 'string' && first.startsWith('\n')) {
+        original(`\n${ts}`, first.slice(1), ...args.slice(1))
+      } else {
+        original(ts, ...args)
+      }
+    }
+  }
+})()
+
 const gg18 = require('../pkg')
 const {stringify, parse} = require('../external/stringify-shardus')
 
