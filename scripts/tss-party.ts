@@ -27,13 +27,13 @@ interface ChainConfig {
   chainId: number
   rpcUrl: string
   contractAddress: string
-  tssSenderAddress: string
-  bridgeAddress: string
-  gasConfig: {
+  tssSenderAddress?: string
+  bridgeAddress?: string
+  gasConfig?: {
     gasLimit: number
     gasPriceTiers: number[]
   }
-  deploymentBlock?: number // Block number when the contract was deployed (used as starting point for historical scan)
+  deploymentBlock: number // Block number when the contract was deployed (used as starting point for historical scan)
 }
 
 interface ChainConfigs {
@@ -174,6 +174,21 @@ if (!chainConfigs.enableLiberdusNetwork) {
     console.error('vaultChain and secondaryChainConfig must have different chainIds')
     process.exit(1)
   }
+}
+
+// All chains except vaultChain must have tssSenderAddress, bridgeAddress, and gasConfig
+function requireFullChainConfig(config: ChainConfig, label: string): void {
+  if (!config.tssSenderAddress || !config.bridgeAddress || !config.gasConfig) {
+    console.error(`${label} (chainId ${config.chainId}) is missing tssSenderAddress, bridgeAddress, or gasConfig`)
+    process.exit(1)
+  }
+}
+if (chainConfigs.enableLiberdusNetwork) {
+  for (const [chainId, config] of Object.entries(chainConfigs.supportedChains)) {
+    requireFullChainConfig(config, `supportedChains[${chainId}]`)
+  }
+} else {
+  requireFullChainConfig(chainConfigs.secondaryChainConfig!, 'secondaryChainConfig')
 }
 
 let t = params.threshold

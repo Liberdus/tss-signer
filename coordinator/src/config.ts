@@ -17,10 +17,10 @@ export interface ChainConfig {
   chainId: number;
   rpcUrl: string;
   contractAddress: string;
-  tssSenderAddress: string;
-  bridgeAddress: string;
-  gasConfig: { gasLimit: number; gasPriceTiers: number[] };
-  deploymentBlock?: number;
+  tssSenderAddress?: string;
+  bridgeAddress?: string;
+  gasConfig?: { gasLimit: number; gasPriceTiers: number[] };
+  deploymentBlock: number;
 }
 
 export interface ChainConfigs {
@@ -42,6 +42,27 @@ export interface ChainConfigs {
 export const chainConfigsRaw: ChainConfigs = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../../chain-config.json"), "utf8"),
 );
+
+// All chains except vaultChain must have tssSenderAddress, bridgeAddress, and gasConfig
+function requireFullChainConfig(config: ChainConfig, label: string): void {
+  if (!config.tssSenderAddress || !config.bridgeAddress || !config.gasConfig) {
+    console.error(
+      `[config] ${label} (chainId ${config.chainId}) is missing tssSenderAddress, bridgeAddress, or gasConfig`
+    );
+    process.exit(1);
+  }
+}
+if (chainConfigsRaw.enableLiberdusNetwork) {
+  for (const [chainId, config] of Object.entries(chainConfigsRaw.supportedChains)) {
+    requireFullChainConfig(config, `supportedChains[${chainId}]`);
+  }
+} else {
+  if (!chainConfigsRaw.secondaryChainConfig) {
+    console.error("[config] secondaryChainConfig is required when enableLiberdusNetwork is false");
+    process.exit(1);
+  }
+  requireFullChainConfig(chainConfigsRaw.secondaryChainConfig, "secondaryChainConfig");
+}
 
 const chainsToMonitor: ChainConfig[] = chainConfigsRaw.enableLiberdusNetwork
   ? Object.values(chainConfigsRaw.supportedChains)
