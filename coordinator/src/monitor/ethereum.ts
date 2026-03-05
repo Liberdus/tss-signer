@@ -28,6 +28,10 @@ const BASE_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 30_000;
 const MAX_RETRIES_PER_BATCH = 5;
 
+// Number of blocks to stay behind the chain tip to avoid scanning blocks whose
+// events may not yet be fully indexed by the RPC node.
+const BLOCK_CONFIRMATION_BUFFER = 120;
+
 // Per-chain running flags — allow chains to be scanned independently.
 // A notify-triggered scan for chain A does not block a concurrent scheduler
 // scan from processing chain B.
@@ -104,7 +108,8 @@ export async function monitorEthereumBridgeOutQueryFilter(
           blockMap[chainKey] ??
           (chainConfig.deploymentBlock ?? 0);
 
-        if (savedBlock >= newestBlock) {
+        const toBlock = newestBlock - BLOCK_CONFIRMATION_BUFFER;
+        if (savedBlock >= toBlock) {
           console.log(
             `[coordinator/bridgeOut] Already up to date for ${chainName}, skipping`
           );
@@ -113,9 +118,8 @@ export async function monitorEthereumBridgeOutQueryFilter(
 
         const fromBlock = Math.max(
           chainConfig.deploymentBlock ?? 0,
-          savedBlock - 10 // small overlap for redundancy
+          savedBlock - BLOCK_CONFIRMATION_BUFFER // small overlap for redundancy
         );
-        const toBlock = newestBlock;
         console.log(
           `[coordinator/bridgeOut] Scanning ${chainName} blocks ${fromBlock}–${toBlock}`
         );
@@ -361,7 +365,8 @@ export async function monitorEthereumBridgeInQueryFilter(
         monitorState.bridgeInBlocks[chainId.toString()] ??
         (chainConfig.deploymentBlock ?? 0);
 
-      if (savedBlock >= newestBlock) {
+      const toBlock = newestBlock - BLOCK_CONFIRMATION_BUFFER;
+      if (savedBlock >= toBlock) {
         console.log(
           `[coordinator/bridgeIn] Already up to date for ${chainName}, skipping`
         );
@@ -370,9 +375,8 @@ export async function monitorEthereumBridgeInQueryFilter(
 
       const fromBlock = Math.max(
         chainConfig.deploymentBlock ?? 0,
-        savedBlock - 10
+        savedBlock - BLOCK_CONFIRMATION_BUFFER
       );
-      const toBlock = newestBlock;
       console.log(
         `[coordinator/bridgeIn] Scanning ${chainName} blocks ${fromBlock}–${toBlock}`
       );
