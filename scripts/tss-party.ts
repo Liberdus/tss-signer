@@ -212,6 +212,20 @@ if (chainConfigs.enableLiberdusNetwork) {
 let t = params.threshold
 let n = params.parties
 
+const SIGN_ROUND_TIMEOUT_MS = 20_000
+
+function signRound<T>(promise: Promise<T>, round: number | string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Sign round ${round} timed out after ${SIGN_ROUND_TIMEOUT_MS / 1000}s — not enough parties`)),
+        SIGN_ROUND_TIMEOUT_MS,
+      )
+    ),
+  ])
+}
+
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 // Shared bridge contract ABI for state reads and bridgeIn
 const BRIDGE_CONTRACT_ABI = [
@@ -982,13 +996,9 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
   
   let context = null
   try {
-    context = await m.gg18_sign_client_new_context(
-      coordinatorUrl,
-      t,
-      n,
-      key_store,
-      digest.slice(2),
-      operationId,
+    context = await signRound(
+      m.gg18_sign_client_new_context(coordinatorUrl, t, n, key_store, digest.slice(2), operationId),
+      'new_context',
     )
     let contextJSON = JSON.parse(context)
     if (contextJSON.party_num_int > t + 1) {
@@ -998,24 +1008,24 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
     console.log('our party number', contextJSON.party_num_int)
 
     console.log('sign round', 0)
-    context = await m.gg18_sign_client_round0(context, delay)
+    context = await signRound(m.gg18_sign_client_round0(context, delay), 0)
     console.log('sign round', 1)
-    context = await m.gg18_sign_client_round1(context, delay)
+    context = await signRound(m.gg18_sign_client_round1(context, delay), 1)
     console.log('sign round', 2)
-    context = await m.gg18_sign_client_round2(context, delay)
+    context = await signRound(m.gg18_sign_client_round2(context, delay), 2)
     console.log('sign round', 3)
-    context = await m.gg18_sign_client_round3(context, delay)
+    context = await signRound(m.gg18_sign_client_round3(context, delay), 3)
     console.log('sign round', 4)
-    context = await m.gg18_sign_client_round4(context, delay)
+    context = await signRound(m.gg18_sign_client_round4(context, delay), 4)
     console.log('sign round', 5)
-    context = await m.gg18_sign_client_round5(context, delay)
+    context = await signRound(m.gg18_sign_client_round5(context, delay), 5)
     console.log('sign round', 6)
-    context = await m.gg18_sign_client_round6(context, delay)
+    context = await signRound(m.gg18_sign_client_round6(context, delay), 6)
     console.log('sign round', 7)
-    context = await m.gg18_sign_client_round7(context, delay)
+    context = await signRound(m.gg18_sign_client_round7(context, delay), 7)
     console.log('sign round', 8)
-    context = await m.gg18_sign_client_round8(context, delay)
-    const sign_json = await m.gg18_sign_client_round9(context, delay)
+    context = await signRound(m.gg18_sign_client_round8(context, delay), 8)
+    const sign_json = await signRound<string>(m.gg18_sign_client_round9(context, delay), 9)
     console.log('Signature:', sign_json)
     
     // Force cleanup after successful signing

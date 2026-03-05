@@ -189,6 +189,8 @@ pub async fn sendp2p(
     })
 }
 
+const MAX_POLL_ATTEMPTS: u32 = 200; // 200 * delay_ms ≈ 20s per party per round
+
 pub async fn poll_for_broadcasts(
     client: &Client,
     addr: &str,
@@ -204,8 +206,19 @@ pub async fn poll_for_broadcasts(
         if i != party_num {
             let key = format!("{}-{}-{}", i, round, sender_uuid);
             let index = Index { key };
+            let mut attempts = 0u32;
             loop {
                 sleep(delay).await;
+                attempts += 1;
+                if attempts > MAX_POLL_ATTEMPTS {
+                    return Err(TssError::UnknownError {
+                        msg: format!(
+                            "poll_for_broadcasts timed out waiting for party {} in round {} after {} attempts",
+                            i, round, attempts
+                        ),
+                        line: line!(),
+                    });
+                }
                 // add delay to allow the server to process request:
                 let res_body = postb(client, addr, "get", index.clone()).await?;
                 let answer: std::result::Result<Entry, ()> = serde_json::from_str(&res_body)?;
@@ -234,9 +247,20 @@ pub async fn poll_for_p2p(
         if i != party_num {
             let key = format!("{}-{}-{}-{}", i, party_num, round, sender_uuid);
             let index = Index { key };
+            let mut attempts = 0u32;
             loop {
                 // add delay to allow the server to process request:
                 sleep(delay).await;
+                attempts += 1;
+                if attempts > MAX_POLL_ATTEMPTS {
+                    return Err(TssError::UnknownError {
+                        msg: format!(
+                            "poll_for_p2p timed out waiting for party {} in round {} after {} attempts",
+                            i, round, attempts
+                        ),
+                        line: line!(),
+                    });
+                }
                 let res_body = postb(client, addr, "get", index.clone()).await?;
                 let answer: std::result::Result<Entry, ()> = serde_json::from_str(&res_body)?;
                 if let Ok(answer) = answer {
