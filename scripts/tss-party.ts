@@ -214,7 +214,7 @@ function getEffectiveChainIds(): number[] {
   if (chainConfigs.enableLiberdusNetwork) {
     return Object.keys(chainConfigs.supportedChains).map(Number)
   }
-  return [chainConfigs.vaultChain!.chainId, chainConfigs.secondaryChainConfig!.chainId]
+  return [chainConfigs.secondaryChainConfig!.chainId]
 }
 
 /** Looks up a ChainConfig by chainId across vaultChain, secondaryChainConfig, and supportedChains */
@@ -2230,8 +2230,7 @@ async function main(): Promise<void> {
       // Load existing keystores
       const keystores = new Map<number, string>()
       
-      for (const chainIdStr of Object.keys(chainConfigs.supportedChains)) {
-        const chainId = parseInt(chainIdStr)
+      for (const chainId of getEffectiveChainIds()) {
         try {
           const keystore = getKeystoreForChain(partyIdx, chainId)
           keystores.set(chainId, keystore)
