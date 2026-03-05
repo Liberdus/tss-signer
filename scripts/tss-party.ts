@@ -185,6 +185,11 @@ const BRIDGE_CONTRACT_ABI = [
 ]
 const BRIDGE_CONTRACT_IFACE = new ethersUtils.Interface(BRIDGE_CONTRACT_ABI)
 
+// Unified BridgedOut event ABI (all contracts use this 5-param signature)
+const BRIDGE_OUT_EVENT_ABI =
+  'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)'
+const BRIDGE_OUT_IFACE = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
+
 /** Returns chain IDs active in the current mode (vault mode or Liberdus mode) */
 function getEffectiveChainIds(): number[] {
   if (chainConfigs.enableLiberdusNetwork) {
@@ -1028,6 +1033,149 @@ async function sendTxStatusToCoordinator(
   }
 }
 
+/**
+ * Verifies a BRIDGE_OUT or BRIDGE_VAULT transaction against the EVM receipt on
+ * the source chain.  Checks receipt status, contract address, and BridgedOut
+ * event fields (chainId, amount, targetAddress).
+ */
+async function validateTokenToCoin(tx: Transaction): Promise<boolean> {
+  const chainProvider = chainProviders.get(tx.chainId)
+  if (!chainProvider) {
+    console.warn(`[validateTokenToCoin] No chain provider for chainId ${tx.chainId}, skipping tx ${tx.txId}`)
+    return false
+  }
+
+  let receipt: ethers.providers.TransactionReceipt | null
+  try {
+    const txHash = tx.txId.startsWith('0x') ? tx.txId : '0x' + tx.txId
+    receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+  } catch (err) {
+    console.warn(`[validateTokenToCoin] Failed to fetch receipt for ${tx.txId}:`, err)
+    return false
+  }
+
+  if (!receipt) {
+    console.warn(`[validateTokenToCoin] Receipt not found for ${tx.txId}`)
+    return false
+  }
+  if (receipt.status !== 1) {
+    console.warn(`[validateTokenToCoin] tx ${tx.txId} receipt status is not 1 (got ${receipt.status})`)
+    return false
+  }
+
+  const expectedContract = chainProvider.config.contractAddress.toLowerCase()
+  if (receipt.to?.toLowerCase() !== expectedContract) {
+    console.warn(`[validateTokenToCoin] tx ${tx.txId} recipient ${receipt.to} does not match bridge contract ${expectedContract}`)
+    return false
+  }
+
+  const bridgeOutLog = receipt.logs.find((log) => {
+    if (log.address.toLowerCase() !== expectedContract) return false
+    try {
+      return BRIDGE_OUT_IFACE.parseLog(log).name === 'BridgedOut'
+    } catch {
+      return false
+    }
+  })
+
+  if (!bridgeOutLog) {
+    console.warn(`[validateTokenToCoin] No BridgedOut event found in tx ${tx.txId}`)
+    return false
+  }
+
+  const parsed = BRIDGE_OUT_IFACE.parseLog(bridgeOutLog)
+  const eventChainId: number = (parsed.args.chainId as ethers.BigNumber).toNumber()
+  const eventAmount: ethers.BigNumber = parsed.args.amount
+  const eventTargetAddress: string = parsed.args.targetAddress
+
+  if (eventChainId !== tx.chainId) {
+    console.warn(`[validateTokenToCoin] chainId mismatch in ${tx.txId}: event=${eventChainId} stored=${tx.chainId}`)
+    return false
+  }
+
+  const derivedSender = toEthereumAddress(eventTargetAddress).toLowerCase()
+  if (derivedSender !== tx.sender.toLowerCase()) {
+    console.warn(`[validateTokenToCoin] sender mismatch in ${tx.txId}: derived=${derivedSender} stored=${tx.sender.toLowerCase()}`)
+    return false
+  }
+
+  const storedValue = ethers.BigNumber.from(tx.value)
+  if (!eventAmount.eq(storedValue)) {
+    console.warn(`[validateTokenToCoin] amount mismatch in ${tx.txId}: event=${eventAmount.toString()} stored=${storedValue.toString()}`)
+    return false
+  }
+
+  return true
+}
+
+/**
+ * Verifies a BRIDGE_IN transaction against the Liberdus receipt from the
+ * collector API.  Checks that the tx succeeded, is a transfer, targets the
+ * correct bridge address for the destination chain, and that amount / sender
+ * match what the coordinator recorded.
+ */
+async function validateCoinToToken(tx: Transaction): Promise<boolean> {
+  let receiptData: any
+  try {
+    const url = `${collectorHost}/api/transaction?txId=${encodeURIComponent(tx.txId)}`
+    const response = await axios.get(url, {timeout: 10_000})
+    receiptData = response.data
+  } catch (err) {
+    console.warn(`[validateCoinToToken] Failed to fetch Liberdus receipt for ${tx.txId}:`, err)
+    return false
+  }
+
+  // Collector may wrap the result under `transactions[0]` or return it directly
+  const receipt = receiptData?.transactions?.[0] ?? receiptData
+  if (!receipt?.data) {
+    console.warn(`[validateCoinToToken] No receipt data returned for ${tx.txId}`)
+    return false
+  }
+
+  const {success, to, from, additionalInfo, type} = receipt.data
+
+  if (!success) {
+    console.warn(`[validateCoinToToken] Liberdus tx ${tx.txId} is not successful`)
+    return false
+  }
+  if (type !== 'transfer') {
+    console.warn(`[validateCoinToToken] Liberdus tx ${tx.txId} type is not transfer (got ${type})`)
+    return false
+  }
+
+  // tx.chainId for BRIDGE_IN is the destination EVM chain — look up its bridgeAddress
+  const chainConfig = chainConfigs.supportedChains[tx.chainId.toString()]
+  if (!chainConfig) {
+    console.warn(`[validateCoinToToken] No chain config for chainId ${tx.chainId}`)
+    return false
+  }
+  if (to !== chainConfig.bridgeAddress) {
+    console.warn(`[validateCoinToToken] tx ${tx.txId} destination ${to} does not match bridge address ${chainConfig.bridgeAddress}`)
+    return false
+  }
+
+  const derivedSender = toEthereumAddress(from).toLowerCase()
+  if (derivedSender !== tx.sender.toLowerCase()) {
+    console.warn(`[validateCoinToToken] sender mismatch in ${tx.txId}: derived=${derivedSender} stored=${tx.sender.toLowerCase()}`)
+    return false
+  }
+
+  const eventAmount = ethers.BigNumber.from('0x' + additionalInfo.amount.value)
+  const storedValue = ethers.BigNumber.from(tx.value)
+  if (!eventAmount.eq(storedValue)) {
+    console.warn(`[validateCoinToToken] amount mismatch in ${tx.txId}: event=${eventAmount.toString()} stored=${storedValue.toString()}`)
+    return false
+  }
+
+  return true
+}
+
+/** Dispatches to the appropriate validator based on transaction type. */
+async function verifyCoordinatorTxData(tx: Transaction): Promise<boolean> {
+  if (tx.type === TransactionType.BRIDGE_IN) return validateCoinToToken(tx)
+  return validateTokenToCoin(tx)
+}
+
 async function pollPendingTransactionsFromCoordinator(): Promise<void> {
   console.log('Polling pending transactions from coordinator...', new Date().toISOString())
   try {
@@ -1057,6 +1205,10 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
       }
       if (!tx.txTimestamp || !tx.sender || !tx.value || tx.chainId == null) {
         console.warn(`[poll] Skipping tx ${tx.txId} — missing required fields (txTimestamp/sender/value/chainId)`, tx)
+        continue
+      }
+      if (!await verifyCoordinatorTxData(tx)) {
+        console.warn(`[poll] Skipping tx ${tx.txId} — failed on-chain verification`)
         continue
       }
       const existingEntry = txQueueMap.get(tx.txId)
