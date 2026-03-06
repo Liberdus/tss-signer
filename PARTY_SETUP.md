@@ -26,7 +26,7 @@ su - customer
 cd ~/tss-signer
 ```
 
-Set the required environment variables before running any party commands:
+Set the required environment variables before running any party commands. Confirm the correct values with the coordinator operator or your team before proceeding:
 
 ```bash
 export COORDINATOR_URL=http://<coordinator-ip>:8000
@@ -193,6 +193,15 @@ What to check:
 
 > If addresses differ between operators, keygen was corrupted. Delete all keystore files and re-run Step 2.
 
+**Back up your keystores immediately after verification.** Once you have confirmed your addresses match the rest of the team, download the keystore files from the server to your local machine for safekeeping:
+
+```bash
+# Run this on your local machine
+scp -r customer@<server-ip>:~/tss-signer/keystores/ ~/tss-keystore-backup/
+```
+
+Each keystore file (e.g. `keystore_party_2_chainId_80002.json`) contains your unique key share. If it is lost, your party can no longer participate in signing and the full keygen process must be repeated with a new TSS address.
+
 ---
 
 ## Before Starting — Register the TSS Address in the Bridge Contract
@@ -202,6 +211,18 @@ Before the parties can submit signed transactions, the shared EOA address derive
 Provide the coordinator operator (or contract admin) with the verified EOA address from Step 3, and confirm it has been set on all supported chains before proceeding.
 
 > Until this is done, signed `bridgeIn` calls from the TSS parties will be rejected by the contract.
+
+---
+
+## Before Starting — Fund the TSS Address
+
+After the TSS address has been registered in the bridge contracts, it must be funded with native gas tokens on each supported chain. The TSS parties submit on-chain transactions on behalf of the bridge, and each submission consumes gas.
+
+The contract admin is responsible for this. Send a sufficient amount of native token to the verified EOA address on every chain the bridge operates on before starting the parties.
+
+**Recommended starting balance:** enough to cover several hundred transactions. Monitor the balance over time and top it up as needed — if the TSS address runs out of gas funds, bridge transactions will fail.
+
+> The TSS address must have a non-zero balance on each chain before the parties are started. Parties will attempt to submit transactions immediately upon startup if pending work exists.
 
 ---
 
@@ -265,4 +286,6 @@ Individual party logs are at `logs/tss-party-N-out.log` and `logs/tss-party-N-er
 | 1. Generate keypair | Each party operator independently | Share public keys with coordinator operator |
 | 2. Keygen (`--keygen`) | All 5 simultaneously | Agree on start time; coordinator must be running |
 | 3. Verify (`--verify`) | Each party operator independently | Share and cross-check EOA addresses across all operators |
-| 4. Start party | Each party operator independently | Coordinator must be running |
+| 4. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
+| 5. Fund TSS address | Contract admin / coordinator operator | Send native gas tokens to TSS address on every supported chain |
+| 6. Start party | Each party operator independently | Coordinator must be running; TSS address must be registered and funded |
