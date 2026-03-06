@@ -143,6 +143,9 @@ export async function verifyTxOnChain(
               const parsed = bridgeInterface.parseLog(log);
               if (parsed.name !== "BridgedIn") continue;
               const eventTxId = normalizeTxId(parsed.args.txId as string);
+              // console.log(
+              //   `[verifyTxOnChain] BridgedIn txId=${eventTxId} (expected=${normalizedExpectedTxId}) (receiptId=${receiptId})`
+              // );
               if (eventTxId === normalizedExpectedTxId) return true;
               console.error(
                 `[verifyTxOnChain] Discrepancy: BridgedIn txId mismatch (expected=${normalizedExpectedTxId}, found=${eventTxId}, receiptId=${receiptId})`
