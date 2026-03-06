@@ -108,7 +108,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
           blockMap[chainKey] ??
           (chainConfig.deploymentBlock ?? 0);
 
-        const toBlock = newestBlock - BLOCK_CONFIRMATION_BUFFER;
+        const toBlock = newestBlock;
         if (savedBlock >= toBlock) {
           console.log(
             `[coordinator/bridgeOut] Already up to date for ${chainName}, skipping`
@@ -365,7 +365,7 @@ export async function monitorEthereumBridgeInQueryFilter(
         monitorState.bridgeInBlocks[chainId.toString()] ??
         (chainConfig.deploymentBlock ?? 0);
 
-      const toBlock = newestBlock - BLOCK_CONFIRMATION_BUFFER;
+      const toBlock = newestBlock;
       if (savedBlock >= toBlock) {
         console.log(
           `[coordinator/bridgeIn] Already up to date for ${chainName}, skipping`
