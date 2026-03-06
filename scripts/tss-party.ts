@@ -570,16 +570,35 @@ axios.defaults.httpsAgent = httpsAgent
 function cleanupOldTransactions() {
   const now = Date.now()
   let removedCount = 0
+  const removedTxIds = new Set<string>()
 
   for (const [txId, entry] of txQueueMap.entries()) {
     const txAge = entry.txTimestamp > 0 ? now - entry.txTimestamp : now - serverStartTime
     if (txAge > TX_CLEANUP_MAX_AGE) {
       txQueueMap.delete(txId)
       processingTransactionIds.delete(txId)
+      removedTxIds.add(txId)
       removedCount++
       if (verboseLogs) {
         console.log(`🗑️ Removed ${entry.status} transaction ${txId} (age: ${Math.round(txAge / 60000)}min)`)
       }
+    }
+  }
+
+  if (removedTxIds.size > 0) {
+    const before = pendingTxQueue.length
+    for (let i = pendingTxQueue.length - 1; i >= 0; i--) {
+      if (removedTxIds.has(pendingTxQueue[i].txId)) {
+        appendToFailedTxsLogs(
+          pendingTxQueue[i],
+          'removed from pending queue during cleanup due to max age',
+        )
+        pendingTxQueue.splice(i, 1)
+      }
+    }
+    const pruned = before - pendingTxQueue.length
+    if (pruned > 0) {
+      console.log(`🧹 Pruned ${pruned} stale transactions from pendingTxQueue`)
     }
   }
 
@@ -2209,6 +2228,7 @@ function emergencyCleanup() {
   const now = Date.now()
   let removedCount = 0
   let backupCount = 0
+  const removedTxIds = new Set<string>()
   
   console.log('🚨 Running emergency cleanup due to large queue size')
   
@@ -2244,7 +2264,20 @@ function emergencyCleanup() {
     if (txAge > TX_CLEANUP_MAX_AGE) {
       txQueueMap.delete(txId)
       processingTransactionIds.delete(txId)
+      removedTxIds.add(txId)
       removedCount++
+    }
+  }
+
+  if (removedTxIds.size > 0) {
+    for (let i = pendingTxQueue.length - 1; i >= 0; i--) {
+      if (removedTxIds.has(pendingTxQueue[i].txId)) {
+        appendToFailedTxsLogs(
+          pendingTxQueue[i],
+          'removed from pending queue during emergency cleanup due to max age',
+        )
+        pendingTxQueue.splice(i, 1)
+      }
     }
   }
   
