@@ -46,7 +46,16 @@ export async function verifyTxOnChain(
       }
       return false;
     } else {
-      // BRIDGE_VAULT receipt is on the secondary (destination) chain
+      // BRIDGE_VAULT receipt is on the secondary (destination) chain (vault mode only)
+      if (
+        type === TransactionDB.TransactionType.BRIDGE_VAULT &&
+        !chainConfigsRaw.secondaryChainConfig
+      ) {
+        console.error(
+          "[verifyTxOnChain] secondaryChainConfig required for BRIDGE_VAULT verification"
+        );
+        return false;
+      }
       const targetChainId =
         type === TransactionDB.TransactionType.BRIDGE_VAULT
           ? chainConfigsRaw.secondaryChainConfig!.chainId
