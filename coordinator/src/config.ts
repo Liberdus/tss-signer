@@ -57,6 +57,10 @@ if (chainConfigsRaw.enableLiberdusNetwork) {
     requireFullChainConfig(config, `supportedChains[${chainId}]`);
   }
 } else {
+  if (!chainConfigsRaw.vaultChain) {
+    console.error("[config] vaultChain is required when enableLiberdusNetwork is false");
+    process.exit(1);
+  }
   if (!chainConfigsRaw.secondaryChainConfig) {
     console.error("[config] secondaryChainConfig is required when enableLiberdusNetwork is false");
     process.exit(1);
