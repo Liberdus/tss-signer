@@ -163,20 +163,20 @@ export async function getTotalTransactions(options?: {
   const params: (string | number)[] = [];
 
   if (options?.sender) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "sender = ?";
     params.push(options.sender);
   }
   if (options?.type !== undefined) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "type = ?";
     params.push(options.type);
   }
   if (options?.unprocessed) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "status IN (0, 1)";
   } else if (options?.status !== undefined) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "status = ?";
     params.push(options.status);
   }
@@ -208,20 +208,20 @@ export async function getTransactionsByPage(
   const params: (string | number)[] = [];
 
   if (options?.sender) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "sender = ?";
     params.push(options.sender);
   }
   if (options?.type !== undefined) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "type = ?";
     params.push(options.type);
   }
   if (options?.unprocessed) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "status IN (0, 1)";
   } else if (options?.status !== undefined) {
-    appendAndClause(whereClause, params);
+    whereClause = appendAndClause(whereClause, params);
     whereClause += "status = ?";
     params.push(options.status);
   }
@@ -237,6 +237,7 @@ export async function getTransactionsByPage(
 }
 
 // Helper function to append "AND" to SQL query
-const appendAndClause = (sql: string, inputs: any[]) => {
-  if (inputs.length > 0) sql += " AND ";
+const appendAndClause = (sql: string, inputs: any[]): string => {
+  if (inputs.length > 0) return sql + " AND ";
+  return sql;
 };
