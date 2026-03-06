@@ -2742,8 +2742,8 @@ async function main(): Promise<void> {
       // Store full txData in processingTransactionIds for crash recovery
       processingTransactionIds.set(validTx.txId, validTx)
 
-      // Report PROCESSING to coordinator for DB accuracy and crash recovery visibility.
-      sendTxStatusToCoordinator(validTx.txId, TransactionStatus.PROCESSING, '')
+      // // Report PROCESSING to coordinator for DB accuracy and crash recovery visibility.
+      // sendTxStatusToCoordinator(validTx.txId, TransactionStatus.PROCESSING, '')
 
       // Start processing the transaction (fire and forget)
       processTransaction(validTx).catch((error) => {
