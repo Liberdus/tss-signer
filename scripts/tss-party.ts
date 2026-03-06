@@ -1617,6 +1617,8 @@ async function processCoinToToken(
   const chainProvider = chainProviders.get(targetChainId)
   if (!chainProvider) {
     console.error(`[ProcessCoinToToken] Chain provider not found for chainId ${targetChainId}`)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `chain provider not found for chainId ${targetChainId}`)
     return 'failed'
   }
 
@@ -1624,7 +1626,11 @@ async function processCoinToToken(
   console.log(`Processing transaction on ${targetChainName}`)
 
   await waitForBridgeCooldown(chainProvider, targetChainName)
-  if (!checkMaxBridgeAmount(chainProvider, value, txId, targetChainName)) return 'failed'
+  if (!checkMaxBridgeAmount(chainProvider, value, txId, targetChainName)) {
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
+    return 'failed'
+  }
 
   const senderNonce = await chainProvider.provider.getTransactionCount(
     chainProvider.config.tssSenderAddress,
@@ -1670,6 +1676,8 @@ async function processCoinToToken(
   const signedTx = await signEthereumTransaction(keyShare, tx, digest)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `failed to sign Ethereum transaction on ${targetChainName}`)
     return 'failed'
   }
   // precompute tx hash from signedTx
@@ -1741,12 +1749,16 @@ async function processVaultBridge(
   const sourceChainProvider = chainProviders.get(sourceChainId)
   if (!sourceChainProvider) {
     console.error(`Source chain provider not found for chainId ${sourceChainId}`)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `source chain provider not found for chainId ${sourceChainId}`)
     return 'failed'
   }
 
   const destChainProvider = chainProviders.get(destinationChainId)
   if (!destChainProvider) {
     console.error(`Destination chain provider not found for chainId ${destinationChainId}`)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `destination chain provider not found for chainId ${destinationChainId}`)
     return 'failed'
   }
 
@@ -1755,7 +1767,11 @@ async function processVaultBridge(
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
   await waitForBridgeCooldown(destChainProvider, destChainName)
-  if (!checkMaxBridgeAmount(destChainProvider, value, txId, destChainName)) return 'failed'
+  if (!checkMaxBridgeAmount(destChainProvider, value, txId, destChainName)) {
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
+    return 'failed'
+  }
 
   const senderNonce = await destChainProvider.provider.getTransactionCount(
     destChainProvider.config.tssSenderAddress,
@@ -1802,6 +1818,8 @@ async function processVaultBridge(
   const signedTx = await signEthereumTransaction(keyShare, tx, digest)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `failed to sign EVM-to-EVM transaction on ${destChainName}`)
     return 'failed'
   }
   // precompute tx hash from signedTx
@@ -1866,6 +1884,8 @@ async function processTokenToCoin(
   const sourceChainProvider = chainProviders.get(sourceChainId)
   if (!sourceChainProvider) {
     console.error(`[ProcessTokenToCoin] Source chain provider not found for chainId ${sourceChainId}`)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `source chain provider not found for chainId ${sourceChainId}`)
     return 'failed'
   }
 
@@ -1908,6 +1928,8 @@ async function processTokenToCoin(
   signedTx = await signLiberdusTransaction(keyShare, tx, digest)
   if (!signedTx) {
     console.log(`Failed to sign liberdus transaction from ${sourceChainName}, skipping`, txId)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `failed to sign liberdus transaction from ${sourceChainName}`)
     return 'failed'
   }
   // Compute txId from signedTx
@@ -1950,6 +1972,8 @@ async function processTokenToCoin(
     console.log(
       `Transaction is failed - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${receipt.reason}`,
     )
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, receipt.reason)
     // Send tx status to coordinator
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, receipt.reason)
     return 'failed'
@@ -1957,6 +1981,8 @@ async function processTokenToCoin(
     console.log(
       `Transaction is failed - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${res.reason}`,
     )
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed from ${sourceChainName}`)
     // Send tx status to coordinator
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, res.reason as string)
     return 'failed'
