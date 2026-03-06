@@ -188,11 +188,15 @@ export function registerRoutes(app: express.Application): void {
     ) => {
       try {
         const { txId, status, receiptId, reason, party } = req.body;
+        const hasValidReceiptId =
+          status === TransactionDB.TransactionStatus.FAILED
+            ? receiptId === "" || isNormalizedTxId(receiptId)
+            : isNormalizedTxId(receiptId);
 
         if (
           !isNormalizedTxId(txId) ||
           !TransactionDB.isTransactionStatus(status) ||
-          !isNormalizedTxId(receiptId) ||
+          !hasValidReceiptId ||
           typeof reason !== "string" ||
           !party
         ) {
