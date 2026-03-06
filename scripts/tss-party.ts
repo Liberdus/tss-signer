@@ -1457,7 +1457,8 @@ async function reconcileTxStatusWithCoordinator(
     if (status == null || status === TransactionStatus.PENDING || status === TransactionStatus.PROCESSING) {
       return null
     }
-    const statusLabel = TransactionStatus.COMPLETED ? 'completed' : 'failed'
+    const statusLabel =
+      status === TransactionStatus.COMPLETED ? 'completed' : 'failed'
     console.log(`⏩ ${txId} already ${statusLabel} on coordinator (${context}), skipping`)
     return statusLabel
   } catch (error: any) {
