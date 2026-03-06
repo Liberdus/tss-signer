@@ -79,6 +79,16 @@ export async function initializeTransactionsDatabase(): Promise<void> {
         WHERE txId = OLD.txId;
     END;
   `);
+
+  // Indexes for common query patterns
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_transactions_status_txTimestamp
+      ON transactions(status, txTimestamp);
+    CREATE INDEX IF NOT EXISTS idx_transactions_sender
+      ON transactions(sender);
+    CREATE INDEX IF NOT EXISTS idx_transactions_type
+      ON transactions(type);
+  `);
 }
 
 /**
