@@ -125,18 +125,19 @@ class SQLiteManager {
             return reject(new Error(`Failed to open database: ${err.message}`));
           }
 
-          // Enable foreign keys
           if (this.db) {
-            this.db.run("PRAGMA foreign_keys = ON", (pragmaErr) => {
-              if (pragmaErr) {
-                console.warn(
-                  "Failed to enable foreign keys:",
-                  pragmaErr.message
-                );
-              }
-
-              this.isInitialized = true;
-              resolve();
+            this.db.serialize(() => {
+              this.db!.run("PRAGMA journal_mode = WAL", (err) => {
+                if (err) console.warn("Failed to set WAL mode:", err.message);
+              });
+              this.db!.run("PRAGMA synchronous = NORMAL", (err) => {
+                if (err) console.warn("Failed to set synchronous=NORMAL:", err.message);
+              });
+              this.db!.run("PRAGMA foreign_keys = ON", (err) => {
+                if (err) console.warn("Failed to enable foreign keys:", err.message);
+                this.isInitialized = true;
+                resolve();
+              });
             });
           }
         }
