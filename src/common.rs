@@ -94,14 +94,25 @@ pub fn aes_decrypt(key: &[u8], aead_pack: AEAD) -> Result<Vec<u8>> {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    // Binds to globalThis.setTimeout — works in both browser and Node.js,
+    // unlike web_sys::window().set_timeout_with_... which is browser-only.
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout_global(closure: &js_sys::Function, ms: i32) -> f64;
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn sleep(ms: u32) {
+    let before = js_sys::Date::now();
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
-            .unwrap();
+        set_timeout_global(&resolve, ms as i32);
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    let after = js_sys::Date::now();
+    if POLL_DEBUG_LOGS {
+        crate::console_log!("[sleep] requested {}ms, actual elapsed {}ms", ms, (after - before) as u32);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -190,6 +201,7 @@ pub async fn sendp2p(
 }
 
 const MAX_POLL_ATTEMPTS: u32 = 200; // 200 * delay_ms ≈ 20s per party per round
+const POLL_DEBUG_LOGS: bool = false;
 
 pub async fn poll_for_broadcasts(
     client: &Client,
@@ -201,20 +213,26 @@ pub async fn poll_for_broadcasts(
     delay: u32,
 ) -> Result<Vec<String>> {
     println!("[{:?}] party {:?} {:?} {:?} => poll_for_broadcast", round, party_num, n, sender_uuid);
+    #[cfg(target_arch = "wasm32")]
+    if POLL_DEBUG_LOGS {
+        crate::console_log!("[{:?}] poll_for_broadcasts delay={}ms", round, delay);
+    }
     let mut ans_vec = Vec::new();
     for i in 1..=n {
         if i != party_num {
             let key = format!("{}-{}-{}", i, round, sender_uuid);
             let index = Index { key };
             let mut attempts = 0u32;
+            let mut total_wait_ms = 0u32;
             loop {
                 sleep(delay).await;
                 attempts += 1;
+                total_wait_ms += delay;
                 if attempts > MAX_POLL_ATTEMPTS {
                     return Err(TssError::UnknownError {
                         msg: format!(
-                            "poll_for_broadcasts timed out waiting for party {} in round {} after {} attempts",
-                            i, round, attempts
+                            "poll_for_broadcasts timed out waiting for party {} in round {} after {} attempts (delay {}ms, {} ms total wait)",
+                            i, round, attempts, delay, total_wait_ms
                         ),
                         line: line!(),
                     });
@@ -242,21 +260,27 @@ pub async fn poll_for_p2p(
     round: &str,
     sender_uuid: String,
 ) -> Result<Vec<String>> {
+    #[cfg(target_arch = "wasm32")]
+    if POLL_DEBUG_LOGS {
+        crate::console_log!("[{:?}] poll_for_p2p delay={}ms", round, delay);
+    }
     let mut ans_vec = Vec::new();
     for i in 1..=n {
         if i != party_num {
             let key = format!("{}-{}-{}-{}", i, party_num, round, sender_uuid);
             let index = Index { key };
             let mut attempts = 0u32;
+            let mut total_wait_ms = 0u32;
             loop {
                 // add delay to allow the server to process request:
                 sleep(delay).await;
                 attempts += 1;
+                total_wait_ms += delay;
                 if attempts > MAX_POLL_ATTEMPTS {
                     return Err(TssError::UnknownError {
                         msg: format!(
-                            "poll_for_p2p timed out waiting for party {} in round {} after {} attempts",
-                            i, round, attempts
+                            "poll_for_p2p timed out waiting for party {} in round {} after {} attempts ({} ms total wait)",
+                            i, round, attempts, total_wait_ms
                         ),
                         line: line!(),
                     });

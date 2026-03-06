@@ -213,6 +213,7 @@ let t = params.threshold
 let n = params.parties
 
 const SIGN_ROUND_TIMEOUT_MS = 20_000
+const SIGN_POLL_DELAY_MS = 100
 
 function signRound<T>(promise: Promise<T>, round: number | string): Promise<T> {
   return Promise.race([
@@ -645,7 +646,7 @@ const ensureChainKeystores = async (partyIdx: number): Promise<Map<number, strin
     } else {
       // Generate new keystore for this chain
       console.log(`Generating new keystore for party ${partyIdx} chain ${chainId}`)
-      const delay = Math.max(Math.random() * 500, 100)
+      const delay = SIGN_POLL_DELAY_MS
       // Create deterministic operation ID based on chain ID and a fixed identifier
       const operationId = `keygen-chain-${chainId}`
 
@@ -1003,6 +1004,7 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
   const operationId = digest.slice(2, 8)
   console.log('Signing digest:', digest)
   console.log('Operation ID:', operationId)
+  console.log('Sign delay(ms):', delay, 'Sign round timeout(ms):', SIGN_ROUND_TIMEOUT_MS)
   
   let context = null
   try {
@@ -1463,7 +1465,7 @@ async function DKG(party: KeyShare, chainId?: number): Promise<KeyShare> {
   if (!generateKeystore && keystoreExists(partyIdx)) {
     party.res = loadKeystore(partyIdx)
   } else {
-    let delay = Math.max(Math.random() * 500, 100)
+    let delay = SIGN_POLL_DELAY_MS
     try {
       party.res = await keygen(gg18, delay)
       saveKeystore(partyIdx, party.res)
@@ -1480,7 +1482,7 @@ async function signEthereumTransaction(
   digest: string,
 ): Promise<string | null> {
   const startMemory = process.memoryUsage()
-  let delay = Math.max(Math.random() % 500, 100)
+  const delay = SIGN_POLL_DELAY_MS
   const res = JSON.parse(await sign(gg18, item.res, delay, digest))
   const signature = {
     r: '0x' + res[0],
@@ -1517,7 +1519,7 @@ async function signLiberdusTransaction(
   digest: string,
 ): Promise<SignedTx | null> {
   const startMemory = process.memoryUsage()
-  let delay = Math.max(Math.random() % 500, 100)
+  const delay = SIGN_POLL_DELAY_MS
   const res = JSON.parse(await sign(gg18, item.res, delay, digest))
   const signature = {
     r: '0x' + res[0],
