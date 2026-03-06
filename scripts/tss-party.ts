@@ -2475,7 +2475,9 @@ async function main(): Promise<void> {
       } else if (coordinatorStatus === TransactionStatus.FAILED) {
         entry.status = 'failed'
         const idx = pendingTxQueue.findIndex(t => t.txId === txId)
+        const txData = idx !== -1 ? pendingTxQueue[idx] : undefined
         if (idx !== -1) pendingTxQueue.splice(idx, 1)
+        if (txData) appendToFailedTxsLogs(txData, 'already failed on coordinator at startup')
         console.log(`[startup] ${txId} already FAILED on coordinator, skipping`)
       } else {
         // PENDING or PROCESSING on coordinator — ensure txData is in pendingTxQueue
@@ -2529,6 +2531,7 @@ async function main(): Promise<void> {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       } else if (preProcessStatus === 'failed') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+        appendToFailedTxsLogs(validTx, 'already failed on coordinator at pre-process')
       }
       await refreshBridgeState(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       return
