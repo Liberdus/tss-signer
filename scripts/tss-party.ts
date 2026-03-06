@@ -302,35 +302,55 @@ for (const config of chainsToInit) {
   console.log(`HTTP provider initialized for ${config.name} (Chain ID: ${chainId})`)
 }
 
-// Fetch bridge contract state (cooldown, maxAmount, lastBridgeInTime) for a chain
-async function fetchBridgeState(chainId: number): Promise<void> {
+type FetchBridgeStateFields = 'all' | 'bridgeInCooldown' | 'maxBridgeInAmount' | 'lastBridgeInTime'
+
+// Fetch bridge contract state for a chain. Pass fields to limit which values are fetched.
+async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields = 'all'): Promise<void> {
   const chainProvider = chainProviders.get(chainId)
   if (!chainProvider) return
 
   const contractAddr = chainProvider.config.contractAddress
   try {
-    const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
-      chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown') }),
-      chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount') }),
-      chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime') }),
-    ])
-
-    chainProvider.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
-    chainProvider.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
-    chainProvider.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
-
-    const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
-      ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
-      : 'never'
-    const maxAmountStr = chainProvider.maxBridgeInAmount.isZero()
-      ? 'unlimited'
-      : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
-    console.log(
-      `Bridge state fetched for ${chainProvider.config.name}: ` +
-      `cooldown=${chainProvider.bridgeInCooldown}s, ` +
-      `maxBridgeInAmount=${maxAmountStr}, ` +
-      `lastBridgeInTime=${lastBridgeInStr}`
-    )
+    if (fields === 'all') {
+      const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
+        chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown') }),
+        chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount') }),
+        chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime') }),
+      ])
+      chainProvider.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+      chainProvider.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
+      chainProvider.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+      const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
+        ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
+        : 'never'
+      const maxAmountStr = chainProvider.maxBridgeInAmount.isZero()
+        ? 'unlimited'
+        : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
+      console.log(
+        `Bridge state fetched for ${chainProvider.config.name}: ` +
+        `cooldown=${chainProvider.bridgeInCooldown}s, ` +
+        `maxBridgeInAmount=${maxAmountStr}, ` +
+        `lastBridgeInTime=${lastBridgeInStr}`
+      )
+    } else if (fields === 'lastBridgeInTime') {
+      const lastTimeRaw = await chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime') })
+      chainProvider.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+      const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
+        ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
+        : 'never'
+      console.log(`Bridge lastBridgeInTime fetched for ${chainProvider.config.name}: ${lastBridgeInStr}`)
+    } else if (fields === 'bridgeInCooldown') {
+      const cooldownRaw = await chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown') })
+      chainProvider.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+      console.log(`Bridge bridgeInCooldown fetched for ${chainProvider.config.name}: ${chainProvider.bridgeInCooldown}s`)
+    } else if (fields === 'maxBridgeInAmount') {
+      const maxAmountRaw = await chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount') })
+      chainProvider.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
+      const maxAmountStr = chainProvider.maxBridgeInAmount.isZero()
+        ? 'unlimited'
+        : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
+      console.log(`Bridge maxBridgeInAmount fetched for ${chainProvider.config.name}: ${maxAmountStr}`)
+    }
   } catch (error) {
     console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
   }
@@ -1412,19 +1432,19 @@ async function waitForCoordinatorFinalStatus(
   }
 }
 
-async function refreshBridgeState(
+async function refreshLastBridgeInTime(
   txId: string,
   txType: TransactionQueueItem['type'],
   chainId: number,
 ): Promise<void> {
   try {
     if (txType === 'coinToToken') {
-      await fetchBridgeState(chainId)
+      await fetchBridgeState(chainId, 'lastBridgeInTime')
     } else if (txType === 'vaultBridge' && chainConfigs.secondaryChainConfig?.chainId != null) {
-      await fetchBridgeState(chainConfigs.secondaryChainConfig.chainId)
+      await fetchBridgeState(chainConfigs.secondaryChainConfig.chainId, 'lastBridgeInTime')
     }
   } catch (error) {
-    console.warn(`[bridge-state] Failed to refresh bridge state on completed tx ${txId}`, error)
+    console.warn(`[bridge-state] Failed to refresh lastBridgeInTime for tx ${txId}`, error)
   }
 }
 
@@ -2533,7 +2553,7 @@ async function main(): Promise<void> {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed on coordinator at pre-process')
       }
-      await refreshBridgeState(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+      await refreshLastBridgeInTime(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       return
     }
 
@@ -2586,12 +2606,12 @@ async function main(): Promise<void> {
         console.log(`Transaction ${validTx.txId} was already completed on coordinator (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         markTransactionCompleted(validTx.txId)
-        await refreshBridgeState(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_coordinator_failed') {
         console.log(`Transaction ${validTx.txId} was already failed on coordinator (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed on coordinator before signing')
-        await refreshBridgeState(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
       
       // Check memory usage after successful transaction
@@ -2622,15 +2642,7 @@ async function main(): Promise<void> {
         if (finalStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           markTransactionCompleted(validTx.txId)
-          try {
-            if (validTx.type === 'coinToToken') {
-              await fetchBridgeState(validTx.chainId)
-            } else if (validTx.type === 'vaultBridge' && chainConfigs.secondaryChainConfig?.chainId != null) {
-              await fetchBridgeState(chainConfigs.secondaryChainConfig.chainId)
-            }
-          } catch (error) {
-            console.warn(`[bridge-state] Failed to refresh bridge state on completed tx ${validTx.txId}`, error)
-          }
+          await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
           console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED on coordinator`)
         } else {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
