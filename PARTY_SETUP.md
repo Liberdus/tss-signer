@@ -13,7 +13,9 @@ This guide walks all 5 party operators and the coordinator operator through the 
 
 ## Prerequisites
 
-All 5 operators must have a working environment before starting (Node.js, Rust, wasm-pack, PM2, and the built repo). If not already set up, run:
+> **Role: All operators (coordinator operator and all party operators)**
+
+All 5 party operators and the coordinator operator must have a working environment before starting (Node.js, Rust, wasm-pack, PM2, and the built repo). If not already set up, run:
 
 ```bash
 sudo bash scripts/setup-env.sh
@@ -40,13 +42,16 @@ These can also be set in `chain-config.json` if you prefer not to use environmen
 
 ## Coordinator Setup
 
+> **Role: Coordinator operator (admin)**
+
 The coordinator operator must complete this before any party can run keygen.
 
-### Install and build
+### Build
+
+> This is handled automatically by `setup-env.sh`. Run the step below only if you need to rebuild after a code update.
 
 ```bash
 cd ~/tss-signer/coordinator
-npm install
 npm run build
 ```
 
@@ -71,17 +76,14 @@ Once all 5 party operators have sent you their public keys (see Step 1), create:
 }
 ```
 
-Then enable auth in `chain-config.json`:
-
-```json
-{ "enableShardusCryptoAuth": true }
-```
-
 ### Start the coordinator
 
 ```bash
 # Production
 npm start
+
+# With pm2 (keep it running in the background with auto-restart)
+pm2 start npm --name "tss-coordinator" -- run tss-coordinator
 
 # Development (auto-restart on file changes)
 npm run dev
@@ -94,6 +96,8 @@ The coordinator listens on port `8000`. On startup it performs an initial on-cha
 ---
 
 ## Step 1 — Generate Your Signer Keypair and Share Your Public Key
+
+> **Role: Party operators**
 
 Each operator generates their own Ed25519 keypair independently. This keypair is used to authenticate HTTP requests from your party node to the coordinator.
 
@@ -133,19 +137,15 @@ This writes `keystores/tss_signer_keypair_party_3.json` and prints your public k
 }
 ```
 
-3. The coordinator operator deploys this file and confirms auth is enabled in `chain-config.json`:
-
-```json
-{ "enableShardusCryptoAuth": true }
-```
-
-4. The coordinator must be running and reachable at `COORDINATOR_URL` before proceeding to Step 2.
+3. The coordinator must be running and reachable at `COORDINATOR_URL` before proceeding to Step 2.
 
 > **Keep your `secretKey` private.** Never share it or commit it to version control.
 
 ---
 
 ## Step 2 — Run Keygen
+
+> **Role: All party operators (simultaneously)**
 
 Keygen generates the distributed key shares. All 5 parties must run this step **at the same time** — they exchange data through the coordinator across 5 rounds.
 
@@ -173,6 +173,8 @@ What to expect:
 ---
 
 ## Step 3 — Verify Keystores
+
+> **Role: Party operators**
 
 After keygen, each operator independently verifies their keystores are valid and displays the derived EOA addresses. This is a local operation — no coordination needed.
 
@@ -206,6 +208,8 @@ Each keystore file (e.g. `keystore_party_2_chainId_80002.json`) contains your un
 
 ## Before Starting — Register the TSS Address in the Bridge Contract
 
+> **Role: Contract admin**
+
 Before the parties can submit signed transactions, the shared EOA address derived during keygen must be registered as the authorized `bridgeInCaller` in each bridge contract. This is a contract admin operation — whoever deployed the bridge contracts must perform it.
 
 Provide the coordinator operator (or contract admin) with the verified EOA address from Step 3, and confirm it has been set on all supported chains before proceeding.
@@ -215,6 +219,8 @@ Provide the coordinator operator (or contract admin) with the verified EOA addre
 ---
 
 ## Before Starting — Fund the TSS Address
+
+> **Role: Contract admin**
 
 After the TSS address has been registered in the bridge contracts, it must be funded with native gas tokens on each supported chain. The TSS parties submit on-chain transactions on behalf of the bridge, and each submission consumes gas.
 
@@ -227,6 +233,8 @@ The contract admin is responsible for this. Send a sufficient amount of native t
 ---
 
 ## Step 4 — Start the TSS Party
+
+> **Role: Party operators**
 
 Once all operators have verified their keystores and the TSS address has been registered in the contracts, the parties can be started.
 

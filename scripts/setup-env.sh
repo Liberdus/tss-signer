@@ -169,8 +169,15 @@ cd tss-signer
 npm install
 npm run build_node
 npm run compile-tss
-cd "$HOME"
 echo -e "${GREEN}TSS signer cloned and built successfully!${NC}"
+
+# Build coordinator
+echo -e "\n${YELLOW}Building coordinator...${NC}"
+cd coordinator
+npm install
+npm run build
+cd "$HOME"
+echo -e "${GREEN}Coordinator built successfully!${NC}"
 
 # Print installation summary
 echo -e "\n${GREEN}==================================${NC}"
