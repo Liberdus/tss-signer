@@ -1046,7 +1046,7 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
     return sign_json
   } catch (error) {
     // Clean up any context or resources on error
-    console.log('Error in sign function, cleaning up resources')
+    console.log('Error in sign function, cleaning up resources', error)
     if (context && m.gg18_cleanup_context) {
       try {
         await m.gg18_cleanup_context(context)
