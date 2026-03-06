@@ -1755,7 +1755,7 @@ async function processCoinToToken(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
+      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, 'failed in execution')
       return 'failed'
     }
   } else {
@@ -1898,7 +1898,7 @@ async function processVaultBridge(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash)
+      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, 'failed in execution')
       return 'failed'
     }
   } else {
@@ -2015,7 +2015,7 @@ async function processTokenToCoin(
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, receipt.reason)
     // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, receipt.reason)
+    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, 'failed in execution')
     return 'failed'
   } else {
     console.log(

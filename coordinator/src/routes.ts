@@ -182,16 +182,14 @@ export function registerRoutes(app: express.Application): void {
   app.post(
     "/transaction/status",
     verifySignedCoordinatorRequest,
-    async (
-      req: Request<{}, {}, TxStatusData>,
-      res: Response<Result<null>>
-    ) => {
+    async (req: Request<{}, {}, TxStatusData>, res: Response<Result<null>>) => {
       try {
         const { txId, status, receiptId, reason, party } = req.body;
-        const hasValidReceiptId =
-          status === TransactionDB.TransactionStatus.FAILED
-            ? receiptId === "" || isNormalizedTxId(receiptId)
-            : isNormalizedTxId(receiptId);
+        const isCompletedStatus =
+          status === TransactionDB.TransactionStatus.COMPLETED;
+        const hasValidReceiptId = isCompletedStatus
+          ? isNormalizedTxId(receiptId)
+          : receiptId === "" || isNormalizedTxId(receiptId);
 
         if (
           !isNormalizedTxId(txId) ||
@@ -206,14 +204,60 @@ export function registerRoutes(app: express.Application): void {
             .json({ Err: "Invalid transaction status data" });
         }
 
+        if (
+          status === TransactionDB.TransactionStatus.PENDING ||
+          status === TransactionDB.TransactionStatus.PROCESSING
+        ) {
+          console.error(
+            `No need to report for pending or processing transactions: ${txId}, party: ${party}, status: ${status}`,
+          );
+          return res.status(404).json({
+            Err: "No need to report for pending or processing transactions",
+          });
+        }
+
         if (status === TransactionDB.TransactionStatus.FAILED) {
           console.log(
-            `Transaction failed: ${txId}, party: ${party}, reason: ${reason}`
+            `Transaction failed: ${txId}, party: ${party}, reason: ${reason}`,
           );
+          // If the reason is "failed in execution" and the receiptId doesn't exist, reject the transaction
+          if (
+            reason === "failed in execution" &&
+            !isNormalizedTxId(receiptId)
+          ) {
+            console.error(
+              `Failed in execution without a receiptId: ${txId}, party: ${party}`,
+            );
+            return res.status(400).json({
+              Err: "No receiptId attached for the tx that failed in execution",
+            });
+          }
+        }
+
+        const current = await TransactionDB.getTransactionById(txId);
+        if (!current) {
+          console.error(
+            `Transaction ${txId} not found in DB for status update`,
+          );
+          return res.status(404).json({ Err: "Transaction not found" });
+        }
+
+        // If the transaction has the same status, txId, and receiptId, ignore
+        if (
+          current.status === status &&
+          current.txId === txId &&
+          current.receiptId === receiptId
+        ) {
+          console.log(
+            "Ignoring duplicate status update:",
+            txId,
+            status,
+            receiptId,
+          );
+          return res.json({ Ok: null });
         }
 
         // Do not overwrite COMPLETED with FAILED
-        const current = await TransactionDB.getTransactionById(txId);
         if (
           current?.status === TransactionDB.TransactionStatus.COMPLETED &&
           status === TransactionDB.TransactionStatus.FAILED
@@ -225,26 +269,58 @@ export function registerRoutes(app: express.Application): void {
           return res.json({ Ok: null });
         }
 
+        // Do not overwrite FAILED with receipt and explicit reason - "failed in execution" if the new status is also FAILED
+        if (
+          current?.status === TransactionDB.TransactionStatus.FAILED &&
+          current.reason === "failed in execution" &&
+          status !== TransactionDB.TransactionStatus.COMPLETED
+        ) {
+          console.log(
+            "Ignoring FAILED status update; transaction already saved as FAILED with reason 'failed in execution':",
+            txId
+          );
+          return res.json({ Ok: null });
+        }
+
         // For COMPLETED: verify the transaction on-chain before persisting
         if (status === TransactionDB.TransactionStatus.COMPLETED) {
-          if (!current) {
-            console.error(
-              `Transaction ${txId} not found in DB for COMPLETED verification`
-            );
-            return res.status(404).json({ Err: "Transaction not found" });
-          }
           const verified = await verifyTxOnChain(
             current.type,
             current.chainId,
-            receiptId
+            receiptId,
+            status,
+            txId,
           );
           if (!verified) {
             console.error(
-              `On-chain verification failed for ${txId} (receiptId: ${receiptId})`
+              `On-chain verification not found for ${txId} (receiptId: ${receiptId})`
             );
             return res
               .status(400)
-              .json({ Err: "On-chain verification failed" });
+              .json({ Err: "On-chain verification not found!" });
+          }
+          console.log(`On-chain verification passed for ${txId}`);
+        }
+
+        // For FAILED with reason "failed in execution": verify the transaction on-chain before persisting
+        if (
+          status === TransactionDB.TransactionStatus.FAILED &&
+          reason === "failed in execution"
+        ) {
+          const verified = await verifyTxOnChain(
+            current.type,
+            current.chainId,
+            receiptId,
+            status,
+            txId,
+          );
+          if (!verified) {
+            console.error(
+              `On-chain verification not found for ${txId} (receiptId: ${receiptId})`,
+            );
+            return res
+              .status(400)
+              .json({ Err: "On-chain verification not found!" });
           }
           console.log(`On-chain verification passed for ${txId}`);
         }
@@ -426,7 +502,7 @@ export function registerRoutes(app: express.Application): void {
     const elapsed = now - lastPoll;
 
     console.log(
-      `[notify-bridgeout] ${chainId} lastPoll=${lastPoll} ${elapsed/1000}s ${elapsed >= NOTIFY_COOLDOWN_MS ? "immediate" : "deferred"} ` 
+      `[notify-bridgeout] ${chainId} lastPoll=${lastPoll} ${elapsed / 1000}s ${elapsed >= NOTIFY_COOLDOWN_MS ? "immediate" : "deferred"} `
     );
 
     if (elapsed >= NOTIFY_COOLDOWN_MS) {
