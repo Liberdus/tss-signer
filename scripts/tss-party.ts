@@ -742,9 +742,16 @@ const loadQueueFromFile = (partyIdx: number): void => {
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
 
-    // Restore txQueueMap
+    // Restore txQueueMap.
+    // Any entry that was 'processing' at save time is orphaned on restart
+    // (processingTransactionIds is in-memory and starts empty).  Reset those
+    // to 'failed' so the coordinator poll re-queues them on the next cycle.
     if (Array.isArray(data.map)) {
       for (const [txId, entry] of data.map as [string, TxQueueEntry][]) {
+        if (entry.status === 'processing') {
+          entry.status = 'failed'
+          console.warn(`[loadQueue] Resetting orphaned processing tx to failed: ${txId}`)
+        }
         txQueueMap.set(txId, entry)
       }
     }
