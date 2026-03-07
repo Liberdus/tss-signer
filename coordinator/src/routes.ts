@@ -5,7 +5,7 @@ import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "./utils/transformTxId";
-import { verifyTxOnChain } from "./verification";
+import { verifyTxOnChain, FAILED_IN_EXECUTION_REASON } from "./verification";
 import { monitorEthereumBridgeOutQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
 import { syncReady } from "./monitor/state";
@@ -220,18 +220,6 @@ export function registerRoutes(app: express.Application): void {
           console.log(
             `Transaction failed: ${txId}, party: ${party}, reason: ${reason}`,
           );
-          // If the reason is "failed in execution" and the receiptId doesn't exist, reject the transaction
-          if (
-            reason === "failed in execution" &&
-            !isNormalizedTxId(receiptId)
-          ) {
-            console.error(
-              `Failed in execution without a receiptId: ${txId}, party: ${party}`,
-            );
-            return res.status(400).json({
-              Err: "No receiptId attached for the tx that failed in execution",
-            });
-          }
         }
 
         const current = await TransactionDB.getTransactionById(txId);
@@ -269,54 +257,23 @@ export function registerRoutes(app: express.Application): void {
           return res.json({ Ok: null });
         }
 
-        // Do not overwrite FAILED with receipt and explicit reason - "failed in execution" if the new status is also FAILED
-        if (
-          current?.status === TransactionDB.TransactionStatus.FAILED &&
-          current.reason === "failed in execution" &&
-          status !== TransactionDB.TransactionStatus.COMPLETED
-        ) {
-          console.log(
-            "Ignoring FAILED status update; transaction already saved as FAILED with reason 'failed in execution':",
-            txId
-          );
-          return res.json({ Ok: null });
-        }
-
         // For COMPLETED: verify the transaction on-chain before persisting
         if (status === TransactionDB.TransactionStatus.COMPLETED) {
+          if (reason === FAILED_IN_EXECUTION_REASON) {
+            console.log(
+              `Transaction failed in execution: ${txId}, party: ${party}`,
+            );
+          }
           const verified = await verifyTxOnChain(
             current.type,
             current.chainId,
             receiptId,
-            status,
             txId,
+            reason,
           );
           if (!verified) {
             console.error(
               `On-chain verification not found for ${txId} (receiptId: ${receiptId})`
-            );
-            return res
-              .status(400)
-              .json({ Err: "On-chain verification not found!" });
-          }
-          console.log(`On-chain verification passed for ${txId}`);
-        }
-
-        // For FAILED with reason "failed in execution": verify the transaction on-chain before persisting
-        if (
-          status === TransactionDB.TransactionStatus.FAILED &&
-          reason === "failed in execution"
-        ) {
-          const verified = await verifyTxOnChain(
-            current.type,
-            current.chainId,
-            receiptId,
-            status,
-            txId,
-          );
-          if (!verified) {
-            console.error(
-              `On-chain verification not found for ${txId} (receiptId: ${receiptId})`,
             );
             return res
               .status(400)

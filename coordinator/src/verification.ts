@@ -9,6 +9,8 @@ import {
 } from "./config";
 import { normalizeTxId } from "./utils/transformTxId";
 
+export const FAILED_IN_EXECUTION_REASON = "failed in execution";
+
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000;
 
@@ -17,24 +19,24 @@ const BRIDGE_IN_EVENT_ABI =
 const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
 
 /**
- * Verify that a transaction result matches its reported status.
+ * Verify that a COMPLETED transaction result matches its reported outcome.
  *
  * - BRIDGE_OUT:
- *   - COMPLETED => proxy tx.success must be true
- *   - FAILED    => proxy tx.success must be false
+ *   - COMPLETED (success)             => proxy tx.success must be true
+ *   - COMPLETED (failed in execution) => proxy tx.success must be false
  * - BRIDGE_IN / BRIDGE_VAULT:
- *   - COMPLETED => EVM receipt.status must be 1 and BridgedIn event txId must
- *                  match expectedTxId
- *   - FAILED    => EVM receipt.status must be 0
+ *   - COMPLETED (success)             => EVM receipt.status must be 1 and BridgedIn event txId must match expectedTxId
+ *   - COMPLETED (failed in execution) => EVM receipt.status must be 0
  * For BRIDGE_VAULT the receipt lands on the secondary (destination) chain.
  */
 export async function verifyTxOnChain(
   type: TransactionDB.TransactionType,
   chainId: number,
   receiptId: string,
-  reportedStatus: TransactionDB.TransactionStatus,
   expectedTxId?: string,
+  reason?: string,
 ): Promise<boolean> {
+  const isFailedInExecution = reason === FAILED_IN_EXECUTION_REASON;
   try {
     if (type === TransactionDB.TransactionType.BRIDGE_OUT) {
       const proxyServerHost =
@@ -48,23 +50,22 @@ export async function verifyTxOnChain(
           );
           const tx = res.data?.transaction;
           if (typeof tx?.success !== "boolean") continue;
-          if (reportedStatus === TransactionDB.TransactionStatus.COMPLETED) {
-            if (tx.success !== true) {
-              console.error(
-                `[verifyTxOnChain] Discrepancy: reported COMPLETED but Liberdus tx indicates failure (receiptId=${receiptId})`
-              );
-            }
-            return tx.success === true;
-          }
-          if (reportedStatus === TransactionDB.TransactionStatus.FAILED) {
+          if (isFailedInExecution) {
             if (tx.success !== false) {
               console.error(
-                `[verifyTxOnChain] Discrepancy: reported FAILED but Liberdus tx indicates success (receiptId=${receiptId})`
+                `[verifyTxOnChain] Discrepancy: reported COMPLETED (failed in execution) but Liberdus tx indicates success (receiptId=${receiptId})`
               );
+              return false;
             }
-            return tx.success === false;
+            return true;
           }
-          return false;
+          if (tx.success !== true) {
+            console.error(
+              `[verifyTxOnChain] Discrepancy: reported COMPLETED with success but Liberdus tx indicates failure (receiptId=${receiptId})`
+            );
+            return false;
+          }
+          return true;
         } catch (e) {
           console.warn(
             `[verifyTxOnChain] BRIDGE_OUT attempt ${attempt + 1} failed:`,
@@ -107,20 +108,19 @@ export async function verifyTxOnChain(
           );
           if (!receipt) continue;
 
-          if (reportedStatus === TransactionDB.TransactionStatus.FAILED) {
+          if (isFailedInExecution) {
             if (receipt.status !== 0) {
               console.error(
-                `[verifyTxOnChain] Discrepancy: reported FAILED but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
+                `[verifyTxOnChain] Discrepancy: reported COMPLETED (failed in execution) but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
               );
+              return false;
             }
-            return receipt.status === 0;
+            return true;
           }
 
-          if (reportedStatus !== TransactionDB.TransactionStatus.COMPLETED)
-            return false;
           if (receipt.status !== 1) {
             console.error(
-              `[verifyTxOnChain] Discrepancy: reported COMPLETED but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
+              `[verifyTxOnChain] Discrepancy: reported COMPLETED with success but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
             );
             return false;
           }
