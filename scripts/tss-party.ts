@@ -2301,10 +2301,25 @@ function emergencyCleanup() {
   }
 }
 
-// Add function to clean up stuck transactions
+// Detect and recover transactions that are marked 'processing' in txQueueMap
+// but are no longer in processingTransactionIds (e.g. due to an unhandled
+// error that bypassed the finally block).  Without this they would block the
+// queue until the 24-hour cleanupOldTransactions sweep.
 function cleanupStuckTransactions() {
+  let fixed = 0
+  for (const [txId, entry] of txQueueMap.entries()) {
+    if (entry.status === 'processing' && !processingTransactionIds.has(txId)) {
+      entry.status = 'failed'
+      fixed++
+      console.warn(`[cleanupStuck] Resetting orphaned processing tx to failed: ${txId}`)
+    }
+  }
+  if (fixed > 0) {
+    console.warn(`[cleanupStuck] Reset ${fixed} orphaned transaction(s) — will be retried on next coordinator poll`)
+    saveQueueToFile(ourParty.idx)
+  }
   if (processingTransactionIds.size > MAX_CONCURRENT_TXS) {
-    console.warn(`⚠️ processingTransactionIds has ${processingTransactionIds.size} entries, expected ≤ ${MAX_CONCURRENT_TXS}. Potential stuck transactions.`)
+    console.warn(`⚠️ processingTransactionIds has ${processingTransactionIds.size} entries, expected ≤ ${MAX_CONCURRENT_TXS}`)
   }
 }
 
