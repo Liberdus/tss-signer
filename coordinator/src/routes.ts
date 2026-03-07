@@ -120,29 +120,30 @@ export function registerRoutes(app: express.Application): void {
       // console.log("set:", req.body);
       const { key, value } = req.body;
       db.set(key, value);
+      // Track KV activity per sign session UUID so /signupsign can detect
+      // dead sessions (no round messages for SIGN_SESSION_DEAD_MS).
+      const uuidMatch = key.match(UUID_REGEX);
+      if (uuidMatch) sessionKvActivity.set(uuidMatch[0], Date.now());
       res.json({ Ok: null });
     }
   );
 
   // POST /signupkeygen — round-robin keygen signup
-  app.post("/signupkeygen", verifySignedCoordinatorRequest, async (_req: Request, res: Response<Result<PartySignup>>) => {
+  app.post("/signupkeygen", verifySignedCoordinatorRequest, (_req: Request, res: Response<Result<PartySignup>>) => {
     try {
-      const { parties } = await loadParams();
-      const max = parseInt(parties, 10);
-
       console.log("Signup keygen request body:", _req.body);
       const key = _req.body;
 
-      const raw = db.get(key)!;
+      const raw = db.get(key);
       let current: PartySignup | null = null;
       try {
-        current = JSON.parse(raw);
+        if (raw) current = JSON.parse(raw);
       } catch (e) {
         console.error("Failed to parse current signup: creating new one");
       }
 
       let next: PartySignup;
-      if (current && current.number < max) {
+      if (current && current.number < MAX_PARTIES) {
         next = { number: current.number + 1, uuid: current.uuid };
       } else {
         next = { number: 1, uuid: uuidv4() };
