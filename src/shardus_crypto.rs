@@ -3,7 +3,8 @@ use crate::errors::{Result, TssError};
 use crate::log;
 use blake2::digest::{Update, VariableOutput};
 use blake2::VarBlake2b;
-use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signer};
+use core::fmt;
+use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
 use serde::Serialize;
 #[cfg(not(target_arch = "wasm32"))]
 use lazy_static::lazy_static;
@@ -11,6 +12,37 @@ use lazy_static::lazy_static;
 use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
 use std::{cell::RefCell, thread_local};
+
+pub enum Format {
+    Hex,
+    Buffer,
+}
+
+pub enum HexStringOrBuffer {
+    Hex(String),
+    Buffer(Vec<u8>),
+}
+
+impl fmt::Display for HexStringOrBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            HexStringOrBuffer::Hex(s) => write!(f, "{}", s),
+            HexStringOrBuffer::Buffer(bytes) => {
+                for b in bytes {
+                    write!(f, "{:02X}", b)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+pub struct ShardusKeyPair {
+    pub public_key: PublicKey,
+    pub secret_key: SecretKey,
+}
+
+// --- Internal state ---
 
 struct ShardusCryptoState {
     hash_key: Vec<u8>,
@@ -361,4 +393,197 @@ fn empty_keypair() -> Result<Keypair> {
     })?;
     let public = PublicKey::from(&secret);
     Ok(Keypair { secret, public })
+}
+
+fn get_hash_key_from_state() -> Result<Vec<u8>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut out = Err(TssError::UnknownError {
+            msg: "shardus crypto not initialized".to_string(),
+            line: line!(),
+        });
+        SHARDUS_CRYPTO_STATE.with(|state| {
+            let state = state.borrow();
+            if let Some(s) = state.as_ref() {
+                if !s.hash_key.is_empty() {
+                    out = Ok(s.hash_key.clone());
+                }
+            }
+        });
+        return out;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let state = SHARDUS_CRYPTO_STATE
+            .lock()
+            .map_err(|_| TssError::UnknownError {
+                msg: "shardus_crypto lock".to_string(),
+                line: line!(),
+            })?;
+        let hash_key = state
+            .as_ref()
+            .filter(|s| !s.hash_key.is_empty())
+            .map(|s| s.hash_key.clone())
+            .ok_or_else(|| TssError::UnknownError {
+                msg: "shardus crypto not initialized".to_string(),
+                line: line!(),
+            })?;
+        Ok(hash_key)
+    }
+}
+
+/// Build a key pair from secret key (hex or buffer). Secret key can be 32-byte seed or 64-byte (seed || public).
+pub fn get_key_pair_using_sk(sk: &HexStringOrBuffer) -> Result<ShardusKeyPair> {
+    let secret_key_bytes = match sk {
+        HexStringOrBuffer::Hex(hex) => decode_hex(hex)?,
+        HexStringOrBuffer::Buffer(buf) => buf.clone(),
+    };
+    let seed = if secret_key_bytes.len() == 64 {
+        &secret_key_bytes[..32]
+    } else if secret_key_bytes.len() == 32 {
+        secret_key_bytes.as_slice()
+    } else {
+        return Err(TssError::UnknownError {
+            msg: "Invalid secret key length".to_string(),
+            line: line!(),
+        });
+    };
+    let secret = SecretKey::from_bytes(seed).map_err(|_| TssError::UnknownError {
+        msg: "Invalid secret key".to_string(),
+        line: line!(),
+    })?;
+    let public_key = PublicKey::from(&secret);
+    Ok(ShardusKeyPair {
+        public_key,
+        secret_key: secret,
+    })
+}
+
+/// Parse public key from hex or buffer (32 bytes).
+pub fn get_pk(pk: &HexStringOrBuffer) -> Result<PublicKey> {
+    let bytes = match pk {
+        HexStringOrBuffer::Hex(hex) => decode_hex(hex)?,
+        HexStringOrBuffer::Buffer(buf) => buf.clone(),
+    };
+    if bytes.len() != 32 {
+        return Err(TssError::UnknownError {
+            msg: "Invalid public key length".to_string(),
+            line: line!(),
+        });
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    PublicKey::from_bytes(&arr).map_err(|_| TssError::UnknownError {
+        msg: "Invalid public key".to_string(),
+        line: line!(),
+    })
+}
+
+/// Hash input using the shardus hash key (must have called shardus_crypto_init). Output as Hex or Buffer.
+pub fn hash(input: &[u8], fmt: Format) -> Result<HexStringOrBuffer> {
+    let hash_key = get_hash_key_from_state()?;
+    let digest = hash_with_shardus_key(input, &hash_key);
+    Ok(match fmt {
+        Format::Hex => HexStringOrBuffer::Hex(hex::encode(&digest)),
+        Format::Buffer => HexStringOrBuffer::Buffer(digest),
+    })
+}
+
+/// Hash a byte slice (alias for hash with same semantics).
+pub fn hashslice(input: &[u8], fmt: Format) -> Result<HexStringOrBuffer> {
+    hash(input, fmt)
+}
+
+/// Sign input (hex or buffer) with the given secret key. Returns signature || message (64 + len(message)) for compatibility with lib-net/sodiumoxide.
+pub fn sign(
+    input: HexStringOrBuffer,
+    sk: &SecretKey,
+) -> Result<Vec<u8>> {
+    let msg = match input {
+        HexStringOrBuffer::Hex(hex) => decode_hex(&hex)?,
+        HexStringOrBuffer::Buffer(buf) => buf,
+    };
+    let secret = SecretKey::from_bytes(&sk.to_bytes()).map_err(|_| TssError::UnknownError {
+        msg: "Invalid secret key in sign".to_string(),
+        line: line!(),
+    })?;
+    let public = PublicKey::from(&secret);
+    let keypair = Keypair { secret, public };
+    let signature = keypair.sign(&msg);
+    let mut out = Vec::with_capacity(64 + msg.len());
+    out.extend_from_slice(signature.to_bytes().as_ref());
+    out.extend_from_slice(&msg);
+    Ok(out)
+}
+
+/// Verifies a request body produced by `maybe_sign_request_body`.
+/// Recomputes the digest from `payload` + `ts`, parses `sign.owner` as public key and `sign.sig` as hex(signature || digest), and verifies.
+/// Use this on the server/coordinator when validating incoming signed requests.
+pub fn verify_signed_request_body(body: &serde_json::Value, hash_key_hex: &str) -> Result<bool> {
+    let payload = body.get("payload").ok_or_else(|| TssError::UnknownError {
+        msg: "verify_signed_request_body: missing payload".to_string(),
+        line: line!(),
+    })?;
+    let ts = body.get("ts").and_then(|v| v.as_u64()).ok_or_else(|| TssError::UnknownError {
+        msg: "verify_signed_request_body: missing or invalid ts".to_string(),
+        line: line!(),
+    })?;
+    let sign_obj = body.get("sign").and_then(|v| v.as_object()).ok_or_else(|| TssError::UnknownError {
+        msg: "verify_signed_request_body: missing sign".to_string(),
+        line: line!(),
+    })?;
+    let owner_hex = sign_obj.get("owner").and_then(|v| v.as_str()).ok_or_else(|| TssError::UnknownError {
+        msg: "verify_signed_request_body: missing sign.owner".to_string(),
+        line: line!(),
+    })?;
+    let sig_hex = sign_obj.get("sig").and_then(|v| v.as_str()).ok_or_else(|| TssError::UnknownError {
+        msg: "verify_signed_request_body: missing sign.sig".to_string(),
+        line: line!(),
+    })?;
+
+    let hash_key = decode_hex(hash_key_hex)?;
+    let unsigned = serde_json::json!({ "payload": payload, "ts": ts });
+    let serialized_unsigned = serde_json::to_string(&unsigned).map_err(|_| TssError::UnknownError {
+        msg: "verify_signed_request_body: serialize unsigned".to_string(),
+        line: line!(),
+    })?;
+    let digest = hash_with_shardus_key(serialized_unsigned.as_bytes(), &hash_key);
+
+    let sig_buf = decode_hex(sig_hex)?;
+    if sig_buf.len() < 64 + digest.len() {
+        return Ok(false);
+    }
+    let pk = get_pk(&HexStringOrBuffer::Hex(owner_hex.to_string()))?;
+    let ok = verify(
+        &HexStringOrBuffer::Buffer(digest),
+        &sig_buf,
+        &pk,
+    );
+    Ok(ok)
+}
+
+/// Verify signed message. `sig` is the full signed buffer (64-byte signature || message). Returns true if valid.
+pub fn verify(
+    msg: &HexStringOrBuffer,
+    sig: &[u8],
+    pk: &PublicKey,
+) -> bool {
+    if sig.len() < 64 {
+        return false;
+    }
+    let msg_buf = match msg {
+        HexStringOrBuffer::Hex(hex) => match hex::decode(hex) {
+            Ok(b) => b,
+            Err(_) => return false,
+        },
+        HexStringOrBuffer::Buffer(buf) => buf.clone(),
+    };
+    let sig_bytes: [u8; 64] = sig[..64].try_into().unwrap();
+    let signature = match Signature::from_bytes(&sig_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let opened_msg = &sig[64..];
+    pk.verify(opened_msg, &signature).is_ok() && opened_msg == msg_buf.as_slice()
 }

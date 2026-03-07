@@ -27,6 +27,8 @@ mod common_tests;
 pub mod api;
 pub mod errors;
 pub mod shardus_crypto;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod shardus_crypto_tests;
 
 // Toggle verbose Rust/WASM debug logs for coordinator request signing flow.
 // Set to `true` when debugging low-level request/signing issues.
