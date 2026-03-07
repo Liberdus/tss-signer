@@ -8,7 +8,8 @@ export const isShardusAddress = (address: string): boolean => {
 }
 
 export const toShardusAddress = (address: string): string => {
-  if (address.length === 64) return address
+  address = address.trim()
+  if (address.length === 64) return address.toLowerCase()
   if (isEthereumAddress(address)) {
     address = address.slice(2).toLowerCase()
     return address + '0'.repeat(24)
@@ -17,7 +18,8 @@ export const toShardusAddress = (address: string): string => {
 }
 
 export const toEthereumAddress = (address: string): string => {
-  if (isEthereumAddress(address)) return address
+  address = address.trim()
+  if (isEthereumAddress(address)) return address.toLowerCase()
   if (isShardusAddress(address)) {
     // Check if the last 24 characters are 0s
     if (address.endsWith('0'.repeat(24))) {
