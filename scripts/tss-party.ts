@@ -212,7 +212,7 @@ if (chainConfigs.enableLiberdusNetwork) {
 let t = params.threshold
 let n = params.parties
 
-const SIGN_ROUND_TIMEOUT_MS = 20_000
+const SIGN_ROUND_TIMEOUT_MS = 60_000 // 1 minute (must match Rust ROUND_TIMEOUT_MS)
 const SIGN_POLL_DELAY_MS = 100
 
 function signRound<T>(promise: Promise<T>, round: number | string): Promise<T> {
