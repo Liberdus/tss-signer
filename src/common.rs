@@ -300,6 +300,24 @@ pub async fn poll_for_p2p(
     round: &str,
     sender_uuid: String,
 ) -> Result<Vec<String>> {
+    let addr = addr.to_string();
+    let round = round.to_string();
+    with_timeout(
+        ROUND_TIMEOUT_MS,
+        poll_for_p2p_inner(client, &addr, party_num, n, delay, &round, sender_uuid),
+    )
+    .await
+}
+
+async fn poll_for_p2p_inner(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    n: u16,
+    delay: u32,
+    round: &str,
+    sender_uuid: String,
+) -> Result<Vec<String>> {
     #[cfg(target_arch = "wasm32")]
     if POLL_DEBUG_LOGS {
         crate::console_log!("[{:?}] poll_for_p2p delay={}ms", round, delay);
@@ -310,17 +328,14 @@ pub async fn poll_for_p2p(
             let key = format!("{}-{}-{}-{}", i, party_num, round, sender_uuid);
             let index = Index { key };
             let mut attempts = 0u32;
-            let mut total_wait_ms = 0u32;
             loop {
-                // add delay to allow the server to process request:
                 sleep(delay).await;
                 attempts += 1;
-                total_wait_ms += delay;
                 if attempts > MAX_POLL_ATTEMPTS {
                     return Err(TssError::UnknownError {
                         msg: format!(
-                            "poll_for_p2p timed out waiting for party {} in round {} after {} attempts ({} ms total wait)",
-                            i, round, attempts, total_wait_ms
+                            "poll_for_p2p too many attempts waiting for party {} in round {} ({} attempts)",
+                            i, round, attempts
                         ),
                         line: line!(),
                     });
