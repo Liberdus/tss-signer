@@ -237,6 +237,24 @@ pub async fn poll_for_broadcasts(
     sender_uuid: String,
     delay: u32,
 ) -> Result<Vec<String>> {
+    let addr = addr.to_string();
+    let round = round.to_string();
+    with_timeout(
+        ROUND_TIMEOUT_MS,
+        poll_for_broadcasts_inner(client, &addr, party_num, n, &round, sender_uuid, delay),
+    )
+    .await
+}
+
+async fn poll_for_broadcasts_inner(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    n: u16,
+    round: &str,
+    sender_uuid: String,
+    delay: u32,
+) -> Result<Vec<String>> {
     println!("[{:?}] party {:?} {:?} {:?} => poll_for_broadcast", round, party_num, n, sender_uuid);
     #[cfg(target_arch = "wasm32")]
     if POLL_DEBUG_LOGS {
@@ -248,21 +266,18 @@ pub async fn poll_for_broadcasts(
             let key = format!("{}-{}-{}", i, round, sender_uuid);
             let index = Index { key };
             let mut attempts = 0u32;
-            let mut total_wait_ms = 0u32;
             loop {
                 sleep(delay).await;
                 attempts += 1;
-                total_wait_ms += delay;
                 if attempts > MAX_POLL_ATTEMPTS {
                     return Err(TssError::UnknownError {
                         msg: format!(
-                            "poll_for_broadcasts timed out waiting for party {} in round {} after {} attempts (delay {}ms, {} ms total wait)",
-                            i, round, attempts, delay, total_wait_ms
+                            "poll_for_broadcasts too many attempts waiting for party {} in round {} ({} attempts)",
+                            i, round, attempts
                         ),
                         line: line!(),
                     });
                 }
-                // add delay to allow the server to process request:
                 let res_body = postb(client, addr, "get", index.clone()).await?;
                 let answer: std::result::Result<Entry, ()> = serde_json::from_str(&res_body)?;
                 if let Ok(answer) = answer {
@@ -273,7 +288,7 @@ pub async fn poll_for_broadcasts(
             }
         }
     }
-    return Ok(ans_vec);
+    Ok(ans_vec)
 }
 
 pub async fn poll_for_p2p(
