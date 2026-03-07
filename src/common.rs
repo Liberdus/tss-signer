@@ -15,9 +15,12 @@ use crate::curv::{
     elliptic::curves::secp256_k1::{Secp256k1Point as Point, Secp256k1Scalar as Scalar},
 };
 
+use futures::future::{select, Either};
+use futures::pin_mut;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
+use std::future::Future;
 
 use crate::errors::Result;
 use crate::shardus_crypto::maybe_sign_request_body;
@@ -200,8 +203,30 @@ pub async fn sendp2p(
     })
 }
 
-const MAX_POLL_ATTEMPTS: u32 = 200; // 200 * delay_ms ≈ 20s per party per round
+/// Max time to wait for the whole round; the promise will resolve (with timeout error) within this time.
+const ROUND_TIMEOUT_MS: u32 = 60_000; // 1 minute
+const MAX_POLL_ATTEMPTS: u32 = 10_000; // safety cap on iterations per party
 const POLL_DEBUG_LOGS: bool = false;
+
+/// Runs a future and returns its result, or a timeout error if it doesn't complete within `timeout_ms`.
+async fn with_timeout<F, T>(timeout_ms: u32, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let timeout_fut = async move {
+        sleep(timeout_ms).await;
+        Err(TssError::UnknownError {
+            msg: format!("operation timed out after {} ms", timeout_ms),
+            line: line!(),
+        })
+    };
+    pin_mut!(future);
+    pin_mut!(timeout_fut);
+    match select(future, timeout_fut).await {
+        Either::Left((res, _)) => res,
+        Either::Right((err, _)) => err,
+    }
+}
 
 pub async fn poll_for_broadcasts(
     client: &Client,
