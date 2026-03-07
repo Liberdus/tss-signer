@@ -385,6 +385,8 @@ function checkMaxBridgeAmount(
   const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${chainName}`
   console.error(reason)
   sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
+  // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
+  removeFromPendingTxQueue(txId)
   return false
 }
 
@@ -539,6 +541,8 @@ const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the brid
 
 const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
 
+const FAILED_IN_EXECUTION_REASON = 'failed in execution'
+
 const TX_DATA_STORE_MAX_ENTRIES = 500
 const TX_DATA_STORE_MAX_FILES = 5
 // Compiled once at startup; ourParty.idx is known at module-init time
@@ -620,6 +624,11 @@ function cleanupOldTransactions() {
       console.log(`🗑️ Forced garbage collection freed ${freedMB} MB`)
     }
   }
+}
+
+function removeFromPendingTxQueue(txId: string): void {
+  const idx = pendingTxQueue.findIndex(t => t.txId === txId)
+  if (idx !== -1) pendingTxQueue.splice(idx, 1)
 }
 
 function loadParams(): Params {
@@ -1748,16 +1757,16 @@ async function processCoinToToken(
       chainProvider.lastBridgeInTime = block.timestamp
       // Send tx status to coordinator
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
-      return 'completed'
     } else {
       console.log(
         `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, 'failed in execution')
-      return 'failed'
+      // If the tx is failed in execution, send it as completed but add reason: FAILED_IN_EXECUTION_REASON
+      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash, FAILED_IN_EXECUTION_REASON)
     }
+    return 'completed'
   } else {
     console.log(
       `Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
@@ -1767,6 +1776,8 @@ async function processCoinToToken(
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${targetChainName}`)
     // Send tx status to coordinator
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
+    removeFromPendingTxQueue(txId)
     return 'failed'
   }
 }
@@ -1891,16 +1902,16 @@ async function processVaultBridge(
       const block = await destChainProvider.provider.getBlock(receipt.blockNumber)
       destChainProvider.lastBridgeInTime = block.timestamp
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
-      return 'completed'
     } else {
       console.log(
         `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, 'failed in execution')
-      return 'failed'
+      // If the tx is failed in execution, send it as completed but add reason: FAILED_IN_EXECUTION_REASON 
+      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash, FAILED_IN_EXECUTION_REASON)
     }
+    return 'completed'
   } else {
     console.log(
       `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
@@ -1909,6 +1920,8 @@ async function processVaultBridge(
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${destChainName}`)
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
+    removeFromPendingTxQueue(txId)
     return 'failed'
   }
 }
@@ -2001,22 +2014,24 @@ async function processTokenToCoin(
   await sleep(5000) // wait for 5 seconds
   
   const receipt = await getLiberdusReceipt(signedTxId, fetchReceiptRetry)
-  if (receipt && receipt.success === true) {
-    console.log(
-      `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
-    )
-    // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId)
+  if (receipt) {
+    if (receipt.success === true) {
+      console.log(
+        `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
+      )
+      // Send tx status to coordinator
+      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId)
+    } else {
+      console.log(
+        `Transaction is failed in execution - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${receipt.reason}`,
+      )
+      const txData = processingTransactionIds.get(txId)
+      if (txData) appendToFailedTxsLogs(txData, receipt.reason)
+      // Send tx status to coordinator
+      // If the tx is failed in execution, send it as completed but add reason: FAILED_IN_EXECUTION_REASON
+      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId, FAILED_IN_EXECUTION_REASON)
+    }
     return 'completed'
-  } else if (receipt && receipt.success === false && receipt.reason) {
-    console.log(
-      `Transaction is failed - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${receipt.reason}`,
-    )
-    const txData = processingTransactionIds.get(txId)
-    if (txData) appendToFailedTxsLogs(txData, receipt.reason)
-    // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, 'failed in execution')
-    return 'failed'
   } else {
     console.log(
       `Transaction is failed - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${res.reason}`,
@@ -2025,6 +2040,8 @@ async function processTokenToCoin(
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed from ${sourceChainName}`)
     // Send tx status to coordinator
     sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, res.reason as string)
+    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
+    removeFromPendingTxQueue(txId)
     return 'failed'
   }
 }
@@ -2523,15 +2540,15 @@ async function main(): Promise<void> {
       if (coordinatorStatus === TransactionStatus.COMPLETED) {
         entry.status = 'completed'
         // Remove from pendingTxQueue if present
-        const idx = pendingTxQueue.findIndex(t => t.txId === txId)
-        if (idx !== -1) pendingTxQueue.splice(idx, 1)
+        removeFromPendingTxQueue(txId)
         console.log(`[startup] ${txId} already COMPLETED on coordinator, skipping`)
       } else if (coordinatorStatus === TransactionStatus.FAILED) {
         entry.status = 'failed'
-        const idx = pendingTxQueue.findIndex(t => t.txId === txId)
-        const txData = idx !== -1 ? pendingTxQueue[idx] : undefined
-        if (idx !== -1) pendingTxQueue.splice(idx, 1)
-        if (txData) appendToFailedTxsLogs(txData, 'already failed on coordinator at startup')
+        const txData = pendingTxQueue.find(t => t.txId === txId)
+        if (txData) {
+          appendToFailedTxsLogs(txData, 'already failed on coordinator at startup')
+          removeFromPendingTxQueue(txId)
+        }
         console.log(`[startup] ${txId} already FAILED on coordinator, skipping`)
       } else {
         // PENDING or PROCESSING on coordinator — ensure txData is in pendingTxQueue
@@ -2572,6 +2589,7 @@ async function main(): Promise<void> {
     if (isRecentlyCompleted(txId)) {
       console.log(`⏩ Transaction ${txId} was recently completed, skipping duplicate processing`)
       txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+      removeFromPendingTxQueue(txId)
       processingTransactionIds.delete(txId)
       return
     }
@@ -2579,7 +2597,7 @@ async function main(): Promise<void> {
     // Verify with coordinator that this tx hasn't already been completed/is being processed
     const preProcessStatus = await reconcileTxStatusWithCoordinator(txId, 'pre-process')
     if (preProcessStatus != null) {
-      processingTransactionIds.delete(txId)
+      removeFromPendingTxQueue(txId)
       if (preProcessStatus === 'completed') {
         markTransactionCompleted(txId)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
@@ -2588,6 +2606,7 @@ async function main(): Promise<void> {
         appendToFailedTxsLogs(validTx, 'already failed on coordinator at pre-process')
       }
       await refreshLastBridgeInTime(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+      processingTransactionIds.delete(txId)
       return
     }
 
@@ -2630,7 +2649,8 @@ async function main(): Promise<void> {
       if (outcome === 'completed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         console.log('Transaction processed successfully:', validTx)
-        
+        // Remove the tx from the queue
+        removeFromPendingTxQueue(txId)
         // Mark transaction as completed to prevent duplicate processing
         markTransactionCompleted(validTx.txId)
       } else if (outcome === 'failed') {
@@ -2639,10 +2659,13 @@ async function main(): Promise<void> {
       } else if (outcome === 'skipped_coordinator_completed') {
         console.log(`Transaction ${validTx.txId} was already completed on coordinator (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+        removeFromPendingTxQueue(txId) 
         markTransactionCompleted(validTx.txId)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_coordinator_failed') {
         console.log(`Transaction ${validTx.txId} was already failed on coordinator (pre-sign), skipping`)
+        // Since the transaction is marked as failed on coordinator, remove it from the queue
+        removeFromPendingTxQueue(txId)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed on coordinator before signing')
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
@@ -2668,24 +2691,26 @@ async function main(): Promise<void> {
         } catch (waitError) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
           appendToFailedTxsLogs(validTx, 'timeout waiting for coordinator final status after enough-party')
-          saveQueueToFile(ourParty.idx)
           console.warn(`[wait-final] Timed out waiting for final status for ${validTx.txId}`)
-          throw waitError
         }
 
         if (finalStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+          removeFromPendingTxQueue(txId)
           markTransactionCompleted(validTx.txId)
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
           console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED on coordinator`)
-        } else {
+        } else if (finalStatus === TransactionStatus.FAILED) {
+          // Since the transaction is marked as failed on coordinator, remove it from the queue
+          removeFromPendingTxQueue(txId)
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
           appendToFailedTxsLogs(validTx, 'finalized as failed on coordinator after enough-party')
           console.warn(`[wait-final] ${validTx.txId} finalized as FAILED on coordinator`)
+        } else {
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+          appendToFailedTxsLogs(validTx, 'didnot finalize on coordinator after enough-party')
+          console.error(`[wait-final] ${validTx.txId} did not finalize on coordinator after enough-party`)
         }
-
-        saveQueueToFile(ourParty.idx)
-
         // Additional cleanup for "enough party" scenarios to prevent memory leaks
         console.log('🧹 Performing cleanup after "enough party" wait')
         checkPostTransactionMemory(validTx.txId, 'enough-party-wait-final')
@@ -2729,8 +2754,9 @@ async function main(): Promise<void> {
     console.log('Running handleTransactionQueue', new Date().toISOString())
 
     // Process new transactions while we have available slots
-    while (pendingTxQueue.length > 0 && processingTransactionIds.size < MAX_CONCURRENT_TXS) {
-      const validTx = pendingTxQueue.shift()!
+    for (const validTx of pendingTxQueue) {
+      if (processingTransactionIds.size >= MAX_CONCURRENT_TXS) break
+      if (processingTransactionIds.has(validTx.txId)) continue
 
       // Update transaction status to processing
       txQueueMap.set(validTx.txId, {
