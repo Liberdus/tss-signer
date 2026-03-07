@@ -1,6 +1,7 @@
 import express, { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import fs from "fs/promises";
+import { readFileSync } from "fs";
 import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
@@ -61,6 +62,33 @@ async function loadParams(): Promise<Params> {
   );
   return JSON.parse(data) as Params;
 }
+
+// Params loaded once at startup — avoids async gap in signup handlers that
+// would allow concurrent requests to both read a stale counter value before
+// either writes back, causing split sign sessions with different UUIDs.
+const _startupParams = JSON.parse(
+  readFileSync(path.join(__dirname, "../../", "params.json"), "utf8")
+) as Params;
+const MAX_PARTIES = parseInt(_startupParams.parties, 10);
+
+// How long after the last *legitimate* registration (party numbers 1..MAX_PARTIES)
+// a session is considered expired when no KV activity has been observed.  This
+// covers the case where parties registered but signing never actually started
+// (e.g. all parties timed out before round 0).  Must be longer than the maximum
+// gap between the first and last party arriving (~130 s worst-case), so 180 s.
+const SIGN_SESSION_RESET_MS = 180_000;
+
+// Once signing is underway the coordinator receives a /set call for every round
+// message.  If no /set activity is seen for a session UUID for this long, the
+// signing attempt is considered dead (mirrors the TSS signer sign-round timeout).
+const SIGN_SESSION_DEAD_MS = 60_000;
+
+// UUID v4 pattern — used to identify sign-round KV keys written by GG18.
+const UUID_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// Last time a /set call was received whose key contains a given session UUID.
+// Populated by the /set handler; read by /signupsign to detect dead sessions.
+const sessionKvActivity = new Map<string, number>();
 
 // --- In-memory KV store (used by keygen/sign round relay and future-timestamp) ---
 const db = new Map<string, string>();
