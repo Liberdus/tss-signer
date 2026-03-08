@@ -212,7 +212,7 @@ if (chainConfigs.enableLiberdusNetwork) {
 let t = params.threshold
 let n = params.parties
 
-const SIGN_ROUND_TIMEOUT_MS = 20_000
+const SIGN_ROUND_TIMEOUT_MS = 60_000
 const SIGN_POLL_DELAY_MS = 100
 
 function signRound<T>(promise: Promise<T>, round: number | string): Promise<T> {
@@ -537,6 +537,7 @@ const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const txQueueProcessingInterval = 10000
 const COORDINATOR_POLL_INTERVAL = 10 * 1000 // 10s
 const COORDINATOR_FINAL_STATUS_POLL_INTERVAL = 3 * 1000 // 3s
+const COORDINATOR_FINAL_STATUS_TIMEOUT_MS = 20 * 1000 // 20s
 const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the bridgeInCooldown 1-minute)
 
 const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
@@ -1433,7 +1434,7 @@ async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionSt
 
 async function waitForCoordinatorFinalStatus(
   txId: string,
-  timeoutMs = TX_PROCESSING_TIMEOUT_MS,
+  timeoutMs: number,
 ): Promise<TransactionStatus.COMPLETED | TransactionStatus.FAILED> {
   const startTime = Date.now()
   while (true) {
@@ -2687,7 +2688,7 @@ async function main(): Promise<void> {
         let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED
         try {
           const remainingTimeoutMs = getRemainingProcessingTimeMs()
-          finalStatus = await waitForCoordinatorFinalStatus(validTx.txId, remainingTimeoutMs)
+          finalStatus = await waitForCoordinatorFinalStatus(validTx.txId, COORDINATOR_FINAL_STATUS_TIMEOUT_MS)
         } catch (waitError) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
           appendToFailedTxsLogs(validTx, 'timeout waiting for coordinator final status after enough-party')
