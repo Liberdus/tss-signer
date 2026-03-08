@@ -1,6 +1,7 @@
 import express, { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import fs from "fs/promises";
+import { readFileSync } from "fs";
 import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
@@ -62,6 +63,33 @@ async function loadParams(): Promise<Params> {
   return JSON.parse(data) as Params;
 }
 
+// Params loaded once at startup — avoids async gap in signup handlers that
+// would allow concurrent requests to both read a stale counter value before
+// either writes back, causing split sign sessions with different UUIDs.
+const _startupParams = JSON.parse(
+  readFileSync(path.join(__dirname, "../../", "params.json"), "utf8")
+) as Params;
+const MAX_PARTIES = parseInt(_startupParams.parties, 10);
+
+// How long after the last *legitimate* registration (party numbers 1..MAX_PARTIES)
+// a session is considered expired when no KV activity has been observed.  This
+// covers the case where parties registered but signing never actually started
+// (e.g. all parties timed out before round 0).  Must be longer than the maximum
+// gap between the first and last party arriving (~130 s worst-case), so 180 s.
+const SIGN_SESSION_RESET_MS = 180_000;
+
+// Once signing is underway the coordinator receives a /set call for every round
+// message.  If no /set activity is seen for a session UUID for this long, the
+// signing attempt is considered dead (mirrors the TSS signer sign-round timeout).
+const SIGN_SESSION_DEAD_MS = 60_000;
+
+// UUID v4 pattern — used to identify sign-round KV keys written by GG18.
+const UUID_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// Last time a /set call was received whose key contains a given session UUID.
+// Populated by the /set handler; read by /signupsign to detect dead sessions.
+const sessionKvActivity = new Map<string, number>();
+
 // --- In-memory KV store (used by keygen/sign round relay and future-timestamp) ---
 const db = new Map<string, string>();
 db.set("signup-keygen", JSON.stringify({ number: 0, uuid: uuidv4() }));
@@ -92,29 +120,30 @@ export function registerRoutes(app: express.Application): void {
       // console.log("set:", req.body);
       const { key, value } = req.body;
       db.set(key, value);
+      // Track KV activity per sign session UUID so /signupsign can detect
+      // dead sessions (no round messages for SIGN_SESSION_DEAD_MS).
+      const uuidMatch = key.match(UUID_REGEX);
+      if (uuidMatch) sessionKvActivity.set(uuidMatch[0], Date.now());
       res.json({ Ok: null });
     }
   );
 
   // POST /signupkeygen — round-robin keygen signup
-  app.post("/signupkeygen", verifySignedCoordinatorRequest, async (_req: Request, res: Response<Result<PartySignup>>) => {
+  app.post("/signupkeygen", verifySignedCoordinatorRequest, (_req: Request, res: Response<Result<PartySignup>>) => {
     try {
-      const { parties } = await loadParams();
-      const max = parseInt(parties, 10);
-
       console.log("Signup keygen request body:", _req.body);
       const key = _req.body;
 
-      const raw = db.get(key)!;
+      const raw = db.get(key);
       let current: PartySignup | null = null;
       try {
-        current = JSON.parse(raw);
+        if (raw) current = JSON.parse(raw);
       } catch (e) {
         console.error("Failed to parse current signup: creating new one");
       }
 
       let next: PartySignup;
-      if (current && current.number < max) {
+      if (current && current.number < MAX_PARTIES) {
         next = { number: current.number + 1, uuid: current.uuid };
       } else {
         next = { number: 1, uuid: uuidv4() };
@@ -130,34 +159,80 @@ export function registerRoutes(app: express.Application): void {
   });
 
   // POST /signupsign — round-robin sign signup
-  app.post("/signupsign", verifySignedCoordinatorRequest, async (_req: Request, res: Response<Result<PartySignup>>) => {
+  //
+  // Session semantics:
+  //   - While a session is "active" (last registration < SIGN_SESSION_RESET_MS ago),
+  //     every new registration increments the party number under the *same* UUID.
+  //     Party numbers beyond MAX_PARTIES (overflow) will cause the client to throw
+  //     enoughPartyError and wait for the active session to finalise — they do NOT
+  //     start a new competing session with a different UUID.
+  //   - Once the session has been idle for SIGN_SESSION_RESET_MS a fresh session
+  //     starts (new UUID, party number reset to 1), allowing retries after the
+  //     previous attempt has fully timed out.
+  //
+  // This handler is intentionally synchronous so that concurrent requests are
+  // serialised by Node's event loop and the read-modify-write on `db` is atomic.
+  app.post("/signupsign", verifySignedCoordinatorRequest, (_req: Request, res: Response<Result<PartySignup>>) => {
     try {
-      const { parties } = await loadParams();
-      const max = parseInt(parties, 10);
       const key = _req.body;
-      console.log("Signup sign request body:", _req.body);
+      console.log("Signup sign request body:", key);
 
-      const raw = db.get(key)!;
-      let current: PartySignup | null = null;
+      const raw = db.get(key);
+      let current: (PartySignup & { updatedAt?: number }) | null = null;
       try {
-        current = JSON.parse(raw);
+        if (raw) current = JSON.parse(raw);
       } catch (e) {
-        console.error("Failed to parse current signup: creating new one");
+        console.error("Failed to parse current signup session");
       }
 
-      let next: PartySignup;
-      if (current && current.number < max) {
-        next = { number: current.number + 1, uuid: current.uuid };
+      const now = Date.now();
+      let next: PartySignup & { updatedAt: number };
+
+      // Determine session liveness.
+      //
+      // Two expiry signals, whichever fires first:
+      //  1. KV activity timeout (SIGN_SESSION_DEAD_MS = 60 s) — once signing is
+      //     underway the coordinator receives /set calls for every round message.
+      //     Silence for 60 s means the signing attempt is dead (mirrors the TSS
+      //     signer sign-round timeout).
+      //  2. Registration timeout (SIGN_SESSION_RESET_MS = 180 s) — fallback for
+      //     sessions where signing never started (parties registered but no rounds
+      //     were ever exchanged).  Also covers the late-party window: a party
+      //     blocked in wait-final can arrive up to ~130 s after the first one.
+      const lastKvActivity = sessionKvActivity.get(current?.uuid ?? '') ?? 0;
+      const signingStarted = lastKvActivity > 0;
+      const sessionAlive = current && (
+        signingStarted
+          ? (now - lastKvActivity) < SIGN_SESSION_DEAD_MS          // KV-activity clock
+          : (now - (current.updatedAt ?? 0)) < SIGN_SESSION_RESET_MS // registration clock
+      );
+
+      if (current && sessionAlive) {
+        // Active session: increment party number, keep the same UUID.
+        // Numbers beyond MAX_PARTIES are intentional — the client checks
+        // party_num_int > t+1 and enters wait-final instead of signing.
+        //
+        // Only refresh updatedAt for legitimate registrations (≤ MAX_PARTIES).
+        // Overflow registrations preserve the original timestamp so the session
+        // still expires on schedule even if retrying parties keep registering.
+        const isOverflow = current.number >= MAX_PARTIES;
+        next = {
+          number: current.number + 1,
+          uuid: current.uuid,
+          updatedAt: isOverflow ? current.updatedAt! : now,
+        };
       } else {
-        next = { number: 1, uuid: uuidv4() };
+        // No session yet, dead, or expired: start a fresh session.
+        if (current) sessionKvActivity.delete(current.uuid);
+        next = { number: 1, uuid: uuidv4(), updatedAt: now };
       }
 
       db.set(key, JSON.stringify(next));
-      console.log("signup-sign →", key, JSON.stringify(next));
-      res.json({ Ok: next });
+      console.log("signup-sign →", key, JSON.stringify({ number: next.number, uuid: next.uuid }));
+      res.json({ Ok: { number: next.number, uuid: next.uuid } });
     } catch (e) {
       console.error(e);
-      res.status(404).json({ Err: null });
+      res.status(500).json({ Err: null });
     }
   });
 

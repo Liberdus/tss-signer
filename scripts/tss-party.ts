@@ -212,7 +212,7 @@ if (chainConfigs.enableLiberdusNetwork) {
 let t = params.threshold
 let n = params.parties
 
-const SIGN_ROUND_TIMEOUT_MS = 20_000
+const SIGN_ROUND_TIMEOUT_MS = 60_000 // 1 minute (must match Rust ROUND_TIMEOUT_MS)
 const SIGN_POLL_DELAY_MS = 100
 
 function signRound<T>(promise: Promise<T>, round: number | string): Promise<T> {
@@ -742,9 +742,16 @@ const loadQueueFromFile = (partyIdx: number): void => {
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
 
-    // Restore txQueueMap
+    // Restore txQueueMap.
+    // Any entry that was 'processing' at save time is orphaned on restart
+    // (processingTransactionIds is in-memory and starts empty).  Reset those
+    // to 'failed' so the coordinator poll re-queues them on the next cycle.
     if (Array.isArray(data.map)) {
       for (const [txId, entry] of data.map as [string, TxQueueEntry][]) {
+        if (entry.status === 'processing') {
+          entry.status = 'failed'
+          console.warn(`[loadQueue] Resetting orphaned processing tx to failed: ${txId}`)
+        }
         txQueueMap.set(txId, entry)
       }
     }
@@ -2294,10 +2301,25 @@ function emergencyCleanup() {
   }
 }
 
-// Add function to clean up stuck transactions
+// Detect and recover transactions that are marked 'processing' in txQueueMap
+// but are no longer in processingTransactionIds (e.g. due to an unhandled
+// error that bypassed the finally block).  Without this they would block the
+// queue until the 24-hour cleanupOldTransactions sweep.
 function cleanupStuckTransactions() {
+  let fixed = 0
+  for (const [txId, entry] of txQueueMap.entries()) {
+    if (entry.status === 'processing' && !processingTransactionIds.has(txId)) {
+      entry.status = 'failed'
+      fixed++
+      console.warn(`[cleanupStuck] Resetting orphaned processing tx to failed: ${txId}`)
+    }
+  }
+  if (fixed > 0) {
+    console.warn(`[cleanupStuck] Reset ${fixed} orphaned transaction(s) — will be retried on next coordinator poll`)
+    saveQueueToFile(ourParty.idx)
+  }
   if (processingTransactionIds.size > MAX_CONCURRENT_TXS) {
-    console.warn(`⚠️ processingTransactionIds has ${processingTransactionIds.size} entries, expected ≤ ${MAX_CONCURRENT_TXS}. Potential stuck transactions.`)
+    console.warn(`⚠️ processingTransactionIds has ${processingTransactionIds.size} entries, expected ≤ ${MAX_CONCURRENT_TXS}`)
   }
 }
 
@@ -2657,38 +2679,34 @@ async function main(): Promise<void> {
       }
     } catch (error: any) {
       if (error.message === enoughPartyError) {
-        // Handle the "enough party" error - this means other parties already completed the signing
-        // Keep this tx in local "processing" until coordinator finalizes it.
-        console.log('Transaction already signed by enough parties, waiting for coordinator final status:', validTx.txId)
+        // Another t+1 party subset already claimed the signing slots.
+        // Do a single status ping instead of blocking in a long poll:
+        //   - COMPLETED/FAILED → handle and move on immediately
+        //   - PENDING          → release the slot now; the normal coordinator
+        //                        poll will re-queue this tx on the next cycle
+        //                        (~10 s) so this party stays available for the
+        //                        next signing attempt without blocking.
+        console.log(`[enough-party] Pinging coordinator for final status: ${validTx.txId}`)
+        const quickStatus = await checkTxStatusFromCoordinator(validTx.txId)
 
-        let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED
-        try {
-          const remainingTimeoutMs = getRemainingProcessingTimeMs()
-          finalStatus = await waitForCoordinatorFinalStatus(validTx.txId, remainingTimeoutMs)
-        } catch (waitError) {
-          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-          appendToFailedTxsLogs(validTx, 'timeout waiting for coordinator final status after enough-party')
-          saveQueueToFile(ourParty.idx)
-          console.warn(`[wait-final] Timed out waiting for final status for ${validTx.txId}`)
-          throw waitError
-        }
-
-        if (finalStatus === TransactionStatus.COMPLETED) {
+        if (quickStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           markTransactionCompleted(validTx.txId)
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
-          console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED on coordinator`)
-        } else {
+          console.log(`[enough-party] ${validTx.txId} already COMPLETED on coordinator`)
+        } else if (quickStatus === TransactionStatus.FAILED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-          appendToFailedTxsLogs(validTx, 'finalized as failed on coordinator after enough-party')
-          console.warn(`[wait-final] ${validTx.txId} finalized as FAILED on coordinator`)
+          appendToFailedTxsLogs(validTx, 'already failed on coordinator at enough-party check')
+          console.warn(`[enough-party] ${validTx.txId} already FAILED on coordinator`)
+        } else {
+          // Still PENDING — signing is either in progress or has not yet
+          // succeeded.  Release the slot and let the coordinator poll re-queue.
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+          console.log(`[enough-party] ${validTx.txId} still PENDING — releasing slot for re-queue`)
         }
 
         saveQueueToFile(ourParty.idx)
-
-        // Additional cleanup for "enough party" scenarios to prevent memory leaks
-        console.log('🧹 Performing cleanup after "enough party" wait')
-        checkPostTransactionMemory(validTx.txId, 'enough-party-wait-final')
+        checkPostTransactionMemory(validTx.txId, 'enough-party-fast-fail')
         if (global.gc) {
           global.gc()
         }

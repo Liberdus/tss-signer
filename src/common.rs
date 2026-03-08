@@ -15,9 +15,12 @@ use crate::curv::{
     elliptic::curves::secp256_k1::{Secp256k1Point as Point, Secp256k1Scalar as Scalar},
 };
 
+use futures::future::{select, Either};
+use futures::pin_mut;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
+use std::future::Future;
 
 use crate::errors::Result;
 use crate::shardus_crypto::maybe_sign_request_body;
@@ -200,10 +203,50 @@ pub async fn sendp2p(
     })
 }
 
-const MAX_POLL_ATTEMPTS: u32 = 200; // 200 * delay_ms ≈ 20s per party per round
+/// Max time to wait for the whole round; the promise will resolve (with timeout error) within this time.
+const ROUND_TIMEOUT_MS: u32 = 60_000; // 1 minute
+const MAX_POLL_ATTEMPTS: u32 = 10_000; // safety cap on iterations per party
 const POLL_DEBUG_LOGS: bool = false;
 
+/// Runs a future and returns its result, or a timeout error if it doesn't complete within `timeout_ms`.
+async fn with_timeout<F, T>(timeout_ms: u32, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let timeout_fut = async move {
+        sleep(timeout_ms).await;
+        Err(TssError::UnknownError {
+            msg: format!("operation timed out after {} ms", timeout_ms),
+            line: line!(),
+        })
+    };
+    pin_mut!(future);
+    pin_mut!(timeout_fut);
+    match select(future, timeout_fut).await {
+        Either::Left((res, _)) => res,
+        Either::Right((err, _)) => err,
+    }
+}
+
 pub async fn poll_for_broadcasts(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    n: u16,
+    round: &str,
+    sender_uuid: String,
+    delay: u32,
+) -> Result<Vec<String>> {
+    let addr = addr.to_string();
+    let round = round.to_string();
+    with_timeout(
+        ROUND_TIMEOUT_MS,
+        poll_for_broadcasts_inner(client, &addr, party_num, n, &round, sender_uuid, delay),
+    )
+    .await
+}
+
+async fn poll_for_broadcasts_inner(
     client: &Client,
     addr: &str,
     party_num: u16,
@@ -223,21 +266,18 @@ pub async fn poll_for_broadcasts(
             let key = format!("{}-{}-{}", i, round, sender_uuid);
             let index = Index { key };
             let mut attempts = 0u32;
-            let mut total_wait_ms = 0u32;
             loop {
                 sleep(delay).await;
                 attempts += 1;
-                total_wait_ms += delay;
                 if attempts > MAX_POLL_ATTEMPTS {
                     return Err(TssError::UnknownError {
                         msg: format!(
-                            "poll_for_broadcasts timed out waiting for party {} in round {} after {} attempts (delay {}ms, {} ms total wait)",
-                            i, round, attempts, delay, total_wait_ms
+                            "poll_for_broadcasts too many attempts waiting for party {} in round {} ({} attempts)",
+                            i, round, attempts
                         ),
                         line: line!(),
                     });
                 }
-                // add delay to allow the server to process request:
                 let res_body = postb(client, addr, "get", index.clone()).await?;
                 let answer: std::result::Result<Entry, ()> = serde_json::from_str(&res_body)?;
                 if let Ok(answer) = answer {
@@ -248,10 +288,28 @@ pub async fn poll_for_broadcasts(
             }
         }
     }
-    return Ok(ans_vec);
+    Ok(ans_vec)
 }
 
 pub async fn poll_for_p2p(
+    client: &Client,
+    addr: &str,
+    party_num: u16,
+    n: u16,
+    delay: u32,
+    round: &str,
+    sender_uuid: String,
+) -> Result<Vec<String>> {
+    let addr = addr.to_string();
+    let round = round.to_string();
+    with_timeout(
+        ROUND_TIMEOUT_MS,
+        poll_for_p2p_inner(client, &addr, party_num, n, delay, &round, sender_uuid),
+    )
+    .await
+}
+
+async fn poll_for_p2p_inner(
     client: &Client,
     addr: &str,
     party_num: u16,
@@ -270,17 +328,14 @@ pub async fn poll_for_p2p(
             let key = format!("{}-{}-{}-{}", i, party_num, round, sender_uuid);
             let index = Index { key };
             let mut attempts = 0u32;
-            let mut total_wait_ms = 0u32;
             loop {
-                // add delay to allow the server to process request:
                 sleep(delay).await;
                 attempts += 1;
-                total_wait_ms += delay;
                 if attempts > MAX_POLL_ATTEMPTS {
                     return Err(TssError::UnknownError {
                         msg: format!(
-                            "poll_for_p2p timed out waiting for party {} in round {} after {} attempts ({} ms total wait)",
-                            i, round, attempts, total_wait_ms
+                            "poll_for_p2p too many attempts waiting for party {} in round {} ({} attempts)",
+                            i, round, attempts
                         ),
                         line: line!(),
                     });
