@@ -200,7 +200,7 @@ pub async fn sendp2p(
     })
 }
 
-const MAX_POLL_ATTEMPTS: u32 = 200; // 200 * delay_ms ≈ 20s per party per round
+const MAX_POLL_ATTEMPTS: u32 = 600; // 200 * delay_ms ≈ 20s per party per round
 const POLL_DEBUG_LOGS: bool = false;
 
 pub async fn poll_for_broadcasts(
