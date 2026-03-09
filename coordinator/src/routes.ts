@@ -8,7 +8,7 @@ import { isNormalizedTxId, normalizeTxId } from "./utils/transformTxId";
 import { verifyTxOnChain, FAILED_IN_EXECUTION_REASON } from "./verification";
 import { monitorEthereumBridgeOutQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
-import { syncReady } from "./monitor/state";
+import { syncReady, monitorState } from "./monitor/state";
 import { verifySignedCoordinatorRequest } from "./auth";
 
 // --- Types ---
@@ -54,12 +54,15 @@ type TransactionAPIQueryParameters = {
 };
 
 // --- Helpers ---
-async function loadParams(): Promise<Params> {
-  const data = await fs.readFile(
-    path.join(__dirname, "../../", "params.json"),
-    "utf8"
-  );
-  return JSON.parse(data) as Params;
+// Cached params — read once from disk on first use, reused on all subsequent calls.
+let _paramsCache: Promise<Params> | null = null;
+function loadParams(): Promise<Params> {
+  if (!_paramsCache) {
+    _paramsCache = fs
+      .readFile(path.join(__dirname, "../../", "params.json"), "utf8")
+      .then((data) => JSON.parse(data) as Params);
+  }
+  return _paramsCache;
 }
 
 // --- In-memory KV store (used by keygen/sign round relay and future-timestamp) ---
@@ -68,6 +71,50 @@ db.set("signup-keygen", JSON.stringify({ number: 0, uuid: uuidv4() }));
 db.set("signup-sign", JSON.stringify({ number: 0, uuid: uuidv4() }));
 
 export function registerRoutes(app: express.Application): void {
+  // GET /status — always available; reports whether the coordinator has
+  // finished its initial ordered sync (BridgedOut → Liberdus → BridgedIn).
+  app.get("/status", (_req, res) => {
+    res.json({ syncReady });
+  });
+
+  // GET /health — always available; detailed coordinator health snapshot.
+  app.get("/health", async (_req, res) => {
+    try {
+      const { pending, processing, completed, failed } =
+        await TransactionDB.getTransactionCountsByStatus();
+
+      const mem = process.memoryUsage();
+
+      res.json({
+        status: syncReady ? "ready" : "syncing",
+        uptime: Math.floor(process.uptime()),
+        monitorState: {
+          blocks: monitorState.blocks,
+          vault: monitorState.vault,
+          bridgeInBlocks: monitorState.bridgeInBlocks,
+          lastLiberdusTimestamp: new Date(monitorState.lastLiberdusTimestamp).toISOString(),
+        },
+        transactions: { pending, processing, completed, failed },
+        memory: {
+          heapUsedMB: +(mem.heapUsed / 1024 / 1024).toFixed(1),
+          rssMB: +(mem.rss / 1024 / 1024).toFixed(1),
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ Err: "Failed to collect health data" });
+    }
+  });
+
+  // Block all other routes while the initial sync is in progress.
+  // TSS parties receive a 503 and should skip/retry rather than proceeding.
+  app.use((_req, res, next) => {
+    if (!syncReady) {
+      res.status(503).json({ Err: "Coordinator is syncing — please retry shortly" });
+      return;
+    }
+    next();
+  });
+
   // POST /get — fetch an Entry by key
   app.post(
     "/get",

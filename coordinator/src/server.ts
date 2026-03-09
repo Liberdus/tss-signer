@@ -36,18 +36,7 @@ const app = express();
 app.use(
   cors({ origin: true, methods: ["GET", "POST", "PATCH"], credentials: true })
 );
-app.use(express.text({ type: "application/json" }));
 app.use(express.json());
-app.use((req, _res, next) => {
-  if (req.body && typeof req.body === "string") {
-    try {
-      req.body = JSON.parse(req.body);
-    } catch (e) {
-      console.warn("Failed to parse JSON body", e);
-    }
-  }
-  next();
-});
 
 registerRoutes(app);
 
@@ -69,6 +58,13 @@ const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
       "[monitor] Loaded monitor state. Last Liberdus timestamp:",
       new Date(monitorState.lastLiberdusTimestamp).toISOString()
     );
+
+    // Bind the port before the initial sync so TSS parties receive a proper
+    // 503 response (with Retry-After) instead of ECONNREFUSED.  All routes
+    // except GET /status are blocked by the middleware above until syncReady.
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT} (initial sync in progress)`);
+    });
 
     // ---------------------------------------------------------------------------
     // Initial ordered sync before accepting pending transaction queries.
@@ -128,10 +124,6 @@ const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
         LIB_MONITOR_INTERVAL_MS
       );
     }
-
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
   } catch (err) {
     console.error("Failed to initialize the application:", err);
     process.exit(1);
