@@ -2155,7 +2155,6 @@ function logMemoryUsage() {
     txQueueMapSize: txQueueMap.size,
     processingSize: processingTransactionIds.size,
     pendingTxQueueLength: pendingTxQueue.length,
-    recentlyCompletedSize: recentlyCompletedTxs.size
   })
   
   // More aggressive memory management thresholds
@@ -2225,39 +2224,6 @@ function checkPostTransactionMemory(txId: string, operationType: string) {
   }
 }
 
-// Track recently completed transactions to avoid duplicate processing
-const recentlyCompletedTxs = new Map<string, number>() // txId -> timestamp
-
-function isRecentlyCompleted(txId: string): boolean {
-  const completedTime = recentlyCompletedTxs.get(txId)
-  if (!completedTime) return false
-  
-  const now = Date.now()
-  const maxAge = 10 * 60 * 1000 // 10 minutes
-  
-  if (now - completedTime > maxAge) {
-    recentlyCompletedTxs.delete(txId)
-    return false
-  }
-  
-  return true
-}
-
-function markTransactionCompleted(txId: string) {
-  recentlyCompletedTxs.set(txId, Date.now())
-  
-  // Clean up old entries periodically
-  if (recentlyCompletedTxs.size > 1000) {
-    const now = Date.now()
-    const maxAge = 10 * 60 * 1000
-    
-    for (const [id, timestamp] of recentlyCompletedTxs.entries()) {
-      if (now - timestamp > maxAge) {
-        recentlyCompletedTxs.delete(id)
-      }
-    }
-  }
-}
 
 // Add emergency cleanup function for when queues get too large
 function emergencyCleanup() {
@@ -2604,8 +2570,8 @@ async function main(): Promise<void> {
     const getRemainingProcessingTimeMs = (): number =>
       Math.max(0, TX_PROCESSING_TIMEOUT_MS - (Date.now() - startTime))
     
-    // Check if this transaction was recently completed to avoid duplicate processing
-    if (isRecentlyCompleted(txId)) {
+    // Check if this transaction was already completed to avoid duplicate processing
+    if (txQueueMap.get(txId)?.status === 'completed') {
       console.log(`⏩ Transaction ${txId} was recently completed, skipping duplicate processing`)
       txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       removeFromPendingTxQueue(txId)
@@ -2618,7 +2584,6 @@ async function main(): Promise<void> {
     if (preProcessStatus != null) {
       removeFromPendingTxQueue(txId)
       if (preProcessStatus === 'completed') {
-        markTransactionCompleted(txId)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       } else if (preProcessStatus === 'failed') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
@@ -2670,16 +2635,13 @@ async function main(): Promise<void> {
         console.log('Transaction processed successfully:', validTx)
         // Remove the tx from the queue
         removeFromPendingTxQueue(txId)
-        // Mark transaction as completed to prevent duplicate processing
-        markTransactionCompleted(validTx.txId)
       } else if (outcome === 'failed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         console.warn(`Transaction ${validTx.txId} reported failed outcome during processing`)
       } else if (outcome === 'skipped_coordinator_completed') {
         console.log(`Transaction ${validTx.txId} was already completed on coordinator (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
-        removeFromPendingTxQueue(txId) 
-        markTransactionCompleted(validTx.txId)
+        removeFromPendingTxQueue(txId)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_coordinator_failed') {
         console.log(`Transaction ${validTx.txId} was already failed on coordinator (pre-sign), skipping`)
@@ -2716,7 +2678,6 @@ async function main(): Promise<void> {
         if (finalStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           removeFromPendingTxQueue(txId)
-          markTransactionCompleted(validTx.txId)
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
           console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED on coordinator`)
         } else if (finalStatus === TransactionStatus.FAILED) {
