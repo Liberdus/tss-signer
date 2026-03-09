@@ -2132,7 +2132,7 @@ function logMemoryUsage() {
   const rssMB = usage.rss / 1024 / 1024
   
   // Force garbage collection if memory usage is high (lower thresholds)
-  if (heapUsedMB > 40 && global.gc) { // Reduced from 50MB to 40MB
+  if (heapUsedMB > 500 && global.gc) { // Raised from 40MB — Node.js baseline overhead makes lower thresholds fire constantly
     console.log('⚠️ High heap usage detected, forcing garbage collection')
     const beforeGC = usage.heapUsed
     global.gc()
@@ -2147,7 +2147,7 @@ function logMemoryUsage() {
   }
   
   // Monitor RSS memory growth (resident set size - actual memory usage)
-  if (rssMB > 120) { // Alert if RSS exceeds 120MB
+  if (rssMB > 1024) { // Alert if RSS exceeds 1GB
     console.warn(`⚠️ High RSS memory usage: ${formatMB(usage.rss)}. Triggering aggressive cleanup.`)
     cleanupOldTransactions()
     if (global.gc) {
@@ -2178,7 +2178,7 @@ function checkPostTransactionMemory(txId: string, operationType: string) {
   })
   
   // If memory usage spiked after transaction, force cleanup
-  if (heapUsedMB > 45 || rssMB > 110) {
+  if (heapUsedMB > 500 || rssMB > 1024) {
     console.warn(`🚨 Memory spike detected after ${operationType} (${txId}). Forcing immediate cleanup.`)
     if (global.gc) {
       global.gc()
