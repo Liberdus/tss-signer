@@ -1317,8 +1317,8 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         console.warn(`[poll] Skipping tx ${tx.txId} — missing required fields (txTimestamp/sender/value/chainId)`, tx)
         continue
       }
-      if (!await verifyCoordinatorTxData(tx)) {
-        console.warn(`[poll] Skipping tx ${tx.txId} — failed on-chain verification`)
+      if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED) {
+        console.log(`[poll] Skipping tx ${tx.txId} — coordinator reports ${tx.status === TransactionStatus.COMPLETED ? 'COMPLETED' : 'FAILED'}`)
         continue
       }
       const existingEntry = txQueueMap.get(tx.txId)
@@ -1331,6 +1331,11 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         } else {
           continue
         }
+      }
+
+      if (!await verifyCoordinatorTxData(tx)) {
+        console.warn(`[poll] Skipping tx ${tx.txId} — failed on-chain verification`)
+        continue
       }
 
       const bridgeType: TransactionQueueItem['type'] =
@@ -1756,7 +1761,12 @@ async function processCoinToToken(
     await refreshBridgeStateOnRevert(reason, targetChainId)
   }
 
-  const receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+  let receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+  if (!receipt) {
+    // Tx may have been broadcast but not yet mined — retry once after a short delay
+    await delay_ms(3000)
+    receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+  }
   if (receipt) {
     if (receipt.status === 1) {
       console.log(
