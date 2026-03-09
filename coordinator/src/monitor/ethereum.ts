@@ -275,7 +275,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
           // Advance cursor and persist block state
           cursor = batchEnd + 1;
           blockMap[chainKey] = batchEnd;
-          saveMonitorState();
+          await saveMonitorState();
 
           // Gradually recover batch size after a successful batch
           if (batchSize < MAX_BATCH_SIZE) {
@@ -534,7 +534,7 @@ export async function monitorEthereumBridgeInQueryFilter(
         // Advance cursor and persist block state
         cursor = batchEnd + 1;
         monitorState.bridgeInBlocks[chainId.toString()] = batchEnd;
-        saveMonitorState();
+        await saveMonitorState();
 
         // Gradually recover batch size after a successful batch
         if (batchSize < MAX_BATCH_SIZE) {

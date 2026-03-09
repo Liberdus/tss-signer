@@ -152,12 +152,16 @@ export function registerRoutes(app: express.Application): void {
       console.log("Signup keygen request body:", _req.body);
       const key = _req.body;
 
-      const raw = db.get(key)!;
+      const raw = db.get(key);
       let current: PartySignup | null = null;
-      try {
-        current = JSON.parse(raw);
-      } catch (e) {
-        console.error("Failed to parse current signup: creating new one");
+      if (raw !== undefined) {
+        try {
+          current = JSON.parse(raw);
+        } catch (e) {
+          console.error("Failed to parse current signup for key:", key, "— creating new one");
+        }
+      } else {
+        console.log("signup-keygen: creating new one");
       }
 
       let next: PartySignup;
@@ -184,12 +188,16 @@ export function registerRoutes(app: express.Application): void {
       const key = _req.body;
       console.log("Signup sign request body:", _req.body);
 
-      const raw = db.get(key)!;
+      const raw = db.get(key);
       let current: PartySignup | null = null;
-      try {
-        current = JSON.parse(raw);
-      } catch (e) {
-        console.error("Failed to parse current signup: creating new one");
+      if (raw !== undefined) {
+        try {
+          current = JSON.parse(raw);
+        } catch (e) {
+          console.error("Failed to parse current signup for key:", key, "— creating new one");
+        }
+      } else {
+        console.log("signup-sign: creating new one");
       }
 
       let next: PartySignup;

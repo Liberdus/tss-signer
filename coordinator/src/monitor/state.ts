@@ -1,4 +1,5 @@
 import fs from "fs";
+import fsPromises from "fs/promises";
 import path from "path";
 
 // ---------------------------------------------------------------------------
@@ -50,9 +51,11 @@ export function initMonitorState(): void {
   }
 }
 
-export function saveMonitorState(): void {
+export async function saveMonitorState(): Promise<void> {
+  const tmp = MONITOR_STATE_PATH + ".tmp";
   try {
-    fs.writeFileSync(MONITOR_STATE_PATH, JSON.stringify(monitorState), "utf8");
+    await fsPromises.writeFile(tmp, JSON.stringify(monitorState), "utf8");
+    await fsPromises.rename(tmp, MONITOR_STATE_PATH);
   } catch (e) {
     console.error("[monitor] Failed to save monitor state:", e);
   }
