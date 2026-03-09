@@ -1262,9 +1262,9 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
     const url = `${coordinatorUrl}/transaction?unprocessed=true`
     const response = await axios.get(url, {timeout: COORDINATOR_POLL_INTERVAL})
     const data = response.data
-    if (verboseLogs) {
-      console.log('Received pending transactions from coordinator:', data.Ok.transactions)
-    }
+    // if (verboseLogs) {
+    //   console.log('Received pending transactions from coordinator:', data.Ok.transactions)
+    // }
     if (!data?.Ok?.transactions) return
 
     const transactions: Transaction[] = data.Ok.transactions
@@ -1303,6 +1303,7 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         }
       }
 
+      console.log(`[poll] Verifying new tx:`, tx)
       if (!await verifyCoordinatorTxData(tx)) {
         console.warn(`[poll] Skipping tx ${tx.txId} — failed on-chain verification`)
         continue
@@ -2562,8 +2563,8 @@ async function main(): Promise<void> {
     const {txId} = validTx
     const startTime = Date.now()
 
-    const getRemainingProcessingTimeMs = (): number =>
-      Math.max(0, TX_PROCESSING_TIMEOUT_MS - (Date.now() - startTime))
+    // const getRemainingProcessingTimeMs = (): number =>
+    //   Math.max(0, TX_PROCESSING_TIMEOUT_MS - (Date.now() - startTime))
     
     // Check if this transaction was already completed to avoid duplicate processing
     if (txQueueMap.get(txId)?.status === 'completed') {
@@ -2646,6 +2647,9 @@ async function main(): Promise<void> {
         appendToFailedTxsLogs(validTx, 'already failed on coordinator before signing')
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
+
+      // Save the queue to file
+      saveQueueToFile(ourParty.idx)
       
       // Check memory usage after successful transaction
       checkPostTransactionMemory(validTx.txId, 'transaction-success')
@@ -2662,7 +2666,7 @@ async function main(): Promise<void> {
 
         let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED
         try {
-          const remainingTimeoutMs = getRemainingProcessingTimeMs()
+          // const remainingTimeoutMs = getRemainingProcessingTimeMs()
           finalStatus = await waitForCoordinatorFinalStatus(validTx.txId, COORDINATOR_FINAL_STATUS_TIMEOUT_MS)
         } catch (waitError) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
