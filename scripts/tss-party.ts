@@ -86,7 +86,7 @@ interface TransactionQueueItem {
 
 interface TxQueueEntry {
   txTimestamp: number // milliseconds, from coordinator (blockchain time * 1000)
-  status: 'pending' | 'processing' | 'completed' | 'failed'
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'reverted'
 }
 
 interface KeyShare {
@@ -120,7 +120,7 @@ interface SignedTx {
   }
 }
 
-type ProcessOutcome = 'completed' | 'failed' | 'skipped_coordinator_completed' | 'skipped_coordinator_failed'
+type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_coordinator_completed' | 'skipped_coordinator_failed' | 'skipped_coordinator_reverted'
 
 // Transaction interface saved in the coordinator
 export interface Transaction {
@@ -156,6 +156,18 @@ export enum TransactionStatus {
   PROCESSING = 1,
   COMPLETED = 2,
   FAILED = 3,
+  REVERTED = 4, // tx executed but reverted on-chain
+}
+
+function txStatusLabel(status: TransactionStatus): string {
+  switch (status) {
+    case TransactionStatus.PENDING:    return 'PENDING'
+    case TransactionStatus.PROCESSING: return 'PROCESSING'
+    case TransactionStatus.COMPLETED:  return 'COMPLETED'
+    case TransactionStatus.FAILED:     return 'FAILED'
+    case TransactionStatus.REVERTED:   return 'REVERTED'
+    default: return `UNKNOWN(${status})`
+  }
 }
 
 export enum TransactionType {
@@ -541,8 +553,6 @@ const COORDINATOR_FINAL_STATUS_TIMEOUT_MS = 20 * 1000 // 20s
 const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the bridgeInCooldown 1-minute)
 
 const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
-
-const FAILED_IN_EXECUTION_REASON = 'failed in execution'
 
 const TX_DATA_STORE_MAX_ENTRIES = 500
 const TX_DATA_STORE_MAX_FILES = 5
@@ -1287,15 +1297,15 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         console.warn(`[poll] Skipping tx ${tx.txId} — missing required fields (txTimestamp/sender/value/chainId)`, tx)
         continue
       }
-      if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED) {
-        console.log(`[poll] Skipping tx ${tx.txId} — coordinator reports ${tx.status === TransactionStatus.COMPLETED ? 'COMPLETED' : 'FAILED'}`)
+      if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED || tx.status === TransactionStatus.REVERTED) {
+        console.log(`[poll] Skipping tx ${tx.txId} — coordinator reports ${txStatusLabel(tx.status)}`)
         continue
       }
       const existingEntry = txQueueMap.get(tx.txId)
       if (existingEntry) {
-        // If we previously marked it failed but the coordinator still shows it pending, retry
-        if (existingEntry.status === 'failed' && !pendingTxQueue.some(t => t.txId === tx.txId)) {
-          console.log(`[poll] Retrying tx ${tx.txId} — previously failed locally but coordinator reports pending`)
+        // If we previously marked it failed/reverted but the coordinator still shows it pending, retry
+        if ((existingEntry.status === 'failed' || existingEntry.status === 'reverted') && !pendingTxQueue.some(t => t.txId === tx.txId)) {
+          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but coordinator reports pending`)
           existingEntry.status = 'pending'
           // fall through to re-queue below
         } else {
@@ -1382,7 +1392,7 @@ function isValidTransactionStatus(value: unknown): value is TransactionStatus {
     typeof value === 'number' &&
     Number.isInteger(value) &&
     value >= TransactionStatus.PENDING &&
-    value <= TransactionStatus.FAILED
+    value <= TransactionStatus.REVERTED
   )
 }
 
@@ -1422,7 +1432,7 @@ async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionSt
 async function waitForCoordinatorFinalStatus(
   txId: string,
   timeoutMs: number,
-): Promise<TransactionStatus.COMPLETED | TransactionStatus.FAILED> {
+): Promise<TransactionStatus.COMPLETED | TransactionStatus.FAILED | TransactionStatus.REVERTED> {
   const startTime = Date.now()
   while (true) {
     if (Date.now() - startTime > timeoutMs) {
@@ -1430,16 +1440,13 @@ async function waitForCoordinatorFinalStatus(
     }
     try {
       const status = await checkTxStatusFromCoordinator(txId)
-      if (status === TransactionStatus.COMPLETED || status === TransactionStatus.FAILED) {
+      if (status === TransactionStatus.COMPLETED || status === TransactionStatus.FAILED || status === TransactionStatus.REVERTED) {
         return status
       }
       if (status == null) {
         console.warn(`[wait-final] ${txId} not found on coordinator yet, waiting...`)
       } else {
-        const statusLabel =
-          status === TransactionStatus.PENDING ? 'PENDING' : 
-          status === TransactionStatus.PROCESSING ? 'PROCESSING' : `UNKNOWN(${status})`
-        console.log(`[wait-final] ${txId} still ${statusLabel} on coordinator, waiting...`)
+        console.log(`[wait-final] ${txId} still ${txStatusLabel(status)} on coordinator, waiting...`)
       }
     } catch (error) {
       console.warn(`[wait-final] Coordinator status check failed for ${txId}, retrying...`, error)
@@ -1467,15 +1474,15 @@ async function refreshLastBridgeInTime(
 async function reconcileTxStatusWithCoordinator(
   txId: string,
   context: 'pre-process' | 'pre-sign',
-): Promise<null | 'completed' | 'failed'> {
+): Promise<null | 'completed' | 'failed' | 'reverted'> {
   try {
     const status = await checkTxStatusFromCoordinator(txId)
     if (status == null || status === TransactionStatus.PENDING || status === TransactionStatus.PROCESSING) {
       return null
     }
-    const statusLabel =
-      status === TransactionStatus.COMPLETED ? 'completed' : 'failed'
-    console.log(`⏩ ${txId} already ${statusLabel} on coordinator (${context}), skipping`)
+    const statusLabel = status === TransactionStatus.COMPLETED ? 'completed' :
+      status === TransactionStatus.REVERTED ? 'reverted' : 'failed'
+    console.log(`⏩ ${txId} already ${txStatusLabel(status)} on coordinator (${context}), skipping`)
     return statusLabel
   } catch (error: any) {
     console.warn(`[${context}] Coordinator status check failed for ${txId}, proceeding with tx:`, error)
@@ -1706,7 +1713,7 @@ async function processCoinToToken(
   let digest = ethersUtils.keccak256(unsignedTx)
 
   const coordinatorStatusCoinToToken = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
-  if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : 'skipped_coordinator_failed'
+  if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusCoinToToken === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing
   let keyShare = await DKG(ourParty, targetChainId)
@@ -1750,16 +1757,17 @@ async function processCoinToToken(
       chainProvider.lastBridgeInTime = block.timestamp
       // Send tx status to coordinator
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+      return 'completed'
     } else {
       console.log(
         `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      // If the tx is failed in execution, send it as completed but add reason: FAILED_IN_EXECUTION_REASON
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash, FAILED_IN_EXECUTION_REASON)
+      // Tx was failed in execution
+      sendTxStatusToCoordinator(txId, TransactionStatus.REVERTED, txHash, '')
+      return 'reverted'
     }
-    return 'completed'
   } else {
     console.log(
       `Transaction failed - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
@@ -1855,7 +1863,7 @@ async function processVaultBridge(
   let digest = ethersUtils.keccak256(unsignedTx)
 
   const coordinatorStatusVaultBridge = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
-  if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : 'skipped_coordinator_failed'
+  if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusVaultBridge === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use destination chain's keystore for signing
   let keyShare = await DKG(ourParty, destinationChainId)
@@ -1895,16 +1903,17 @@ async function processVaultBridge(
       const block = await destChainProvider.provider.getBlock(receipt.blockNumber)
       destChainProvider.lastBridgeInTime = block.timestamp
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+      return 'completed'
     } else {
       console.log(
         `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      // If the tx is failed in execution, send it as completed but add reason: FAILED_IN_EXECUTION_REASON 
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash, FAILED_IN_EXECUTION_REASON)
+      // Tx was failed in execution
+      sendTxStatusToCoordinator(txId, TransactionStatus.REVERTED, txHash, '')
+      return 'reverted'
     }
-    return 'completed'
   } else {
     console.log(
       `EVM-to-EVM transaction failed - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
@@ -1967,7 +1976,7 @@ async function processTokenToCoin(
   let digest = ethersUtils.hashMessage(hashMessage)
 
   const coordinatorStatusTokenToCoin = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
-  if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : 'skipped_coordinator_failed'
+  if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusTokenToCoin === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
   let keyShare = await DKG(ourParty, sourceChainId)
@@ -2014,17 +2023,17 @@ async function processTokenToCoin(
       )
       // Send tx status to coordinator
       sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId)
+      return 'completed'
     } else {
       console.log(
         `Transaction is failed in execution - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${receipt.reason}`,
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, receipt.reason)
-      // Send tx status to coordinator
-      // If the tx is failed in execution, send it as completed but add reason: FAILED_IN_EXECUTION_REASON
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId, FAILED_IN_EXECUTION_REASON)
+      // Tx was failed in execution
+      sendTxStatusToCoordinator(txId, TransactionStatus.REVERTED, signedTxId, '')
+      return 'reverted'
     }
-    return 'completed'
   } else {
     console.log(
       `Transaction is failed - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${res.reason}`,
@@ -2498,9 +2507,12 @@ async function main(): Promise<void> {
 
       if (coordinatorStatus === TransactionStatus.COMPLETED) {
         entry.status = 'completed'
-        // Remove from pendingTxQueue if present
         removeFromPendingTxQueue(txId)
         console.log(`[startup] ${txId} already COMPLETED on coordinator, skipping`)
+      } else if (coordinatorStatus === TransactionStatus.REVERTED) {
+        entry.status = 'reverted'
+        removeFromPendingTxQueue(txId)
+        console.log(`[startup] ${txId} already REVERTED on coordinator, skipping`)
       } else if (coordinatorStatus === TransactionStatus.FAILED) {
         entry.status = 'failed'
         const txData = pendingTxQueue.find(t => t.txId === txId)
@@ -2584,6 +2596,9 @@ async function main(): Promise<void> {
       removeFromPendingTxQueue(txId)
       if (preProcessStatus === 'completed') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+      } else if (preProcessStatus === 'reverted') {
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        appendToFailedTxsLogs(validTx, 'already reverted on coordinator at pre-process')
       } else if (preProcessStatus === 'failed') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed on coordinator at pre-process')
@@ -2634,12 +2649,23 @@ async function main(): Promise<void> {
         console.log('Transaction processed successfully:', validTx)
         // Remove the tx from the queue
         removeFromPendingTxQueue(txId)
+      } else if (outcome === 'reverted') {
+        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        appendToFailedTxsLogs(validTx, 'reverted on-chain')
+        console.warn(`Transaction ${validTx.txId} was executed but reverted on-chain`)
+        removeFromPendingTxQueue(txId)
       } else if (outcome === 'failed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         console.warn(`Transaction ${validTx.txId} reported failed outcome during processing`)
       } else if (outcome === 'skipped_coordinator_completed') {
         console.log(`Transaction ${validTx.txId} was already completed on coordinator (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+        removeFromPendingTxQueue(txId)
+        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+      } else if (outcome === 'skipped_coordinator_reverted') {
+        console.log(`Transaction ${validTx.txId} was already reverted on coordinator (pre-sign), skipping`)
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        appendToFailedTxsLogs(validTx, 'already reverted on coordinator before signing')
         removeFromPendingTxQueue(txId)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_coordinator_failed') {
@@ -2667,7 +2693,7 @@ async function main(): Promise<void> {
         // Keep this tx in local "processing" until coordinator finalizes it.
         console.log('Transaction already signed by enough parties, waiting for coordinator final status:', validTx.txId)
 
-        let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED
+        let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED | TransactionStatus.REVERTED
         try {
           // const remainingTimeoutMs = getRemainingProcessingTimeMs()
           finalStatus = await waitForCoordinatorFinalStatus(validTx.txId, COORDINATOR_FINAL_STATUS_TIMEOUT_MS)
@@ -2682,6 +2708,12 @@ async function main(): Promise<void> {
           removeFromPendingTxQueue(txId)
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
           console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED on coordinator`)
+        } else if (finalStatus === TransactionStatus.REVERTED) {
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+          removeFromPendingTxQueue(txId)
+          appendToFailedTxsLogs(validTx, 'reverted on-chain after enough-party')
+          await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
+          console.warn(`[wait-final] ${validTx.txId} finalized as REVERTED on coordinator`)
         } else if (finalStatus === TransactionStatus.FAILED) {
           // Since the transaction is marked as failed on coordinator, remove it from the queue
           removeFromPendingTxQueue(txId)

@@ -5,7 +5,7 @@ import path from "path";
 import * as TransactionDB from "./storage/transactiondb";
 import { isEthereumAddress } from "./utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "./utils/transformTxId";
-import { verifyTxOnChain, FAILED_IN_EXECUTION_REASON } from "./verification";
+import { verifyTxOnChain } from "./verification";
 import { monitorEthereumBridgeOutQueryFilter } from "./monitor/ethereum";
 import { getChainConfigById } from "./config";
 import { syncReady, monitorState } from "./monitor/state";
@@ -80,7 +80,7 @@ export function registerRoutes(app: express.Application): void {
   // GET /health — always available; detailed coordinator health snapshot.
   app.get("/health", async (_req, res) => {
     try {
-      const { pending, processing, completed, failed } =
+      const { pending, processing, completed, failed, reverted } =
         await TransactionDB.getTransactionCountsByStatus();
 
       const mem = process.memoryUsage();
@@ -94,7 +94,7 @@ export function registerRoutes(app: express.Application): void {
           bridgeInBlocks: monitorState.bridgeInBlocks,
           lastLiberdusTimestamp: new Date(monitorState.lastLiberdusTimestamp).toISOString(),
         },
-        transactions: { pending, processing, completed, failed },
+        transactions: { pending, processing, completed, failed, reverted },
         memory: {
           heapUsedMB: +(mem.heapUsed / 1024 / 1024).toFixed(1),
           rssMB: +(mem.rss / 1024 / 1024).toFixed(1),
@@ -240,9 +240,10 @@ export function registerRoutes(app: express.Application): void {
     async (req: Request<{}, {}, TxStatusData>, res: Response<Result<null>>) => {
       try {
         const { txId, status, receiptId, reason, party } = req.body;
-        const isCompletedStatus =
-          status === TransactionDB.TransactionStatus.COMPLETED;
-        const hasValidReceiptId = isCompletedStatus
+        const isTerminalWithReceipt =
+          status === TransactionDB.TransactionStatus.COMPLETED ||
+          status === TransactionDB.TransactionStatus.REVERTED;
+        const hasValidReceiptId = isTerminalWithReceipt
           ? isNormalizedTxId(receiptId)
           : receiptId === "" || isNormalizedTxId(receiptId);
 
@@ -277,6 +278,12 @@ export function registerRoutes(app: express.Application): void {
           );
         }
 
+        if (status === TransactionDB.TransactionStatus.REVERTED) {
+          console.log(
+            `Transaction reverted on-chain: ${txId}, party: ${party}`,
+          );
+        }
+
         const current = await TransactionDB.getTransactionById(txId);
         if (!current) {
           console.error(
@@ -300,31 +307,40 @@ export function registerRoutes(app: express.Application): void {
           return res.json({ Ok: null });
         }
 
-        // Do not overwrite COMPLETED with FAILED
+        // Do not overwrite COMPLETED or REVERTED with FAILED, and do not overwrite COMPLETED with REVERTED
         if (
           current?.status === TransactionDB.TransactionStatus.COMPLETED &&
-          status === TransactionDB.TransactionStatus.FAILED
+          (status === TransactionDB.TransactionStatus.FAILED || status === TransactionDB.TransactionStatus.REVERTED)
         ) {
           console.log(
-            "Ignoring FAILED status update; transaction already COMPLETED:",
+            `Ignoring ${status === TransactionDB.TransactionStatus.FAILED ? 'FAILED' : 'REVERTED'} status update; transaction already COMPLETED:`,
             txId
           );
           return res.json({ Ok: null });
         }
 
-        // For COMPLETED: verify the transaction on-chain before persisting
-        if (status === TransactionDB.TransactionStatus.COMPLETED) {
-          if (reason === FAILED_IN_EXECUTION_REASON) {
-            console.log(
-              `Transaction failed in execution: ${txId}, party: ${party}`,
-            );
-          }
+        if (
+          current?.status === TransactionDB.TransactionStatus.REVERTED &&
+          status === TransactionDB.TransactionStatus.FAILED
+        ) {
+          console.log(
+            "Ignoring FAILED status update; transaction already REVERTED:",
+            txId
+          );
+          return res.json({ Ok: null });
+        }
+
+        // For COMPLETED or REVERTED: verify the transaction on-chain before persisting
+        if (
+          status === TransactionDB.TransactionStatus.COMPLETED ||
+          status === TransactionDB.TransactionStatus.REVERTED
+        ) {
           const verified = await verifyTxOnChain(
             current.type,
             current.chainId,
             receiptId,
             txId,
-            reason,
+            status === TransactionDB.TransactionStatus.REVERTED,
           );
           if (!verified) {
             console.error(
