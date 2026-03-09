@@ -1965,7 +1965,7 @@ async function processTokenToCoin(
   console.log(`Processing transaction from ${sourceChainName}`)
 
   // convert ethers.BigNumber to bigint
-  const amountInBigInt = BigInt(value.hex ? value.hex : value._hex)
+  const amountInBigInt = BigInt(value.toHexString())
   console.log('Amount in bigint:', amountInBigInt)
   let signedTx: SignedTx | null = null
   const tx: LiberdusTx = {
