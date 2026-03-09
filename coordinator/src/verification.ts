@@ -9,8 +9,6 @@ import {
 } from "./config";
 import { normalizeTxId } from "./utils/transformTxId";
 
-export const FAILED_IN_EXECUTION_REASON = "failed in execution";
-
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000;
 
@@ -19,14 +17,14 @@ const BRIDGE_IN_EVENT_ABI =
 const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
 
 /**
- * Verify that a COMPLETED transaction result matches its reported outcome.
+ * Verify that a terminal transaction result matches its reported outcome.
  *
  * - BRIDGE_OUT:
- *   - COMPLETED (success)             => proxy tx.success must be true
- *   - COMPLETED (failed in execution) => proxy tx.success must be false
+ *   - COMPLETED  => proxy tx.success must be true
+ *   - REVERTED   => proxy tx.success must be false
  * - BRIDGE_IN / BRIDGE_VAULT:
- *   - COMPLETED (success)             => EVM receipt.status must be 1 and BridgedIn event txId must match expectedTxId
- *   - COMPLETED (failed in execution) => EVM receipt.status must be 0
+ *   - COMPLETED  => EVM receipt.status must be 1 and BridgedIn event txId must match expectedTxId
+ *   - REVERTED   => EVM receipt.status must be 0
  * For BRIDGE_VAULT the receipt lands on the secondary (destination) chain.
  */
 export async function verifyTxOnChain(
@@ -34,9 +32,8 @@ export async function verifyTxOnChain(
   chainId: number,
   receiptId: string,
   expectedTxId?: string,
-  reason?: string,
+  isReverted?: boolean,
 ): Promise<boolean> {
-  const isFailedInExecution = reason === FAILED_IN_EXECUTION_REASON;
   try {
     if (type === TransactionDB.TransactionType.BRIDGE_OUT) {
       const proxyServerHost =
@@ -50,10 +47,10 @@ export async function verifyTxOnChain(
           );
           const tx = res.data?.transaction;
           if (typeof tx?.success !== "boolean") continue;
-          if (isFailedInExecution) {
+          if (isReverted) {
             if (tx.success !== false) {
               console.error(
-                `[verifyTxOnChain] Discrepancy: reported COMPLETED (failed in execution) but Liberdus tx indicates success (receiptId=${receiptId})`
+                `[verifyTxOnChain] Discrepancy: reported REVERTED but Liberdus tx indicates success (receiptId=${receiptId})`
               );
               return false;
             }
@@ -108,10 +105,10 @@ export async function verifyTxOnChain(
           );
           if (!receipt) continue;
 
-          if (isFailedInExecution) {
+          if (isReverted) {
             if (receipt.status !== 0) {
               console.error(
-                `[verifyTxOnChain] Discrepancy: reported COMPLETED (failed in execution) but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
+                `[verifyTxOnChain] Discrepancy: reported REVERTED but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
               );
               return false;
             }

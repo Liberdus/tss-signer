@@ -23,6 +23,7 @@ export enum TransactionStatus {
   PROCESSING = 1,
   COMPLETED = 2,
   FAILED = 3,
+  REVERTED = 4, // tx submitted but reverted on-chain
 }
 
 export enum TransactionType {
@@ -44,7 +45,8 @@ export function isTransactionStatus(value: any): value is TransactionStatus {
     value === TransactionStatus.PENDING ||
     value === TransactionStatus.PROCESSING ||
     value === TransactionStatus.COMPLETED ||
-    value === TransactionStatus.FAILED
+    value === TransactionStatus.FAILED ||
+    value === TransactionStatus.REVERTED
   );
 }
 
@@ -136,12 +138,8 @@ export async function updateTransactionStatus(
   receiptId: string,
   reason: string | null
 ): Promise<void> {
-  if (reason !== "") {
-    await db.update("transactions", { status, receiptId, reason }, "txId = ?", [txId]);
-    return;
-  } else {
-    await db.update("transactions", { status, receiptId }, "txId = ?", [txId]);
-  }
+  const effectiveReason = status === TransactionStatus.FAILED ? (reason ?? "") : "";
+  await db.update("transactions", { status, receiptId, reason: effectiveReason }, "txId = ?", [txId]);
 }
 
 /**
@@ -257,6 +255,7 @@ export async function getTransactionCountsByStatus(): Promise<{
   processing: number;
   completed: number;
   failed: number;
+  reverted: number;
 }> {
   const rows = await db.all<{ status: number; count: number }>(
     "SELECT status, COUNT(*) as count FROM transactions GROUP BY status"
@@ -267,6 +266,7 @@ export async function getTransactionCountsByStatus(): Promise<{
     processing: map.get(TransactionStatus.PROCESSING) ?? 0,
     completed:  map.get(TransactionStatus.COMPLETED)  ?? 0,
     failed:     map.get(TransactionStatus.FAILED)     ?? 0,
+    reverted:   map.get(TransactionStatus.REVERTED)   ?? 0,
   };
 }
 
