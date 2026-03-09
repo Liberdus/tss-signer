@@ -96,7 +96,10 @@ export async function initializeTransactionsDatabase(): Promise<void> {
  * @param transaction - Transaction object to insert
  */
 export async function saveTransaction(transaction: Transaction): Promise<void> {
-  await db.insert("transactions", transaction);
+  const result = await db.insert("transactions", transaction);
+  if (result.changes === 0) {
+    console.warn(`[db] saveTransaction: txId ${transaction.txId} already exists — insert ignored`);
+  }
 }
 
 /**

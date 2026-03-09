@@ -192,6 +192,8 @@ class SQLiteManager {
             });
           }
         );
+      } else {
+        reject(new Error("Database handle is null after connection check"));
       }
     });
   }
@@ -213,6 +215,8 @@ class SQLiteManager {
           }
           resolve((row as T) || null);
         });
+      } else {
+        reject(new Error("Database handle is null after connection check"));
       }
     });
   }
@@ -234,6 +238,8 @@ class SQLiteManager {
           }
           resolve((rows as T[]) || []);
         });
+      } else {
+        reject(new Error("Database handle is null after connection check"));
       }
     });
   }
@@ -454,7 +460,7 @@ class SQLiteManager {
     const values = Object.values(data);
 
     return this.run(
-      `INSERT INTO ${tableName} (${columns}) VALUES (${placeholders})`,
+      `INSERT OR IGNORE INTO ${tableName} (${columns}) VALUES (${placeholders})`,
       values
     );
   }
