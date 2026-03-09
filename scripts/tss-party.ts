@@ -1390,6 +1390,10 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
 
     saveQueueToFile(ourParty.idx)
   } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 503) {
+      console.log('[poll] Coordinator is syncing — skipping poll')
+      return
+    }
     console.error('[poll] Error polling pending transactions from coordinator:', error)
   }
 }
@@ -1427,6 +1431,10 @@ async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionSt
     }
     return null
   } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 503) {
+      console.log(`[checkTxStatus] Coordinator is syncing — treating ${txId} as not found`)
+      return null
+    }
     console.error(`Error checking tx status from coordinator for ${txId}:`, error)
     throw error
   }

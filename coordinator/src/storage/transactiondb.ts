@@ -246,6 +246,27 @@ export async function getTransactionsByPage(
   return await db.all<Transaction>(query, params);
 }
 
+/**
+ * Returns transaction counts grouped by status in a single query.
+ */
+export async function getTransactionCountsByStatus(): Promise<{
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+}> {
+  const rows = await db.all<{ status: number; count: number }>(
+    "SELECT status, COUNT(*) as count FROM transactions GROUP BY status"
+  );
+  const map = new Map(rows.map((r) => [r.status, r.count]));
+  return {
+    pending:    map.get(TransactionStatus.PENDING)    ?? 0,
+    processing: map.get(TransactionStatus.PROCESSING) ?? 0,
+    completed:  map.get(TransactionStatus.COMPLETED)  ?? 0,
+    failed:     map.get(TransactionStatus.FAILED)     ?? 0,
+  };
+}
+
 // Helper function to append "AND" to SQL query
 const appendAndClause = (sql: string, inputs: any[]): string => {
   if (inputs.length > 0) return sql + " AND ";
