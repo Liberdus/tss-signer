@@ -1370,7 +1370,10 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
       console.log('[poll] Coordinator is syncing — skipping poll')
       return
     }
-    console.error('[poll] Error polling pending transactions from coordinator:', error)
+    const errorMessage = axios.isAxiosError(error)
+      ? (error.cause instanceof Error ? error.cause.message : error.message)
+      : (error instanceof Error ? error.message : String(error))
+    console.error(`[poll] Error polling pending transactions from coordinator: ${errorMessage}`)
   }
 }
 
