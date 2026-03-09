@@ -547,9 +547,10 @@ const FAILED_IN_EXECUTION_REASON = 'failed in execution'
 const TX_DATA_STORE_MAX_ENTRIES = 500
 const TX_DATA_STORE_MAX_FILES = 5
 // Compiled once at startup; ourParty.idx is known at module-init time
-const TX_DATA_STORE_FILE_PATTERN = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.json$`)
+const TX_DATA_STORE_FILE_PATTERN = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.ndjson$`)
 // Tracks the active tx_data_store file path in memory to avoid readdirSync on every append
 let txDataStoreCurrentFile: string | null = null
+let txDataStoreCurrentEntries = 0
 
 // Define maximum concurrent transactions
 const MAX_CONCURRENT_TXS = 1
@@ -799,16 +800,12 @@ function appendToTxDataStore(txData: TransactionQueueItem): void {
         .sort()
       if (existing.length > 0) {
         txDataStoreCurrentFile = path.join(KEYSTORE_DIR, existing[existing.length - 1])
+        const content = fs.readFileSync(txDataStoreCurrentFile, 'utf8')
+        txDataStoreCurrentEntries = content.split('\n').filter(Boolean).length
       }
     }
 
-    // Single read: get file contents and check entry count in one pass
-    let fileData: { createdAt: number; entries: object[] } | null = null
-    if (txDataStoreCurrentFile) {
-      fileData = JSON.parse(fs.readFileSync(txDataStoreCurrentFile, 'utf8'))
-    }
-
-    if (!fileData || fileData.entries.length >= TX_DATA_STORE_MAX_ENTRIES) {
+    if (!txDataStoreCurrentFile || txDataStoreCurrentEntries >= TX_DATA_STORE_MAX_ENTRIES) {
       // Roll to a new file; scan once here to prune oldest if over the limit
       const allFiles = fs.readdirSync(KEYSTORE_DIR)
         .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
@@ -816,11 +813,11 @@ function appendToTxDataStore(txData: TransactionQueueItem): void {
       while (allFiles.length >= TX_DATA_STORE_MAX_FILES) {
         fs.unlinkSync(path.join(KEYSTORE_DIR, allFiles.shift()!))
       }
-      txDataStoreCurrentFile = path.join(KEYSTORE_DIR, `tx_data_store_${ourParty.idx}_${Date.now()}.json`)
-      fileData = { createdAt: Date.now(), entries: [] }
+      txDataStoreCurrentFile = path.join(KEYSTORE_DIR, `tx_data_store_${ourParty.idx}_${Date.now()}.ndjson`)
+      txDataStoreCurrentEntries = 0
     }
 
-    fileData.entries.push({
+    const line = JSON.stringify({
       txId: txData.txId,
       from: txData.from,
       value: txData.value.toString(),
@@ -828,8 +825,9 @@ function appendToTxDataStore(txData: TransactionQueueItem): void {
       chainId: txData.chainId,
       txTimestamp: txData.txTimestamp,
       addedAt: Date.now(),
-    })
-    fs.writeFileSync(txDataStoreCurrentFile, JSON.stringify(fileData))
+    }) + '\n'
+    fs.appendFileSync(txDataStoreCurrentFile, line)
+    txDataStoreCurrentEntries += 1
   } catch (err) {
     console.error('[txDataStore] Failed to append tx data:', err)
   }
@@ -837,7 +835,7 @@ function appendToTxDataStore(txData: TransactionQueueItem): void {
 
 function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): void {
   try {
-    const filePath = path.join(KEYSTORE_DIR, `failed_txs_logs_party_${ourParty.idx}.json`)
+    const filePath = path.join(KEYSTORE_DIR, `failed_txs_logs_party_${ourParty.idx}.ndjson`)
     const line = JSON.stringify({
       txId: txData.txId,
       from: txData.from,
@@ -852,34 +850,6 @@ function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): voi
   } catch (err) {
     console.error('[failedTxsLogs] Failed to append failed tx:', err)
   }
-}
-
-function findInTxDataStoreFiles(txId: string): TransactionQueueItem | null {
-  try {
-    const files = fs.readdirSync(KEYSTORE_DIR)
-      .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
-      .sort()
-      .reverse() // most recent first
-
-    for (const file of files) {
-      const fileData = JSON.parse(fs.readFileSync(path.join(KEYSTORE_DIR, file), 'utf8'))
-      const entry = fileData.entries?.find((e: any) => e.txId === txId)
-      if (entry) {
-        return {
-          receipt: null as any,
-          from: entry.from,
-          value: ethers.BigNumber.from(entry.value),
-          txId: entry.txId,
-          type: entry.type,
-          chainId: entry.chainId,
-          txTimestamp: entry.txTimestamp,
-        }
-      }
-    }
-  } catch (err) {
-    console.error(`[txDataStore] Failed to search for tx ${txId}:`, err)
-  }
-  return null
 }
 
 // Function to recover from emergency backup if needed
@@ -2539,15 +2509,40 @@ async function main(): Promise<void> {
         // PENDING or PROCESSING on coordinator — ensure txData is in pendingTxQueue
         const alreadyInQueue = pendingTxQueue.some(t => t.txId === txId)
         if (!alreadyInQueue) {
-          // Was processing when we crashed — look up txData in txDataStore files
-          const txData = findInTxDataStoreFiles(txId)
-          if (txData) {
+          // Was processing when we crashed — recover tx data from coordinator and verify it.
+          const response = await axios.get(`${coordinatorUrl}/transaction?txId=${encodeURIComponent(txId)}`)
+          const tx = response.data?.Ok?.transactions?.[0] as Transaction | undefined
+          if (
+            tx &&
+            tx.txId &&
+            isNormalizedTxId(tx.txId) &&
+            tx.txTimestamp &&
+            tx.sender &&
+            tx.value &&
+            tx.chainId != null &&
+            await verifyCoordinatorTxData(tx)
+          ) {
+            const bridgeType: TransactionQueueItem['type'] =
+              tx.type === TransactionType.BRIDGE_IN
+                ? 'coinToToken'
+                : tx.type === TransactionType.BRIDGE_VAULT
+                  ? 'vaultBridge'
+                  : 'tokenToCoin'
+            const txData: TransactionQueueItem = {
+              receipt: null as any,
+              from: tx.sender,
+              value: ethers.BigNumber.from(tx.value),
+              txId: tx.txId,
+              type: bridgeType,
+              chainId: tx.chainId,
+              txTimestamp: tx.txTimestamp,
+            }
             pendingTxQueue.push(txData)
             entry.status = 'pending'
-            console.log(`[startup] Recovered in-flight tx ${txId} from txDataStore, re-queued`)
+            console.log(`[startup] Recovered in-flight tx ${txId} from coordinator, verified, and re-queued`)
           } else {
             entry.status = 'failed'
-            console.warn(`[startup] Cannot recover txData for ${txId}, marking failed`)
+            console.warn(`[startup] Cannot recover verified coordinator txData for ${txId}, marking failed`)
           }
         }
       }
