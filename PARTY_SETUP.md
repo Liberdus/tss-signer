@@ -104,13 +104,13 @@ Each operator generates their own Ed25519 keypair independently. This keypair is
 **Each operator runs on their own machine:**
 
 ```bash
-node scripts/generate-keypairs.js --party <YOUR_PARTY_INDEX>
+npm run generate-signer-keypairs -- --party <YOUR_PARTY_INDEX>
 ```
 
 Replace `<YOUR_PARTY_INDEX>` with your assigned party number (1 through 5). For example, operator 3 runs:
 
 ```bash
-node scripts/generate-keypairs.js --party 3
+npm run generate-signer-keypairs -- --party 3
 ```
 
 This writes `keystores/tss_signer_keypair_party_3.json` and prints your public key:

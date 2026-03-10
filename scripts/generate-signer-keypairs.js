@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * generate-keypairs.js
+ * generate-signer-keypairs.js
  *
- * Generates Shardus Crypto (Ed25519) keypairs for TSS party nodes and saves
+ * Generates Shardus Crypto (Ed25519) signer keypairs for TSS party nodes and saves
  * them to keystores/tss_signer_keypair_party_N.json.
  *
  * Usage:
- *   node scripts/generate-keypairs.js [--parties N] [--party P] [--force]
+ *   node scripts/generate-signer-keypairs.js [--parties N] [--party P] [--force]
+ *   npm run generate-signer-keypairs [-- --parties N] [-- --party P --force]
  *
  * Options:
  *   --parties N   Number of parties to generate keypairs for (default: 5)

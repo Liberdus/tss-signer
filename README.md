@@ -134,7 +134,7 @@ Each party process runs with `--expose-gc` and a 2 GB memory limit. GC is forced
 | `chain-config.json` | Multi-chain RPC and contract configuration |
 | `params.json` | TSS parameters (parties, threshold) |
 | `keystores/` | Per-party key shares (keygen) + auth keypairs (`tss_signer_keypair_party_N.json`) |
-| `scripts/generate-keypairs.js` | Generates auth keypairs for TSS parties |
+| `scripts/generate-signer-keypairs.js` | Generates auth keypairs for TSS parties |
 | `ecosystem.config.js` | PM2 process configuration |
 
 ## TSS → Coordinator Authentication
@@ -160,19 +160,19 @@ ENABLE_SHARDUS_CRYPTO_AUTH=false  # disable regardless of config
 
 **For local development**, leave `enableShardusCryptoAuth` unset or `false` — parties will skip signing and the coordinator will accept all requests without verification.
 
-### Generating keypairs
+### Generating signer keypairs
 
-Each TSS party needs its own Ed25519 keypair. Use the provided script to generate them:
+Each TSS party needs its own Ed25519 signer keypair. Use the provided script to generate them:
 
 ```bash
-# Generate keypairs for all 5 parties (skips existing files)
-node scripts/generate-keypairs.js
+# Generate signer keypairs for all 5 parties (skips existing files)
+npm run generate-signer-keypairs
 
 # Generate for a specific number of parties
-node scripts/generate-keypairs.js --parties 5
+npm run generate-signer-keypairs -- --parties 5
 
 # Regenerate a single party's keypair
-node scripts/generate-keypairs.js --party 3 --force
+npm run generate-signer-keypairs -- --party 3 --force
 ```
 
 Keypairs are written to `keystores/tss_signer_keypair_party_N.json`:
