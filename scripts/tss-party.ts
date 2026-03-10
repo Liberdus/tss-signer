@@ -1095,6 +1095,12 @@ async function sign(m: any, key_store: string, delay: number, digest: string): P
   }
 }
 
+function getAxiosErrorMessage(error: unknown): string {
+  return axios.isAxiosError(error)
+    ? (error.cause instanceof Error ? error.cause.message : error.message)
+    : (error instanceof Error ? error.message : String(error))
+}
+
 async function sendTxStatusToCoordinator(
   txId: string,
   status: TransactionStatus,
@@ -1119,9 +1125,7 @@ async function sendTxStatusToCoordinator(
       console.log('Updated transaction status to coordinator:', response.data)
     }
   } catch (error) {
-    const errorMessage = axios.isAxiosError(error)
-      ? (error.cause instanceof Error ? error.cause.message : error.message)
-      : (error instanceof Error ? error.message : String(error))
+    const errorMessage = getAxiosErrorMessage(error)
     console.error(`Error updating transaction status to coordinator: ${errorMessage}`)
   }
 }
@@ -1405,9 +1409,7 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
       console.log('[poll] Coordinator is syncing — skipping poll')
       return
     }
-    const errorMessage = axios.isAxiosError(error)
-      ? (error.cause instanceof Error ? error.cause.message : error.message)
-      : (error instanceof Error ? error.message : String(error))
+    const errorMessage = getAxiosErrorMessage(error)
     console.error(`[poll] Error polling pending transactions from coordinator: ${errorMessage}`)
   }
 }
@@ -1449,11 +1451,7 @@ async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionSt
       console.log(`[checkTxStatus] Coordinator is syncing — treating ${txId} as not found`)
       return null
     }
-    const errorMessage = axios.isAxiosError(error)
-      ? (error.cause instanceof Error ? error.cause.message : error.message)
-      : (error instanceof Error ? error.message : String(error))
-    console.error(`Error checking tx status from coordinator for ${txId}: ${errorMessage}`)
-    throw error
+    throw new Error(getAxiosErrorMessage(error))
   }
 }
 
@@ -1477,9 +1475,7 @@ async function waitForCoordinatorFinalStatus(
         console.log(`[wait-final] ${txId} still ${txStatusLabel(status)} on coordinator, waiting...`)
       }
     } catch (error) {
-      const errorMessage = axios.isAxiosError(error)
-        ? (error.cause instanceof Error ? error.cause.message : error.message)
-        : (error instanceof Error ? error.message : String(error))
+      const errorMessage = error instanceof Error ? error.message : String(error)
       console.warn(`[wait-final] Coordinator status check failed for ${txId}, retrying... ${errorMessage}`)
     }
     await delay_ms(COORDINATOR_FINAL_STATUS_POLL_INTERVAL)
@@ -1516,9 +1512,7 @@ async function reconcileTxStatusWithCoordinator(
     console.log(`⏩ ${txId} already ${txStatusLabel(status)} on coordinator (${context}), skipping`)
     return statusLabel
   } catch (error: any) {
-    const errorMessage = axios.isAxiosError(error)
-      ? (error.cause instanceof Error ? error.cause.message : error.message)
-      : (error instanceof Error ? error.message : String(error))
+    const errorMessage = error instanceof Error ? error.message : String(error)
     console.warn(`[${context}] Coordinator status check failed for ${txId}, proceeding with tx: ${errorMessage}`)
     return null
   }
@@ -2598,9 +2592,7 @@ async function main(): Promise<void> {
         }
       }
     } catch (err) {
-      const errorMessage = axios.isAxiosError(err)
-        ? (err.cause instanceof Error ? err.cause.message : err.message)
-        : (err instanceof Error ? err.message : String(err))
+      const errorMessage = err instanceof Error ? err.message : String(err)
       console.warn(`[startup] Coordinator check failed for ${txId}, skipping: ${errorMessage}`)
     }
   }
