@@ -2559,6 +2559,7 @@ async function main(): Promise<void> {
             tx.sender &&
             tx.value &&
             tx.chainId != null &&
+            getChainConfigById(tx.chainId) != null &&
             await verifyCoordinatorTxData(tx)
           ) {
             const bridgeType: TransactionQueueItem['type'] =
