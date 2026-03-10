@@ -3,7 +3,8 @@ use crate::errors::{Result, TssError};
 use crate::log;
 use blake2::digest::{Update, VariableOutput};
 use blake2::VarBlake2b;
-use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signer};
+use core::fmt;
+use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
 use serde::Serialize;
 #[cfg(not(target_arch = "wasm32"))]
 use lazy_static::lazy_static;
@@ -11,6 +12,37 @@ use lazy_static::lazy_static;
 use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
 use std::{cell::RefCell, thread_local};
+
+pub enum Format {
+    Hex,
+    Buffer,
+}
+
+pub enum HexStringOrBuffer {
+    Hex(String),
+    Buffer(Vec<u8>),
+}
+
+impl fmt::Display for HexStringOrBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            HexStringOrBuffer::Hex(s) => write!(f, "{}", s),
+            HexStringOrBuffer::Buffer(bytes) => {
+                for b in bytes {
+                    write!(f, "{:02X}", b)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+pub struct ShardusKeyPair {
+    pub public_key: PublicKey,
+    pub secret_key: SecretKey,
+}
+
+// --- Internal state ---
 
 struct ShardusCryptoState {
     hash_key: Vec<u8>,
