@@ -1297,6 +1297,10 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         console.warn(`[poll] Skipping tx ${tx.txId} — missing required fields (txTimestamp/sender/value/chainId)`, tx)
         continue
       }
+      if (!getChainConfigById(tx.chainId)) {
+        console.warn(`[poll] Skipping tx ${tx.txId} — unknown chainId ${tx.chainId}`)
+        continue
+      }
       if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED || tx.status === TransactionStatus.REVERTED) {
         console.log(`[poll] Skipping tx ${tx.txId} — coordinator reports ${txStatusLabel(tx.status)}`)
         continue
@@ -1306,9 +1310,40 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         // If we previously marked it failed/reverted but the coordinator still shows it pending, retry
         if ((existingEntry.status === 'failed' || existingEntry.status === 'reverted') && !pendingTxQueue.some(t => t.txId === tx.txId)) {
           console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but coordinator reports pending`)
-          existingEntry.status = 'pending'
-          // fall through to re-queue below
+          // fall through to re-queue below (status updated to pending after verification)
         } else {
+          continue
+        }
+      }
+
+      if (rejectOldTransactions) {
+        const currentTimestamp = Date.now()
+        if (currentTimestamp - tx.txTimestamp > TX_CLEANUP_MAX_AGE) {
+          console.warn(
+            `[poll] Tx ${tx.txId} is older than 24h (age: ${Math.floor((currentTimestamp - tx.txTimestamp) / 3_600_000)}h) — archiving and skipping`,
+          )
+          const bridgeTypeEarly: TransactionQueueItem['type'] =
+            tx.type === TransactionType.BRIDGE_IN
+              ? 'coinToToken'
+              : tx.type === TransactionType.BRIDGE_VAULT
+                ? 'vaultBridge'
+                : 'tokenToCoin'
+          const txDataEarly: TransactionQueueItem = {
+            receipt: null as any,
+            from: tx.sender,
+            value: ethers.BigNumber.from(tx.value),
+            txId: tx.txId,
+            type: bridgeTypeEarly,
+            chainId: tx.chainId,
+            txTimestamp: tx.txTimestamp,
+          }
+          appendToTxDataStore(txDataEarly)
+          appendToFailedTxsLogs(txDataEarly, 'tx older than 24h max age — skipped by poll')
+          if (existingEntry) {
+            existingEntry.status = 'failed'
+          } else {
+            txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'failed' })
+          }
           continue
         }
       }
@@ -1338,25 +1373,13 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         txTimestamp: tx.txTimestamp,
       }
 
-      if (rejectOldTransactions) {
-        const currentTimestamp = Date.now()
-        if (currentTimestamp - tx.txTimestamp > TX_CLEANUP_MAX_AGE) {
-          console.warn(
-            `[poll] Tx ${tx.txId} is older than 24h (age: ${Math.floor((currentTimestamp - tx.txTimestamp) / 3_600_000)}h) — archiving and skipping`,
-          )
-          appendToTxDataStore(txData)
-          appendToFailedTxsLogs(txData, 'tx older than 24h max age — skipped by poll')
-          if (existingEntry) {
-            existingEntry.status = 'failed'
-          } else {
-            txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'failed' })
-          }
-          continue
-        }
-      }
-
       pendingTxQueue.push(txData)
-      if (!existingEntry) {
+      if (existingEntry) {
+        // Only update status back to pending if it was previously failed/reverted (retry path)
+        if (existingEntry.status === 'failed' || existingEntry.status === 'reverted') {
+          existingEntry.status = 'pending'
+        }
+      } else {
         txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'pending' })
       }
       appendToTxDataStore(txData)
