@@ -1288,6 +1288,7 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
       )
     }
 
+    let txAddedToQueue = false
     for (const tx of transactions) {
       if (!tx.txId || !isNormalizedTxId(tx.txId)) {
         console.warn(`[poll] Skipping tx with invalid txId (expected 64 chars): ${tx.txId}`)
@@ -1305,6 +1306,33 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         console.log(`[poll] Skipping tx ${tx.txId} — coordinator reports ${txStatusLabel(tx.status)}`)
         continue
       }
+      if (rejectOldTransactions) {
+        const currentTimestamp = Date.now()
+        if (currentTimestamp - tx.txTimestamp > TX_CLEANUP_MAX_AGE) {
+          console.warn(
+            `[poll] Tx ${tx.txId} is older than 24h (age: ${Math.floor((currentTimestamp - tx.txTimestamp) / 3_600_000)}h) — archiving and skipping`,
+          )
+          const bridgeType: TransactionQueueItem['type'] =
+            tx.type === TransactionType.BRIDGE_IN
+              ? 'coinToToken'
+              : tx.type === TransactionType.BRIDGE_VAULT
+                ? 'vaultBridge'
+                : 'tokenToCoin'
+          const txData: TransactionQueueItem = {
+            receipt: null as any,
+            from: tx.sender,
+            value: ethers.BigNumber.from(tx.value),
+            txId: tx.txId,
+            type: bridgeType,
+            chainId: tx.chainId,
+            txTimestamp: tx.txTimestamp,
+          }
+          appendToTxDataStore(txData)
+          appendToFailedTxsLogs(txData, 'tx older than 24h max age — skipped by poll')
+          continue
+        }
+      }
+
       const existingEntry = txQueueMap.get(tx.txId)
       if (existingEntry) {
         // If we previously marked it failed/reverted but the coordinator still shows it pending, retry
@@ -1312,38 +1340,6 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
           console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but coordinator reports pending`)
           // fall through to re-queue below (status updated to pending after verification)
         } else {
-          continue
-        }
-      }
-
-      if (rejectOldTransactions) {
-        const currentTimestamp = Date.now()
-        if (currentTimestamp - tx.txTimestamp > TX_CLEANUP_MAX_AGE) {
-          console.warn(
-            `[poll] Tx ${tx.txId} is older than 24h (age: ${Math.floor((currentTimestamp - tx.txTimestamp) / 3_600_000)}h) — archiving and skipping`,
-          )
-          const bridgeTypeEarly: TransactionQueueItem['type'] =
-            tx.type === TransactionType.BRIDGE_IN
-              ? 'coinToToken'
-              : tx.type === TransactionType.BRIDGE_VAULT
-                ? 'vaultBridge'
-                : 'tokenToCoin'
-          const txDataEarly: TransactionQueueItem = {
-            receipt: null as any,
-            from: tx.sender,
-            value: ethers.BigNumber.from(tx.value),
-            txId: tx.txId,
-            type: bridgeTypeEarly,
-            chainId: tx.chainId,
-            txTimestamp: tx.txTimestamp,
-          }
-          appendToTxDataStore(txDataEarly)
-          appendToFailedTxsLogs(txDataEarly, 'tx older than 24h max age — skipped by poll')
-          if (existingEntry) {
-            existingEntry.status = 'failed'
-          } else {
-            txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'failed' })
-          }
           continue
         }
       }
@@ -1388,16 +1384,19 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         const chainName = getChainConfigById(tx.chainId)?.name || 'Unknown'
         console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from coordinator (${chainName})`)
       }
+      txAddedToQueue = true
     }
 
-    // Re-sort the queue so newly inserted items are in txTimestamp order.
-    pendingTxQueue.sort((a, b) => {
-      const ta = a.txTimestamp ?? Infinity
-      const tb = b.txTimestamp ?? Infinity
-      return ta - tb
-    })
+    if (txAddedToQueue) {
+      // Re-sort the queue so newly inserted items are in txTimestamp order.
+      pendingTxQueue.sort((a, b) => {
+        const ta = a.txTimestamp ?? Infinity
+        const tb = b.txTimestamp ?? Infinity
+        return ta - tb
+      })
 
-    saveQueueToFile(ourParty.idx)
+      saveQueueToFile(ourParty.idx)
+    }
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 503) {
       console.log('[poll] Coordinator is syncing — skipping poll')
