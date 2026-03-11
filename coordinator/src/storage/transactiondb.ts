@@ -23,7 +23,7 @@ export enum TransactionStatus {
   PROCESSING = 1,
   COMPLETED = 2,
   FAILED = 3,
-  REVERTED = 4, // tx submitted but reverted on-chain
+  REVERTED = 4, // tx executed but reverted on-chain
 }
 
 export enum TransactionType {

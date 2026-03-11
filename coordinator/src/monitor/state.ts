@@ -7,10 +7,10 @@ import path from "path";
 // ---------------------------------------------------------------------------
 
 export interface MonitorState {
-  vault: Record<string, number>;         // chainId → last checked block (vault mode BridgedOut)
-  blocks: Record<string, number>;        // chainId → last checked block (Liberdus mode BridgedOut)
-  bridgeInBlocks: Record<string, number>; // chainId → last checked block (BridgedIn events)
-  lastLiberdusTimestamp: number;         // unix ms of last processed Liberdus tx
+  vault: Record<string, number>;                    // chainId → last checked block (vault mode BridgedOut)
+  blocks: Record<string, number>;                   // chainId → last checked block (Liberdus mode BridgedOut)
+  bridgeInBlocks: Record<string, number>;           // chainId → last checked block (BridgedIn events)
+  liberdusTimestampByChain: Record<string, number>; // chainId → unix ms of last processed Liberdus tx
 }
 
 // Path relative to compiled output (coordinator/dist/monitor/ → coordinator/)
@@ -24,7 +24,7 @@ export const monitorState: MonitorState = {
   vault: {},
   blocks: {},
   bridgeInBlocks: {},
-  lastLiberdusTimestamp: Date.now(),
+  liberdusTimestampByChain: {},
 };
 
 // Set to true once the initial ordered scan (BridgedOut → Liberdus → BridgedIn)
@@ -45,6 +45,8 @@ export function initMonitorState(): void {
       Object.assign(monitorState, saved);
       // Ensure bridgeInBlocks exists for older state files that predate this field
       if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
+      // Ensure lastLiberdusTimestampPerChain exists for older state files that predate this field
+      if (!monitorState.liberdusTimestampByChain) monitorState.liberdusTimestampByChain = {};
     } catch (e) {
       console.warn("[monitor] Failed to load monitor state, using defaults:", e);
     }

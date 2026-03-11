@@ -39,17 +39,22 @@ export async function monitorLiberdusTransactions(): Promise<void> {
     const collectorHost =
       chainConfigsRaw.collectorHost || "http://127.0.0.1:3035";
 
-    let maxTimestamp = monitorState.lastLiberdusTimestamp;
+    let stateChanged = false;
 
     for (const [chainIdStr, chainConfig] of Object.entries(
       chainConfigsRaw.supportedChains
     )) {
       const chainId = parseInt(chainIdStr);
-      const { bridgeAddress } = chainConfig as any;
+      const { bridgeAddress, bridgeAddressCreated = 0 } = chainConfig as any;
+
+      // Use per-chain cursor; fall back to bridgeAddressCreated for first run
+      const chainCursor: number =
+        monitorState.liberdusTimestampByChain[chainIdStr] ?? bridgeAddressCreated;
+      let maxTimestamp = chainCursor;
 
       let page = 1;
       while (true) {
-        const query = `?accountId=${bridgeAddress}&afterTimestamp=${monitorState.lastLiberdusTimestamp}&page=${page}`;
+        const query = `?accountId=${bridgeAddress}&afterTimestamp=${chainCursor}&page=${page}`;
         const url = collectorHost + "/api/transaction" + query;
         const response = await axios.get(url, { timeout: 30_000 });
         const { success, transactions } = response.data;
@@ -123,10 +128,14 @@ export async function monitorLiberdusTransactions(): Promise<void> {
 
         page++;
       }
+
+      if (maxTimestamp > chainCursor) {
+        monitorState.liberdusTimestampByChain[chainIdStr] = maxTimestamp;
+        stateChanged = true;
+      }
     }
 
-    if (maxTimestamp > monitorState.lastLiberdusTimestamp) {
-      monitorState.lastLiberdusTimestamp = maxTimestamp;
+    if (stateChanged) {
       await saveMonitorState();
     }
   } catch (e) {

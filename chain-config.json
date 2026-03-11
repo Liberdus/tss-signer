@@ -31,7 +31,8 @@
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
-      "deploymentBlock": 34134604
+      "deploymentBlock": 34134604,
+      "bridgeAddressCreated": 0
     },
     "97": {
       "name": "BSC Testnet",
@@ -44,7 +45,8 @@
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "deploymentBlock": 93766691
+      "deploymentBlock": 93766691,
+      "bridgeAddressCreated": 0
     }
   },
   "enableShardusCryptoAuth": true,
