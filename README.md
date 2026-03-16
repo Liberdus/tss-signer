@@ -56,16 +56,50 @@ npm run build_node
 npm run compile-tss
 ```
 
-### 3. Configure chains and params
+### 3. Optional: build native BNB TSS overlay
+
+When `scripts/tss-party.ts` runs with `useBnbTss = true`, signing is delegated to the upstream Binance `tss` repo checked out under [`tss/`](tss) and prepared through the local tools in [`tss-tools/`](tss-tools).
+
+First fetch the submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+If `npm run tss-build` says the Go toolchain is missing, bootstrap the local vendored Go first:
+
+```bash
+./tss-tools/setup-mise-go.sh
+```
+
+```bash
+npm run tss-build
+```
+
+Native mode expects these environment variables to be shared across participating parties:
+
+```bash
+export BNB_TSS_PASSWORD=1234567890
+export BNB_TSS_CHANNEL_ID=<shared-channel-id>
+export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>
+```
+
+Native vaults are stored under `keystores/bnbtss/party-<idx>/chain-<chainId>/default/`.
+User-facing party indices start at `1`.
+The native binary is built to `./tss/.tooling/bin/tss`.
+
+Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](tss-tools/guide.md).
+
+### 4. Configure chains and params
 
 - **`params.json`** — TSS parameters. Default: `{"parties": 5, "threshold": 3}`
 - **`chain-config.json`** — RPC endpoints, contract addresses, gas config per chain.
 
-### 4. Run keygen (first time only)
+### 5. Run keygen (first time only)
 
 All 5 parties must complete keygen before any signing can occur. Keygen produces per-party keystore files in `keystores/`. Refer to the keygen script for details.
 
-### 5. Start the coordinator
+### 6. Start the coordinator
 
 ```bash
 cd coordinator
@@ -77,7 +111,7 @@ npm run build && npm start   # production
 
 See [coordinator/README.md](coordinator/README.md) for full coordinator setup.
 
-### 6. Start all TSS parties
+### 7. Start all TSS parties
 
 ```bash
 npm run start-tss   # starts 5 PM2 processes
@@ -97,7 +131,35 @@ npm run compile-tss
 
 # Compile + run a single party (for testing)
 npm run tss-party
+
+# Build patched upstream BNB TSS
+npm run tss-build
+
+# Native TSS operator helpers
+npm run tss-init -- --party 1 --chain-id 97
+npm run tss-keygen -- --party 1 --chain-id 97
+npm run tss-verify -- --party 1 --chain-id 97
+npm run tss-regroup -- --party 1 --chain-id 97 --is-old --new-threshold 3 --new-parties 5
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file tx.json.example
 ```
+
+## Native TSS Scripts
+
+These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing helpers for the native `tss` flow.
+
+| Path | Purpose |
+|---|---|
+| `tss-tools/build-tss.sh` | Applies the local patch to the upstream `tss` checkout and builds `./tss/.tooling/bin/tss` plus `./tss/.tooling/bin/tss-derive-pubkey`. |
+| `tss-tools/setup-mise-go.sh` | Bootstraps a local Go toolchain under `tss/.tooling/mise` when system `go` is unavailable. |
+| `tss-tools/init.js` | Initializes one native TSS party home and vault for a given party index and chain id. |
+| `tss-tools/keygen.js` | Runs native TSS keygen for one party using the shared channel settings and `params.json` defaults unless overridden. |
+| `tss-tools/verify.js` | Derives and prints the compressed pubkey, Ethereum pubkey, or Ethereum address from an existing native vault. |
+| `tss-tools/sign-ethereum-tx.js` | Signs an unsigned Ethereum transaction JSON through native TSS and prints the signed tx payload. |
+| `tss-tools/regroup.js` | Runs native TSS regroup for an existing or new committee member. |
+| `tss-tools/lib/bnbTss.js` | Shared runtime helper used by the Node scripts for binary resolution, patch prep, vault paths, and signing helpers. |
+| `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. |
+| `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.js` and post-keygen address derivation. |
+| `tss-tools/guide.md` | Step-by-step local operator guide for build, init, keygen, verify, sign, and regroup. |
 
 ## PM2 Process Management
 
