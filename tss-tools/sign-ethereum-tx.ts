@@ -2,6 +2,10 @@
 import * as fs from 'node:fs'
 import {ethers} from 'ethers'
 import * as bnbTss from './lib/bnbTss'
+import {deriveDeterministicChannelId} from './lib/channelId'
+import {normalizeTxId} from '../scripts/transformTxId'
+
+const SIGN_CHANNEL_TIME_BUCKET_MS = 30 * 60 * 1000
 
 function usage(): never {
   console.error(
@@ -68,7 +72,14 @@ function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {partyIdx: nu
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const tx = JSON.parse(fs.readFileSync(options.txFile, 'utf8')) as ethers.UnsignedTransaction;
-  const signed = await bnbTss.signEthereumTransaction({...options, tx});
+  const unsignedTx = ethers.utils.serializeTransaction(tx);
+  const txHash = ethers.utils.keccak256(unsignedTx);
+  const txTimestampMs = Math.floor(Date.now() / SIGN_CHANNEL_TIME_BUCKET_MS) * SIGN_CHANNEL_TIME_BUCKET_MS;
+  const channelId =
+    options.channelId ||
+    process.env.BNB_TSS_CHANNEL_ID ||
+    deriveDeterministicChannelId(normalizeTxId(txHash), txTimestampMs);
+  const signed = await bnbTss.signEthereumTransaction({...options, tx, channelId});
   process.stdout.write(
     `${JSON.stringify({
       signed_tx: signed.signedTx,

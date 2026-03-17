@@ -9,6 +9,7 @@ import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
 import {isNormalizedTxId, normalizeTxId} from './transformTxId'
+import {deriveDeterministicChannelId} from '../tss-tools/lib/channelId'
 import * as rpcUrls from './lib/rpcUrls'
 import {getHttpProviderForChain} from './lib/httpProviderHelper'
 const bnbTss = require('../tss-tools/lib/bnbTss')
@@ -1580,12 +1581,13 @@ async function validateBnbTssSetup(): Promise<void> {
   }
 }
 
-function signDigestWithBnbTss(chainId: number, digest: string) {
-  console.log('Signing digest with BNB TSS', chainId, digest )
+function signDigestWithBnbTss(chainId: number, digest: string, channelId: string) {
+  console.log('Signing digest with BNB TSS', chainId, digest, channelId)
   return bnbTss.signDigest({
     partyIdx: ourParty.idx,
     chainId,
     digest,
+    channelId,
   })
 }
 
@@ -1593,15 +1595,13 @@ async function signEthereumTransaction(
   item: KeyShare | null,
   tx: any,
   digest: string,
-  chainId?: number,
+  chainId: number,
+  channelId: string,
 ): Promise<string | null> {
   const startMemory = process.memoryUsage()
   let signature
   if (useBnbTss) {
-    if (chainId == null) {
-      throw new Error('BNB TSS Ethereum signing requires a chainId')
-    }
-    const signed = await signDigestWithBnbTss(chainId, digest)
+    const signed = await signDigestWithBnbTss(chainId, digest, channelId)
     signature = {
       r: signed.r,
       s: signed.s,
@@ -1644,15 +1644,13 @@ async function signLiberdusTransaction(
   item: KeyShare | null,
   tx: LiberdusTx,
   digest: string,
-  chainId?: number,
+  chainId: number,
+  channelId: string,
 ): Promise<SignedTx | null> {
   const startMemory = process.memoryUsage()
   let signature
   if (useBnbTss) {
-    if (chainId == null) {
-      throw new Error('BNB TSS Liberdus signing requires a chainId')
-    }
-    const signed = await signDigestWithBnbTss(chainId, digest)
+    const signed = await signDigestWithBnbTss(chainId, digest, channelId)
     signature = {
       r: signed.r,
       s: signed.s,
@@ -1747,6 +1745,7 @@ async function processCoinToToken(
   value: ethers.BigNumber,
   txId: string,
   targetChainId: number,
+  txTimestampMs: number,
 ): Promise<ProcessOutcome> {
   value = ethers.BigNumber.from(value)
   console.log('Processing coin to token transaction', {
@@ -1808,13 +1807,14 @@ async function processCoinToToken(
   console.log(`eth tx to sign on ${targetChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
+  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
 
   const coordinatorStatusCoinToToken = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusCoinToToken === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing
   let keyShare = useBnbTss ? null : await DKG(ourParty, targetChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest, targetChainId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest, targetChainId, channelId)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -1886,6 +1886,7 @@ async function processVaultBridge(
   txId: string,
   sourceChainId: number,
   destinationChainId: number,
+  txTimestampMs: number,
 ): Promise<ProcessOutcome> {
   value = ethers.BigNumber.from(value)
   console.log('Processing vault bridge transaction', {
@@ -1958,13 +1959,14 @@ async function processVaultBridge(
   console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
+  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
 
   const coordinatorStatusVaultBridge = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusVaultBridge === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use destination chain's keystore for signing
   let keyShare = useBnbTss ? null : await DKG(ourParty, destinationChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest, destinationChainId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest, destinationChainId, channelId)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2030,6 +2032,7 @@ async function processTokenToCoin(
   value: any,
   txId: string,
   sourceChainId: number,
+  txTimestampMs: number,
 ): Promise<ProcessOutcome> {
   console.log('Processing token to coin transaction', {to, value, txId, sourceChainId})
 
@@ -2071,13 +2074,14 @@ async function processTokenToCoin(
   }
   const hashMessage = crypto.hashObj(tx)
   let digest = ethersUtils.hashMessage(hashMessage)
+  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
 
   const coordinatorStatusTokenToCoin = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusTokenToCoin === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
   let keyShare = useBnbTss ? null : await DKG(ourParty, sourceChainId)
-  signedTx = await signLiberdusTransaction(keyShare, tx, digest, sourceChainId)
+  signedTx = await signLiberdusTransaction(keyShare, tx, digest, sourceChainId, channelId)
   if (!signedTx) {
     console.log(`Failed to sign liberdus transaction from ${sourceChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2728,6 +2732,7 @@ async function main(): Promise<void> {
           validTx.value as ethers.BigNumber,
           validTx.txId,
           validTx.chainId,
+          validTx.txTimestamp,
         )
       } else if (validTx.type === 'tokenToCoin') {
         console.log('Processing token to coin transaction', validTx)
@@ -2736,6 +2741,7 @@ async function main(): Promise<void> {
           validTx.value as ethers.BigNumber,
           validTx.txId,
           validTx.chainId,
+          validTx.txTimestamp,
         )
       } else if (validTx.type === 'vaultBridge') {
         console.log('Processing vault bridge (EVM-to-EVM) transaction', validTx)
@@ -2745,6 +2751,7 @@ async function main(): Promise<void> {
           validTx.txId,
           validTx.chainId,
           chainConfigs.secondaryChainConfig!.chainId,
+          validTx.txTimestamp,
         )
       } else {
         throw new Error(`Unsupported transaction type: ${validTx.type}`)

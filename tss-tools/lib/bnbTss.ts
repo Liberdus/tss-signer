@@ -618,6 +618,45 @@ export function buildKeygenArgs({
   return args;
 }
 
+export function buildSignArgs({
+  home,
+  vaultName,
+  password,
+  channelId,
+  channelPassword,
+  messageDecimal,
+  extraArgs,
+}: {
+  home: string
+  vaultName: string
+  password: string
+  channelId: string
+  channelPassword: string
+  messageDecimal: string
+  extraArgs?: string[]
+}): string[] {
+  const args = [
+    'sign',
+    '--home',
+    home,
+    '--vault_name',
+    vaultName,
+    '--password',
+    password,
+    '--channel_id',
+    channelId,
+    '--channel_password',
+    channelPassword,
+    '--message',
+    messageDecimal,
+    '--json',
+  ];
+  if (Array.isArray(extraArgs) && extraArgs.length > 0) {
+    args.push(...extraArgs);
+  }
+  return args;
+}
+
 export function initParty(options: InitPartyOptions = {} as InitPartyOptions): InitializedParty {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
@@ -801,25 +840,15 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
     'BNB TSS channel password',
   );
   const messageDecimal = toMessageDecimal(options.digest);
-  const args = [
-    'sign',
-    '--home',
+  const args = buildSignArgs({
     home,
-    '--vault_name',
     vaultName,
-    '--password',
     password,
-    '--channel_id',
     channelId,
-    '--channel_password',
     channelPassword,
-    '--message',
     messageDecimal,
-    '--json',
-  ];
-  if (Array.isArray(options.extraArgs) && options.extraArgs.length > 0) {
-    args.push(...options.extraArgs);
-  }
+    extraArgs: options.extraArgs,
+  });
   console.log(`Running ${binary} ${args.join(' ')}`);
   const result: any = await runWithLiveLogs(binary, args, {
     cwd: tssRoot,

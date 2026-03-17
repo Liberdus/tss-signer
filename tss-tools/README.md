@@ -13,6 +13,8 @@ Structure:
   - builds the native binaries into `../tss/.tooling/bin/tss` and `../tss/.tooling/bin/tss-derive-pubkey`
 - `lib/committeeTopology.ts`
   - committee topology helper for deterministic local peer addresses and parsed `tss describe` output
+- `lib/channelId.ts`
+  - deterministic signing `channelId` helper derived from `txId` and `txTimestamp`
 - `init.ts`, `keygen.ts`, `regroup.ts`, `verify.ts`, `sign-ethereum-tx.ts`
   - TypeScript entrypoints for native TSS flows
   - compiled into `dist/tss-tools/*.js` by `npm run compile-tss`

@@ -46,6 +46,10 @@ export BNB_TSS_PASSWORD=1234567890
 export BNB_TSS_CHANNEL_ID=<replace_with_channel_id>
 export BNB_TSS_CHANNEL_PASSWORD=1234567890
 
+# The long-lived tss-party signer derives a deterministic signing channel id from
+# each coordinator txId + txTimestamp. Keep BNB_TSS_CHANNEL_ID for manual native
+# keygen/regroup flows and ad-hoc direct tss signing.
+
 
 # 8) Key storage layout used by tss-signer native mode
 # keystores/bnbtss/party-<idx>/chain-<chainId>/default/
@@ -184,6 +188,14 @@ EOF
 # 13) Sign an Ethereum transaction with threshold+1 parties
 # Run the same command in separate terminals for participating parties.
 # With params.json threshold 3, that means at least 4 participating parties.
+#
+# If you do not pass --channel-id and do not set BNB_TSS_CHANNEL_ID, this wrapper
+# derives a fallback signing channel id from:
+# - the unsigned tx hash
+# - the current 30-minute time bucket
+#
+# That means all participating parties should start the command within the same
+# 30-minute bucket when using the fallback.
 
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
 npm run tss-sign-ethereum-tx -- --party 2 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
@@ -251,8 +263,10 @@ npm run tss-party -- 1
 #     tss/.tooling/bin/tss
 # - Shared env vars must be set for all participating parties:
 #     BNB_TSS_PASSWORD
-#     BNB_TSS_CHANNEL_ID
 #     BNB_TSS_CHANNEL_PASSWORD
+# - BNB_TSS_CHANNEL_ID is still required for manual native keygen/regroup flows.
+#   The long-lived tss-party signer derives a deterministic signing channel id
+#   from each coordinator txId + txTimestamp.
 # - Vaults must exist for each required chain under:
 #     keystores/bnbtss/party-<idx>/chain-<chainId>/default/
 # - Derived ethereum_address from the vault must match chain-config.json -> tssSenderAddress
