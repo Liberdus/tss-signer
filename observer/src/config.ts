@@ -43,7 +43,6 @@ export const chainConfigsRaw: ChainConfigs = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../../chain-config.json"), "utf8"),
 );
 
-// All chains except vaultChain must have tssSenderAddress, bridgeAddress, and gasConfig
 function requireFullChainConfig(config: ChainConfig, label: string): void {
   if (!config.tssSenderAddress || !config.bridgeAddress || !config.gasConfig) {
     console.error(
@@ -78,8 +77,7 @@ const rpcConfigByChainId: Record<string, { rpcUrl: string }> = {};
 const fallbackRpcUrlByChainId = new Map<number, string>();
 for (const config of chainsToMonitor) {
   rpcConfigByChainId[config.chainId.toString()] = { rpcUrl: config.rpcUrl };
-  const fallbackRpcUrl = config.rpcUrl;
-  fallbackRpcUrlByChainId.set(config.chainId, fallbackRpcUrl);
+  fallbackRpcUrlByChainId.set(config.chainId, config.rpcUrl);
 }
 rpcUrls.initFromConfig(rpcConfigByChainId);
 rpcUrls.startHourlyChainlistFetch(monitoredChainIds);
@@ -111,17 +109,10 @@ export async function withChainHttpProvider<T>(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 export function getChainConfigById(chainId: number): ChainConfig | undefined {
-  // In Liberdus mode, supportedChains is the canonical source — its contract
-  // addresses differ from vaultChain/secondaryChainConfig, so check it first.
   if (chainConfigsRaw.enableLiberdusNetwork) {
     return chainConfigsRaw.supportedChains[chainId.toString()];
   }
-  // Vault mode: vaultChain and secondaryChainConfig are the active configs.
   if (chainConfigsRaw.vaultChain?.chainId === chainId)
     return chainConfigsRaw.vaultChain;
   if (chainConfigsRaw.secondaryChainConfig?.chainId === chainId)

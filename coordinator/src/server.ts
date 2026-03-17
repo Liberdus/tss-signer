@@ -1,16 +1,6 @@
 import express from "express";
 import cors from "cors";
-import * as TransactionDB from "./storage/transactiondb";
 import { registerRoutes } from "./routes";
-import { chainConfigsRaw } from "./config";
-import { initMonitorState, monitorState } from "./monitor/state";
-import {
-  monitorEthereumBridgeOutQueryFilter,
-  monitorEthereumBridgeInQueryFilter,
-} from "./monitor/ethereum";
-import { monitorLiberdusTransactions } from "./monitor/liberdus";
-import { startDriftResistantScheduler } from "./utils/scheduler";
-import { setSyncReady } from "./monitor/state";
 import { logCoordinatorAuthConfig } from "./auth";
 
 function enableTimestampedConsoleLogs(): void {
@@ -20,7 +10,6 @@ function enableTimestampedConsoleLogs(): void {
     "warn",
     "error",
   ];
-
   for (const method of methods) {
     const original = console[method].bind(console);
     console[method] = (...args: any[]) => {
@@ -33,99 +22,13 @@ enableTimestampedConsoleLogs();
 logCoordinatorAuthConfig();
 
 const app = express();
-app.use(
-  cors({ origin: true, methods: ["GET", "POST", "PATCH"], credentials: true })
-);
+app.use(cors({ origin: true, methods: ["GET", "POST", "PATCH"], credentials: true }));
 app.use(express.json());
 
 registerRoutes(app);
 
-// ---------------------------------------------------------------------------
-// Startup
-// ---------------------------------------------------------------------------
-
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8000;
-const ETH_MONITOR_INTERVAL_MS = 60 * 1000;  // 1 minute
-const LIB_MONITOR_INTERVAL_MS = 10_000;  // 10 seconds
-const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
 
-(async () => {
-  try {
-    await TransactionDB.initializeTransactionsDatabase();
-
-    initMonitorState();
-    console.log(
-      "[monitor] Loaded monitor state. Last Liberdus timestamp:",
-      new Date(monitorState.lastLiberdusTimestamp).toISOString()
-    );
-
-    // Bind the port before the initial sync so TSS parties receive a proper
-    // 503 response (with Retry-After) instead of ECONNREFUSED.  All routes
-    // except GET /status are blocked by the middleware above until syncReady.
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT} (initial sync in progress)`);
-    });
-
-    // ---------------------------------------------------------------------------
-    // Initial ordered sync before accepting pending transaction queries.
-    //
-    // Order matters on a cold start or restart:
-    //   1. BridgedOut  — creates PENDING BRIDGE_OUT/BRIDGE_VAULT transactions from
-    //                    source-side burn events (EVM → Liberdus or vault chain).
-    //   2. Liberdus    — creates PENDING BRIDGE_IN transactions for coin-to-token txs
-    //                    (BRIDGE_IN txId = Liberdus txId); marks the correlated
-    //                    EVM deposit COMPLETED or adds entry as COMPLETED for token-to-coin txs.
-    //   3. BridgedIn   — marks transactions COMPLETED; if the source record already
-    //                    exists it updates its status; if not, it early-saves it as
-    //                    COMPLETED so parties never re-process it.
-    //
-    // Running BridgedIn last (after the source scanners) maximises the chance that
-    // the source record already exists, avoiding early-saves that need later
-    // source correction.  syncReady is set only after all three complete, which
-    // prevents GET /transaction?status=PENDING from returning transactions that are
-    // already completed on-chain.
-    // ---------------------------------------------------------------------------
-    console.log("[monitor] Initial sync: scanning BridgedOut events...");
-    while (!(await monitorEthereumBridgeOutQueryFilter(undefined, true))) {
-      console.warn(
-        `[monitor] Initial BridgedOut sync incomplete, retrying in ${INITIAL_SYNC_RETRY_DELAY_MS}ms...`
-      );
-      await new Promise((r) => setTimeout(r, INITIAL_SYNC_RETRY_DELAY_MS));
-    }
-
-    if (chainConfigsRaw.enableLiberdusNetwork) {
-      console.log("[monitor] Initial sync: scanning Liberdus transactions...");
-      await monitorLiberdusTransactions();
-    }
-
-    console.log("[monitor] Initial sync: scanning BridgedIn events...");
-    while (!(await monitorEthereumBridgeInQueryFilter(undefined, true))) {
-      console.warn(
-        `[monitor] Initial BridgedIn sync incomplete, retrying in ${INITIAL_SYNC_RETRY_DELAY_MS}ms...`
-      );
-      await new Promise((r) => setTimeout(r, INITIAL_SYNC_RETRY_DELAY_MS));
-    }
-
-    setSyncReady();
-    console.log(
-      "[monitor] Initial sync complete — accepting pending transaction queries."
-    );
-
-    // Periodic schedulers: BridgedOut and BridgedIn are always run as a
-    // sequential pair so the source record exists before the completion scan.
-    startDriftResistantScheduler(async () => {
-      await monitorEthereumBridgeOutQueryFilter();
-      await monitorEthereumBridgeInQueryFilter();
-    }, ETH_MONITOR_INTERVAL_MS);
-
-    if (chainConfigsRaw.enableLiberdusNetwork) {
-      startDriftResistantScheduler(
-        monitorLiberdusTransactions,
-        LIB_MONITOR_INTERVAL_MS
-      );
-    }
-  } catch (err) {
-    console.error("Failed to initialize the application:", err);
-    process.exit(1);
-  }
-})();
+app.listen(PORT, () => {
+  console.log(`[coordinator] Relay server running on http://localhost:${PORT}`);
+});

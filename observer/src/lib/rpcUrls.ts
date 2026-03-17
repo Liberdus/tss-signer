@@ -8,8 +8,7 @@ const urlBlacklistExpiry = new Map<string, number>();
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 function normalizeRpcUrl(url: string): string {
-  const trimmed = (url || "").trim();
-  return trimmed;
+  return (url || "").trim();
 }
 
 export interface ChainConfigForUrls {
@@ -71,7 +70,7 @@ export async function fetchChainlistAndMerge(
     const res = await axios.get(CHAINLIST_RPCS_URL, { timeout: 15_000 });
     mergeChainlistResponse(res.data as unknown, new Set(supportedChainIds));
   } catch (error: any) {
-    console.warn("[coordinator/rpcUrls] Chainlist fetch failed:", error?.message || error);
+    console.warn("[observer/rpcUrls] Chainlist fetch failed:", error?.message || error);
   }
 }
 
@@ -79,13 +78,13 @@ export function startHourlyChainlistFetch(
   supportedChainIds: number[]
 ): () => void {
   fetchChainlistAndMerge(supportedChainIds).then(() => {
-    console.log("[coordinator/rpcUrls] Initial chainlist fetch completed");
+    console.log("[observer/rpcUrls] Initial chainlist fetch completed");
   });
 
   const interval = setInterval(() => {
     fetchChainlistAndMerge(supportedChainIds).then(() => {
       if (process.env.NODE_ENV !== "test") {
-        console.log("[coordinator/rpcUrls] Hourly chainlist merge completed");
+        console.log("[observer/rpcUrls] Hourly chainlist merge completed");
       }
     });
   }, HOURLY_MS);
@@ -97,7 +96,7 @@ export function markUrlFailed(url: string, ttlMs?: number, reason?: string): voi
   urlBlacklistExpiry.set(url, Date.now() + (ttlMs ?? DEFAULT_TTL_MS));
   const reasonText = reason ? ` reason=${reason}` : "";
   console.warn(
-    `[coordinator/rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}`
+    `[observer/rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}`
   );
 }
 
@@ -131,6 +130,8 @@ export function shouldBlacklistForError(error: unknown): boolean {
   if (/5\d{2}/.test(msg)) return true;
   if (/econnrefused|enotfound|econnreset/i.test(msg)) return true;
   if (/invalid response|parse error|unexpected token/i.test(msg)) return true;
+  // RPC returned malformed/null response — TypeError thrown inside ethers.js internals
+  if (error instanceof TypeError) return true;
   return false;
 }
 

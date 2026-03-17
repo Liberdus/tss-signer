@@ -1,0 +1,30 @@
+export const isEthereumAddress = (address: string): boolean => {
+  return /^0x[a-fA-F0-9]{40}$/.test(address)
+}
+
+export const isShardusAddress = (address: string): boolean => {
+  if (address.length !== 64) return false
+  return true
+}
+
+export const toShardusAddress = (address: string): string => {
+  address = address.trim()
+  if (address.length === 64) return address.toLowerCase()
+  if (isEthereumAddress(address)) {
+    address = address.slice(2).toLowerCase()
+    return address + '0'.repeat(24)
+  }
+  return address
+}
+
+export const toEthereumAddress = (address: string): string => {
+  address = address.trim()
+  if (isEthereumAddress(address)) return address.toLowerCase()
+  if (isShardusAddress(address)) {
+    if (address.endsWith('0'.repeat(24))) {
+      address = address.slice(0, -24).toLowerCase()
+      return '0x' + address
+    }
+  }
+  return address
+}

@@ -14,4 +14,14 @@ Cargo.lock
 tx.json
 tss_signer_keypair.json
 
+# Runtime database files
+db/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Compiled Go binaries
+*.exe
+*.exe~
+
 

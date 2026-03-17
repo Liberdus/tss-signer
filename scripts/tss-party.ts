@@ -13,6 +13,8 @@ import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAUL
 import * as rpcUrls from './lib/rpcUrls'
 import {getHttpProviderForChain} from './lib/httpProviderHelper'
 const bnbTss = require('../tss-tools/lib/bnbTss')
+import * as TransactionDB from '../observer/src/storage/transactiondb'
+import {verifyTxOnChain} from '../observer/src/verification'
 
 const {BigNumber, utils: ethersUtils} = ethers
 const useBnbTss = true
@@ -33,8 +35,8 @@ const useBnbTss = true
   }
 })()
 
-const gg18 = require('../pkg')
-const {stringify, parse} = require('../external/stringify-shardus')
+const gg18 = require(path.join(process.cwd(), 'pkg'))
+const {stringify, parse} = require(path.join(process.cwd(), 'external/stringify-shardus'))
 
 interface Params {
   threshold: number
@@ -123,9 +125,9 @@ interface SignedTx {
   }
 }
 
-type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_coordinator_completed' | 'skipped_coordinator_failed' | 'skipped_coordinator_reverted'
+type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
 
-// Transaction interface saved in the coordinator
+// Transaction interface matching the observer DB schema
 export interface Transaction {
   txId: string
   sender: string
@@ -140,19 +142,6 @@ export interface Transaction {
   updatedAt?: string
 }
 
-interface TxStatusData
-  extends Omit<
-    Transaction,
-    | "sender"
-    | "value"
-    | "type"
-    | "txTimestamp"
-    | "chainId"
-    | "createdAt"
-    | "updatedAt"
-  > {
-  party: number;
-}
 
 export enum TransactionStatus {
   PENDING = 0,
@@ -276,9 +265,14 @@ const coordinatorUrl = process.env.COORDINATOR_URL || chainConfigs.coordinatorUr
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigs.collectorHost;
 const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServerHost;
 
+// Observer URL and DB path — derived from party index (set after ourParty is initialized below)
+
 const tssPartyIdx =
   parsedIdx == null ? readline.question('Enter the party index (1 to 5): ') : parsedIdx
 const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''}
+
+const observerUrl = `http://127.0.0.1:${8100 + ourParty.idx}`
+const dbPath = path.resolve(process.cwd(), 'db', `transactions-${ourParty.idx}.sqlite`)
 
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
 const chainsToInit: ChainConfig[] = chainConfigs.enableLiberdusNetwork
@@ -399,7 +393,7 @@ function checkMaxBridgeAmount(
   if (value.lte(chainProvider.maxBridgeInAmount)) return true
   const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${chainName}`
   console.error(reason)
-  sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, '', reason)
+  updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', reason)
   // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
   removeFromPendingTxQueue(txId)
   return false
@@ -1104,32 +1098,65 @@ function getAxiosErrorMessage(error: unknown): string {
     : (error instanceof Error ? error.message : String(error))
 }
 
-async function sendTxStatusToCoordinator(
+async function updateTxStatusInLocalDB(
   txId: string,
   status: TransactionStatus,
   receiptId: string,
   failedReason = '',
 ): Promise<void> {
   try {
-    const url = `${coordinatorUrl}/transaction/status`
-    const data: TxStatusData = {
-      txId: normalizeTxId(txId),
-      status,
-      receiptId: receiptId ? normalizeTxId(receiptId) : receiptId,
-      reason: failedReason,
-      party: ourParty.idx,
+    const normalizedTxId = normalizeTxId(txId)
+    const normalizedReceiptId = receiptId ? normalizeTxId(receiptId) : receiptId
+
+    // For COMPLETED and REVERTED, verify on-chain before writing to DB.
+    // FAILED has no delivery tx to verify, so skip verification.
+    if (
+      status === TransactionStatus.COMPLETED ||
+      status === TransactionStatus.REVERTED
+    ) {
+      const tx = TransactionDB.getTransactionById(normalizedTxId)
+      if (!tx) {
+        console.error(`[updateTxStatus] Transaction ${normalizedTxId} not found in local DB`)
+        return
+      }
+      const isReverted = status === TransactionStatus.REVERTED
+      const verified = await verifyTxOnChain(
+        tx.type as unknown as TransactionDB.TransactionType,
+        tx.chainId,
+        normalizedReceiptId,
+        normalizedTxId,
+        isReverted,
+      )
+      if (!verified) {
+        console.error(
+          `[updateTxStatus] On-chain verification failed for ${normalizedTxId} (receiptId: ${normalizedReceiptId})`
+        )
+        return
+      }
+      console.log(`[updateTxStatus] On-chain verification passed for ${normalizedTxId}`)
     }
-    const response = await axios.post(url, buildSignedCoordinatorRequest(data))
-    if (response.status !== 202 && response.status !== 200) {
-      console.error(`Failed to update transaction status to coordinator: HTTP ${response.status}`)
-      return
-    }
-    if (verboseLogs) {
-      console.log('Updated transaction status to coordinator:', response.data)
+
+    const result = TransactionDB.updateTransactionStatus(
+      normalizedTxId,
+      status as unknown as TransactionDB.TransactionStatus,
+      normalizedReceiptId,
+      failedReason || null,
+    )
+
+    if (result === 'ok') {
+      if (verboseLogs) {
+        console.log(`[updateTxStatus] Updated ${normalizedTxId} → status=${status}`)
+      }
+    } else if (result === 'duplicate') {
+      console.log(`[updateTxStatus] Duplicate status update ignored for ${normalizedTxId}`)
+    } else if (result === 'no_downgrade') {
+      console.log(`[updateTxStatus] Status downgrade blocked for ${normalizedTxId} (attempted ${status})`)
+    } else if (result === 'not_found') {
+      console.error(`[updateTxStatus] Transaction ${normalizedTxId} not found in local DB`)
     }
   } catch (error) {
-    const errorMessage = getAxiosErrorMessage(error)
-    console.error(`Error updating transaction status to coordinator: ${errorMessage}`)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(`[updateTxStatus] Error updating status for ${txId}: ${errorMessage}`)
   }
 }
 
@@ -1271,32 +1298,19 @@ async function validateCoinToToken(tx: Transaction): Promise<boolean> {
 }
 
 /** Dispatches to the appropriate validator based on transaction type. */
-async function verifyCoordinatorTxData(tx: Transaction): Promise<boolean> {
+async function verifySourceTxData(tx: Transaction): Promise<boolean> {
   if (tx.type === TransactionType.BRIDGE_IN) return validateCoinToToken(tx)
   return validateTokenToCoin(tx)
 }
 
-async function pollPendingTransactionsFromCoordinator(): Promise<void> {
-  console.log('Polling pending transactions from coordinator...', new Date().toISOString())
+async function pollPendingTransactionsFromLocalDB(): Promise<void> {
+  console.log('Polling pending transactions from local DB...', new Date().toISOString())
   try {
-    const url = `${coordinatorUrl}/transaction?unprocessed=true`
-    const response = await axios.get(url, {timeout: COORDINATOR_POLL_INTERVAL})
-    const data = response.data
-    // if (verboseLogs) {
-    //   console.log('Received pending transactions from coordinator:', data.Ok.transactions)
-    // }
-    if (!data?.Ok?.transactions) return
-
-    const transactions: Transaction[] = data.Ok.transactions
+    const dbTxs = TransactionDB.getTransactionsByPage(10, 0, { unprocessed: true })
+    const transactions: Transaction[] = (dbTxs as unknown as Transaction[])
       .slice()
-      .sort((a: Transaction, b: Transaction) => a.txTimestamp - b.txTimestamp)
+      .sort((a, b) => a.txTimestamp - b.txTimestamp)
     if (transactions.length === 0) return
-
-    if (data.Ok.totalTranactions > transactions.length) {
-      console.warn(
-        `[poll] ${data.Ok.totalTranactions} pending txs on coordinator, only fetched ${transactions.length} (first page)`,
-      )
-    }
 
     let txAddedToQueue = false
     for (const tx of transactions) {
@@ -1313,7 +1327,7 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
         continue
       }
       if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED || tx.status === TransactionStatus.REVERTED) {
-        console.log(`[poll] Skipping tx ${tx.txId} — coordinator reports ${txStatusLabel(tx.status)}`)
+        console.log(`[poll] Skipping tx ${tx.txId} — DB reports ${txStatusLabel(tx.status)}`)
         continue
       }
       if (rejectOldTransactions) {
@@ -1345,17 +1359,17 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
 
       const existingEntry = txQueueMap.get(tx.txId)
       if (existingEntry) {
-        // If we previously marked it failed/reverted but the coordinator still shows it pending, retry
+        // If we previously marked it failed/reverted but the DB still shows it pending, retry
         if ((existingEntry.status === 'failed' || existingEntry.status === 'reverted') && !pendingTxQueue.some(t => t.txId === tx.txId)) {
-          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but coordinator reports pending`)
-          // fall through to re-queue below (status updated to pending after verification)
+          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but DB reports pending`)
+          // fall through to re-queue below
         } else {
           continue
         }
       }
 
       console.log(`[poll] Verifying new tx:`, tx)
-      if (!await verifyCoordinatorTxData(tx)) {
+      if (!await verifySourceTxData(tx)) {
         console.warn(`[poll] Skipping tx ${tx.txId} — failed on-chain verification`)
         continue
       }
@@ -1370,8 +1384,8 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
       const value = ethers.BigNumber.from(tx.value)
 
       const txData: TransactionQueueItem = {
-        receipt: null as any, // receipt not needed — process functions use explicit params
-        from: tx.sender,      // coordinator stores toEthereumAddress(destination)
+        receipt: null as any,
+        from: tx.sender,
         value,
         txId: tx.txId,
         type: bridgeType,
@@ -1381,7 +1395,6 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
 
       pendingTxQueue.push(txData)
       if (existingEntry) {
-        // Only update status back to pending if it was previously failed/reverted (retry path)
         if (existingEntry.status === 'failed' || existingEntry.status === 'reverted') {
           existingEntry.status = 'pending'
         }
@@ -1392,94 +1405,59 @@ async function pollPendingTransactionsFromCoordinator(): Promise<void> {
 
       if (verboseLogs) {
         const chainName = getChainConfigById(tx.chainId)?.name || 'Unknown'
-        console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from coordinator (${chainName})`)
+        console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from local DB (${chainName})`)
       }
       txAddedToQueue = true
     }
 
     if (txAddedToQueue) {
-      // Re-sort the queue so newly inserted items are in txTimestamp order.
       pendingTxQueue.sort((a, b) => {
         const ta = a.txTimestamp ?? Infinity
         const tb = b.txTimestamp ?? Infinity
         return ta - tb
       })
-
       saveQueueToFile(ourParty.idx)
     }
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 503) {
-      console.log('[poll] Coordinator is syncing — skipping poll')
-      return
-    }
-    const errorMessage = getAxiosErrorMessage(error)
-    console.error(`[poll] Error polling pending transactions from coordinator: ${errorMessage}`)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(`[poll] Error polling pending transactions from local DB: ${errorMessage}`)
   }
 }
 
-function isValidTransactionStatus(value: unknown): value is TransactionStatus {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= TransactionStatus.PENDING &&
-    value <= TransactionStatus.REVERTED
-  )
-}
 
-async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionStatus | null> {
+function checkTxStatusFromLocalDB(txId: string): TransactionStatus | null {
   try {
-    const url = `${coordinatorUrl}/transaction?txId=${encodeURIComponent(txId)}`
-    const response = await axios.get(url, { timeout: 2000 })
-    const data = response.data
-    if (!data || typeof data !== 'object') {
-      throw new Error('Invalid coordinator response shape: missing or non-object data')
-    }
-    if (!('Ok' in data) || data.Ok == null) {
-      throw new Error('Invalid coordinator response shape: missing Ok')
-    }
-    const ok = data.Ok as { transactions?: unknown[] }
-    if (!Array.isArray(ok.transactions)) {
-      throw new Error('Invalid coordinator response shape: Ok.transactions is not an array')
-    }
-    if (ok.transactions.length > 0) {
-      const first = ok.transactions[0] as { status?: unknown }
-      if (!isValidTransactionStatus(first?.status)) {
-        throw new Error('Invalid coordinator response shape: invalid transaction status')
-      }
-      return first.status as TransactionStatus
-    }
-    return null
+    const tx = TransactionDB.getTransactionById(txId)
+    if (!tx) return null
+    return tx.status as unknown as TransactionStatus
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 503) {
-      console.log(`[checkTxStatus] Coordinator is syncing — treating ${txId} as not found`)
-      return null
-    }
-    throw new Error(getAxiosErrorMessage(error))
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    throw new Error(`[checkTxStatus] DB read failed for ${txId}: ${errorMessage}`)
   }
 }
 
-async function waitForCoordinatorFinalStatus(
+async function waitForLocalDBFinalStatus(
   txId: string,
   timeoutMs: number,
 ): Promise<TransactionStatus.COMPLETED | TransactionStatus.FAILED | TransactionStatus.REVERTED> {
   const startTime = Date.now()
   while (true) {
     if (Date.now() - startTime > timeoutMs) {
-      throw new Error(`Timed out waiting for coordinator final status for ${txId}`)
+      throw new Error(`Timed out waiting for local DB final status for ${txId}`)
     }
     try {
-      const status = await checkTxStatusFromCoordinator(txId)
+      const status = checkTxStatusFromLocalDB(txId)
       if (status === TransactionStatus.COMPLETED || status === TransactionStatus.FAILED || status === TransactionStatus.REVERTED) {
         return status
       }
       if (status == null) {
-        console.warn(`[wait-final] ${txId} not found on coordinator yet, waiting...`)
+        console.warn(`[wait-final] ${txId} not found in local DB yet, waiting...`)
       } else {
-        console.log(`[wait-final] ${txId} still ${txStatusLabel(status)} on coordinator, waiting...`)
+        console.log(`[wait-final] ${txId} still ${txStatusLabel(status)} in local DB, waiting...`)
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
-      console.warn(`[wait-final] Coordinator status check failed for ${txId}, retrying... ${errorMessage}`)
+      console.warn(`[wait-final] Local DB status check failed for ${txId}, retrying... ${errorMessage}`)
     }
     await delay_ms(COORDINATOR_FINAL_STATUS_POLL_INTERVAL)
   }
@@ -1501,22 +1479,22 @@ async function refreshLastBridgeInTime(
   }
 }
 
-async function reconcileTxStatusWithCoordinator(
+function reconcileTxStatusWithLocalDB(
   txId: string,
   context: 'pre-process' | 'pre-sign',
-): Promise<null | 'completed' | 'failed' | 'reverted'> {
+): null | 'completed' | 'failed' | 'reverted' {
   try {
-    const status = await checkTxStatusFromCoordinator(txId)
+    const status = checkTxStatusFromLocalDB(txId)
     if (status == null || status === TransactionStatus.PENDING || status === TransactionStatus.PROCESSING) {
       return null
     }
     const statusLabel = status === TransactionStatus.COMPLETED ? 'completed' :
       status === TransactionStatus.REVERTED ? 'reverted' : 'failed'
-    console.log(`⏩ ${txId} already ${txStatusLabel(status)} on coordinator (${context}), skipping`)
+    console.log(`⏩ ${txId} already ${txStatusLabel(status)} in local DB (${context}), skipping`)
     return statusLabel
   } catch (error: any) {
     const errorMessage = error instanceof Error ? error.message : String(error)
-    console.warn(`[${context}] Coordinator status check failed for ${txId}, proceeding with tx: ${errorMessage}`)
+    console.warn(`[${context}] Local DB status check failed for ${txId}, proceeding with tx: ${errorMessage}`)
     return null
   }
 }
@@ -1813,8 +1791,8 @@ async function processCoinToToken(
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
-  const coordinatorStatusCoinToToken = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
-  if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusCoinToToken === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
+  const dbStatusCoinToToken = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
+  if (dbStatusCoinToToken != null) return dbStatusCoinToToken === 'completed' ? 'skipped_db_completed' : dbStatusCoinToToken === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
 
   // Use chain-specific keystore for signing
   let keyShare = useBnbTss ? null : await DKG(ourParty, targetChainId)
@@ -1856,8 +1834,7 @@ async function processCoinToToken(
       )
       const block = await chainProvider.provider.getBlock(receipt.blockNumber)
       chainProvider.lastBridgeInTime = block.timestamp
-      // Send tx status to coordinator
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash)
       return 'completed'
     } else {
       console.log(
@@ -1865,8 +1842,7 @@ async function processCoinToToken(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      // Tx was failed in execution
-      sendTxStatusToCoordinator(txId, TransactionStatus.REVERTED, txHash, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, '')
       return 'reverted'
     }
   } else {
@@ -1876,8 +1852,7 @@ async function processCoinToToken(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${targetChainName}`)
-    // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     removeFromPendingTxQueue(txId)
     return 'failed'
@@ -1966,8 +1941,8 @@ async function processVaultBridge(
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
-  const coordinatorStatusVaultBridge = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
-  if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusVaultBridge === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
+  const dbStatusVaultBridge = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
+  if (dbStatusVaultBridge != null) return dbStatusVaultBridge === 'completed' ? 'skipped_db_completed' : dbStatusVaultBridge === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
 
   // Use destination chain's keystore for signing
   let keyShare = useBnbTss ? null : await DKG(ourParty, destinationChainId)
@@ -2006,7 +1981,7 @@ async function processVaultBridge(
       )
       const block = await destChainProvider.provider.getBlock(receipt.blockNumber)
       destChainProvider.lastBridgeInTime = block.timestamp
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, txHash)
+      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash)
       return 'completed'
     } else {
       console.log(
@@ -2014,8 +1989,7 @@ async function processVaultBridge(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      // Tx was failed in execution
-      sendTxStatusToCoordinator(txId, TransactionStatus.REVERTED, txHash, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, '')
       return 'reverted'
     }
   } else {
@@ -2025,7 +1999,7 @@ async function processVaultBridge(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${destChainName}`)
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     removeFromPendingTxQueue(txId)
     return 'failed'
@@ -2082,8 +2056,8 @@ async function processTokenToCoin(
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
-  const coordinatorStatusTokenToCoin = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
-  if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusTokenToCoin === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
+  const dbStatusTokenToCoin = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
+  if (dbStatusTokenToCoin != null) return dbStatusTokenToCoin === 'completed' ? 'skipped_db_completed' : dbStatusTokenToCoin === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
   let keyShare = useBnbTss ? null : await DKG(ourParty, sourceChainId)
@@ -2128,8 +2102,7 @@ async function processTokenToCoin(
       console.log(
         `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
       )
-      // Send tx status to coordinator
-      sendTxStatusToCoordinator(txId, TransactionStatus.COMPLETED, signedTxId)
+      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, signedTxId)
       return 'completed'
     } else {
       console.log(
@@ -2137,8 +2110,7 @@ async function processTokenToCoin(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, receipt.reason)
-      // Tx was failed in execution
-      sendTxStatusToCoordinator(txId, TransactionStatus.REVERTED, signedTxId, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, signedTxId, '')
       return 'reverted'
     }
   } else {
@@ -2147,8 +2119,7 @@ async function processTokenToCoin(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed from ${sourceChainName}`)
-    // Send tx status to coordinator
-    sendTxStatusToCoordinator(txId, TransactionStatus.FAILED, signedTxId, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     removeFromPendingTxQueue(txId)
     return 'failed'
@@ -2611,43 +2582,70 @@ async function main(): Promise<void> {
     }
   }
 
+  // Initialize local DB (shared with the paired observer process)
+  try {
+    TransactionDB.initializeTransactionsDatabase(dbPath)
+    console.log(`[tss-party] Local DB initialized at ${dbPath}`)
+  } catch (e) {
+    console.error('[tss-party] Failed to initialize local DB:', e)
+    process.exit(1)
+  }
+
+  // Wait for the paired observer process to complete its initial sync
+  console.log(`[tss-party] Waiting for observer at ${observerUrl} to become ready...`)
+  await (async () => {
+    const POLL_INTERVAL_MS = 3000
+    while (true) {
+      try {
+        const res = await axios.get(`${observerUrl}/status`, { timeout: 5000 })
+        if (res.data?.syncReady === true) {
+          console.log('[tss-party] Observer is ready (syncReady=true)')
+          return
+        }
+        console.log('[tss-party] Observer not ready yet (syncReady=false), retrying...')
+      } catch {
+        console.log(`[tss-party] Observer unreachable, retrying in ${POLL_INTERVAL_MS}ms...`)
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+    }
+  })()
+
   // Load persisted queue state
   loadQueueFromFile(ourParty.idx)
 
-  // Startup recovery: verify pending/processing entries against coordinator
-  console.log('🔄 Running startup recovery check against coordinator...')
+  // Startup recovery: verify pending/processing entries against local DB
+  console.log('🔄 Running startup recovery check against local DB...')
   const txIdsToCheck = [...txQueueMap.entries()]
     .filter(([, entry]) => entry.status === 'pending' || entry.status === 'processing')
     .map(([txId]) => txId)
 
   for (const txId of txIdsToCheck) {
     try {
-      const coordinatorStatus = await checkTxStatusFromCoordinator(txId)
+      const dbStatus = checkTxStatusFromLocalDB(txId)
       const entry = txQueueMap.get(txId)!
 
-      if (coordinatorStatus === TransactionStatus.COMPLETED) {
+      if (dbStatus === TransactionStatus.COMPLETED) {
         entry.status = 'completed'
         removeFromPendingTxQueue(txId)
-        console.log(`[startup] ${txId} already COMPLETED on coordinator, skipping`)
-      } else if (coordinatorStatus === TransactionStatus.REVERTED) {
+        console.log(`[startup] ${txId} already COMPLETED in local DB, skipping`)
+      } else if (dbStatus === TransactionStatus.REVERTED) {
         entry.status = 'reverted'
         removeFromPendingTxQueue(txId)
-        console.log(`[startup] ${txId} already REVERTED on coordinator, skipping`)
-      } else if (coordinatorStatus === TransactionStatus.FAILED) {
+        console.log(`[startup] ${txId} already REVERTED in local DB, skipping`)
+      } else if (dbStatus === TransactionStatus.FAILED) {
         entry.status = 'failed'
         const txData = pendingTxQueue.find(t => t.txId === txId)
         if (txData) {
-          appendToFailedTxsLogs(txData, 'already failed on coordinator at startup')
+          appendToFailedTxsLogs(txData, 'already failed in local DB at startup')
           removeFromPendingTxQueue(txId)
         }
-        console.log(`[startup] ${txId} already FAILED on coordinator, skipping`)
+        console.log(`[startup] ${txId} already FAILED in local DB, skipping`)
       } else {
-        // PENDING or PROCESSING on coordinator — ensure txData is in pendingTxQueue
+        // PENDING or PROCESSING in DB — ensure txData is in pendingTxQueue
         const alreadyInQueue = pendingTxQueue.some(t => t.txId === txId)
         if (!alreadyInQueue) {
-          // Was processing when we crashed — recover tx data from coordinator and verify it.
-          const response = await axios.get(`${coordinatorUrl}/transaction?txId=${encodeURIComponent(txId)}`)
-          const tx = response.data?.Ok?.transactions?.[0] as Transaction | undefined
+          // Was processing when we crashed — recover tx data directly from local DB
+          const tx = TransactionDB.getTransactionById(txId) as unknown as Transaction | null
           if (
             tx &&
             tx.txId &&
@@ -2657,7 +2655,7 @@ async function main(): Promise<void> {
             tx.value &&
             tx.chainId != null &&
             getChainConfigById(tx.chainId) != null &&
-            await verifyCoordinatorTxData(tx)
+            await verifySourceTxData(tx)
           ) {
             const bridgeType: TransactionQueueItem['type'] =
               tx.type === TransactionType.BRIDGE_IN
@@ -2676,16 +2674,16 @@ async function main(): Promise<void> {
             }
             pendingTxQueue.push(txData)
             entry.status = 'pending'
-            console.log(`[startup] Recovered in-flight tx ${txId} from coordinator, verified, and re-queued`)
+            console.log(`[startup] Recovered in-flight tx ${txId} from local DB, verified, and re-queued`)
           } else {
             entry.status = 'failed'
-            console.warn(`[startup] Cannot recover verified coordinator txData for ${txId}, marking failed`)
+            console.warn(`[startup] Cannot recover verified txData from local DB for ${txId}, marking failed`)
           }
         }
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
-      console.warn(`[startup] Coordinator check failed for ${txId}, skipping: ${errorMessage}`)
+      console.warn(`[startup] Local DB check failed for ${txId}, skipping: ${errorMessage}`)
     }
   }
 
@@ -2713,7 +2711,7 @@ async function main(): Promise<void> {
     }
 
     // Verify with coordinator that this tx hasn't already been completed/is being processed
-    const preProcessStatus = await reconcileTxStatusWithCoordinator(txId, 'pre-process')
+    const preProcessStatus = reconcileTxStatusWithLocalDB(txId, 'pre-process')
     if (preProcessStatus != null) {
       removeFromPendingTxQueue(txId)
       if (preProcessStatus === 'completed') {
@@ -2782,23 +2780,22 @@ async function main(): Promise<void> {
       } else if (outcome === 'failed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         console.warn(`Transaction ${validTx.txId} reported failed outcome during processing`)
-      } else if (outcome === 'skipped_coordinator_completed') {
-        console.log(`Transaction ${validTx.txId} was already completed on coordinator (pre-sign), skipping`)
+      } else if (outcome === 'skipped_db_completed') {
+        console.log(`Transaction ${validTx.txId} was already completed in local DB (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         removeFromPendingTxQueue(txId)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
-      } else if (outcome === 'skipped_coordinator_reverted') {
-        console.log(`Transaction ${validTx.txId} was already reverted on coordinator (pre-sign), skipping`)
+      } else if (outcome === 'skipped_db_reverted') {
+        console.log(`Transaction ${validTx.txId} was already reverted in local DB (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
-        appendToFailedTxsLogs(validTx, 'already reverted on coordinator before signing')
+        appendToFailedTxsLogs(validTx, 'already reverted in local DB before signing')
         removeFromPendingTxQueue(txId)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
-      } else if (outcome === 'skipped_coordinator_failed') {
-        console.log(`Transaction ${validTx.txId} was already failed on coordinator (pre-sign), skipping`)
-        // Since the transaction is marked as failed on coordinator, remove it from the queue
+      } else if (outcome === 'skipped_db_failed') {
+        console.log(`Transaction ${validTx.txId} was already failed in local DB (pre-sign), skipping`)
         removeFromPendingTxQueue(txId)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        appendToFailedTxsLogs(validTx, 'already failed on coordinator before signing')
+        appendToFailedTxsLogs(validTx, 'already failed in local DB before signing')
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
 
@@ -2815,16 +2812,15 @@ async function main(): Promise<void> {
     } catch (error: any) {
       if (error.message === enoughPartyError) {
         // Handle the "enough party" error - this means other parties already completed the signing
-        // Keep this tx in local "processing" until coordinator finalizes it.
-        console.log('Transaction already signed by enough parties, waiting for coordinator final status:', validTx.txId)
+        // Keep this tx in local processing until local DB finalizes it (observer will mark it COMPLETED).
+        console.log('Transaction already signed by enough parties, waiting for local DB final status:', validTx.txId)
 
         let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED | TransactionStatus.REVERTED
         try {
-          // const remainingTimeoutMs = getRemainingProcessingTimeMs()
-          finalStatus = await waitForCoordinatorFinalStatus(validTx.txId, COORDINATOR_FINAL_STATUS_TIMEOUT_MS)
+          finalStatus = await waitForLocalDBFinalStatus(validTx.txId, COORDINATOR_FINAL_STATUS_TIMEOUT_MS)
         } catch (waitError) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-          appendToFailedTxsLogs(validTx, 'timeout waiting for coordinator final status after enough-party')
+          appendToFailedTxsLogs(validTx, 'timeout waiting for local DB final status after enough-party')
           console.warn(`[wait-final] Timed out waiting for final status for ${validTx.txId}`)
         }
 
@@ -2832,23 +2828,22 @@ async function main(): Promise<void> {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           removeFromPendingTxQueue(txId)
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
-          console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED on coordinator`)
+          console.log(`[wait-final] ${validTx.txId} finalized as COMPLETED in local DB`)
         } else if (finalStatus === TransactionStatus.REVERTED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
           removeFromPendingTxQueue(txId)
           appendToFailedTxsLogs(validTx, 'reverted on-chain after enough-party')
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
-          console.warn(`[wait-final] ${validTx.txId} finalized as REVERTED on coordinator`)
+          console.warn(`[wait-final] ${validTx.txId} finalized as REVERTED in local DB`)
         } else if (finalStatus === TransactionStatus.FAILED) {
-          // Since the transaction is marked as failed on coordinator, remove it from the queue
           removeFromPendingTxQueue(txId)
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-          appendToFailedTxsLogs(validTx, 'finalized as failed on coordinator after enough-party')
-          console.warn(`[wait-final] ${validTx.txId} finalized as FAILED on coordinator`)
+          appendToFailedTxsLogs(validTx, 'finalized as failed in local DB after enough-party')
+          console.warn(`[wait-final] ${validTx.txId} finalized as FAILED in local DB`)
         } else {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-          appendToFailedTxsLogs(validTx, 'didnot finalize on coordinator after enough-party')
-          console.error(`[wait-final] ${validTx.txId} did not finalize on coordinator after enough-party`)
+          appendToFailedTxsLogs(validTx, 'did not finalize in local DB after enough-party')
+          console.error(`[wait-final] ${validTx.txId} did not finalize in local DB after enough-party`)
         }
         // Additional cleanup for "enough party" scenarios to prevent memory leaks
         console.log('🧹 Performing cleanup after "enough party" wait')
@@ -2982,8 +2977,8 @@ async function main(): Promise<void> {
   startDriftResistantScheduler(logMemoryUsage, 5 * 60 * 1000) // Every 5 minutes
   startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
 
-  // Coordinator-monitored mode: poll coordinator for pending transactions
-  startDriftResistantScheduler(pollPendingTransactionsFromCoordinator, COORDINATOR_POLL_INTERVAL)
+  // Poll local DB for new pending transactions
+  startDriftResistantScheduler(pollPendingTransactionsFromLocalDB, COORDINATOR_POLL_INTERVAL)
 }
 
 main()

@@ -25,7 +25,6 @@ const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
  * - BRIDGE_IN / BRIDGE_VAULT:
  *   - COMPLETED  => EVM receipt.status must be 1 and BridgedIn event txId must match expectedTxId
  *   - REVERTED   => EVM receipt.status must be 0
- * For BRIDGE_VAULT the receipt lands on the secondary (destination) chain.
  */
 export async function verifyTxOnChain(
   type: TransactionDB.TransactionType,
@@ -64,17 +63,13 @@ export async function verifyTxOnChain(
           }
           return true;
         } catch (e) {
-          console.warn(
-            `[verifyTxOnChain] BRIDGE_OUT attempt ${attempt + 1} failed:`,
-            e
-          );
+          console.warn(`[verifyTxOnChain] BRIDGE_OUT attempt ${attempt + 1} failed:`, e);
         }
         if (attempt < MAX_ATTEMPTS - 1)
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
       }
       return false;
     } else {
-      // BRIDGE_VAULT receipt is on the secondary (destination) chain (vault mode only)
       if (
         type === TransactionDB.TransactionType.BRIDGE_VAULT &&
         !chainConfigsRaw.secondaryChainConfig
@@ -117,7 +112,7 @@ export async function verifyTxOnChain(
 
           if (receipt.status !== 1) {
             console.error(
-              `[verifyTxOnChain] Discrepancy: reported COMPLETED with success but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
+              `[verifyTxOnChain] Discrepancy: reported COMPLETED but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
             );
             return false;
           }
@@ -140,9 +135,6 @@ export async function verifyTxOnChain(
               const parsed = bridgeInterface.parseLog(log);
               if (parsed.name !== "BridgedIn") continue;
               const eventTxId = normalizeTxId(parsed.args.txId as string);
-              // console.log(
-              //   `[verifyTxOnChain] BridgedIn txId=${eventTxId} (expected=${normalizedExpectedTxId}) (receiptId=${receiptId})`
-              // );
               if (eventTxId === normalizedExpectedTxId) return true;
               console.error(
                 `[verifyTxOnChain] Discrepancy: BridgedIn txId mismatch (expected=${normalizedExpectedTxId}, found=${eventTxId}, receiptId=${receiptId})`
@@ -152,14 +144,11 @@ export async function verifyTxOnChain(
             }
           }
           console.error(
-            `[verifyTxOnChain] Discrepancy: reported COMPLETED but no matching BridgedIn event txId=${normalizedExpectedTxId} found in receipt ${receiptId}`
+            `[verifyTxOnChain] Discrepancy: reported COMPLETED but no matching BridgedIn event txId=${normalizeTxId(expectedTxId)} found in receipt ${receiptId}`
           );
           return false;
         } catch (e) {
-          console.warn(
-            `[verifyTxOnChain] EVM attempt ${attempt + 1} failed:`,
-            e
-          );
+          console.warn(`[verifyTxOnChain] EVM attempt ${attempt + 1} failed:`, e);
         }
         if (attempt < MAX_ATTEMPTS - 1)
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));

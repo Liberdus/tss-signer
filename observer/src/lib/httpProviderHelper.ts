@@ -24,8 +24,9 @@ function getHttpProviderForChain(
   const url = httpUrls.length > 0 ? pickAvailableUrlFromList(httpUrls) : fallbackRpcUrl;
   if (!url) throw new Error(`No HTTP RPC URL available for chainId ${chainId}`);
 
+  const PROVIDER_TIMEOUT_MS = 30_000;
   const network = { chainId: normalizeProviderChainId(chainId), name: "unknown" };
-  return { provider: new providers.JsonRpcProvider(url, network), url };
+  return { provider: new providers.JsonRpcProvider({ url, timeout: PROVIDER_TIMEOUT_MS }, network), url };
 }
 
 const providerCache = new Map<number, { provider: ethers.providers.JsonRpcProvider; url: string }>();
@@ -52,14 +53,14 @@ export async function withCachedHttpProvider<T>(
       entry = getHttpProviderForChain(urls, chainId, fallback);
       providerCache.set(chainId, entry);
       console.log(
-        `[coordinator/httpProvider] Selected RPC URL chain=${chainId} url=${entry.url}`
+        `[observer/httpProvider] Selected RPC URL chain=${chainId} url=${entry.url}`
       );
       if (options.logCache) {
-        console.log(`[coordinator/httpProvider] New cached provider chain=${chainId} url=${entry.url}`);
+        console.log(`[observer/httpProvider] New cached provider chain=${chainId} url=${entry.url}`);
       }
     }
     if (options.logUrl && !options.logCache) {
-      console.log(`[coordinator/httpProvider] URL: ${entry.url}`);
+      console.log(`[observer/httpProvider] URL: ${entry.url}`);
     }
 
     try {
@@ -72,12 +73,12 @@ export async function withCachedHttpProvider<T>(
       }
       providerCache.delete(chainId);
       console.warn(
-        `[coordinator/httpProvider] RPC request failed chain=${chainId} url=${entry.url}:`,
+        `[observer/httpProvider] RPC request failed chain=${chainId} url=${entry.url}:`,
         (error as Error)?.message ?? error
       );
       if (options.logCache) {
         console.warn(
-          `[coordinator/httpProvider] Invalidated cached provider chain=${chainId}:`,
+          `[observer/httpProvider] Invalidated cached provider chain=${chainId}:`,
           (error as Error)?.message ?? error
         );
       }

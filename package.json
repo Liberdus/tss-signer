@@ -31,6 +31,7 @@
     "generate-signer-keypairs": "node scripts/generate-signer-keypairs.js"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
     "@types/readline-sync": "^1.4.8",
     "@wasm-tool/wasm-pack-plugin": "1.0.1",
     "ethers": "^5.7.1",
@@ -52,6 +53,7 @@
   "dependencies": {
     "@shardus/crypto-utils": "^4.1.6",
     "axios": "^1.8.4",
+    "better-sqlite3": "^9.4.3",
     "readline-sync": "^1.4.10"
   }
 }

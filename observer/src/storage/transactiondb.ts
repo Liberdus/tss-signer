@@ -1,0 +1,301 @@
+import Database from "better-sqlite3";
+import fs from "fs";
+import path from "path";
+
+// Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
+export const LIBERDUS_CHAIN_ID = 0;
+
+export interface Transaction {
+  txId: string;
+  sender: string;
+  value: string;
+  type: TransactionType;
+  txTimestamp: number;
+  chainId: number;
+  status: TransactionStatus;
+  receiptId: string;
+  reason?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export enum TransactionStatus {
+  PENDING = 0,
+  PROCESSING = 1,
+  COMPLETED = 2,
+  FAILED = 3,
+  REVERTED = 4,
+}
+
+export enum TransactionType {
+  BRIDGE_IN = 0,
+  BRIDGE_OUT = 1,
+  BRIDGE_VAULT = 2,
+}
+
+export function isTransactionType(value: any): value is TransactionType {
+  return (
+    value === TransactionType.BRIDGE_IN ||
+    value === TransactionType.BRIDGE_OUT ||
+    value === TransactionType.BRIDGE_VAULT
+  );
+}
+
+export function isTransactionStatus(value: any): value is TransactionStatus {
+  return (
+    value === TransactionStatus.PENDING ||
+    value === TransactionStatus.PROCESSING ||
+    value === TransactionStatus.COMPLETED ||
+    value === TransactionStatus.FAILED ||
+    value === TransactionStatus.REVERTED
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Module-level DB instance — initialized once via initializeTransactionsDatabase
+// ---------------------------------------------------------------------------
+
+let db: Database.Database;
+
+// Prepared statements (set up during initialization for hot-path queries)
+let stmtGetById: Database.Statement;
+let stmtInsert: Database.Statement;
+let stmtUpdateStatus: Database.Statement;
+
+export function initializeTransactionsDatabase(dbPath: string): void {
+  fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
+
+  db = new Database(dbPath);
+
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma("foreign_keys = ON");
+  // Wait up to 5s when another writer holds the lock before returning SQLITE_BUSY
+  db.pragma("busy_timeout = 5000");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      txId         TEXT NOT NULL UNIQUE PRIMARY KEY,
+      sender       TEXT NOT NULL,
+      value        TEXT NOT NULL,
+      type         INTEGER NOT NULL,
+      txTimestamp  BIGINT NOT NULL,
+      receiptId    TEXT NOT NULL,
+      chainId      INTEGER NOT NULL,
+      status       INTEGER NOT NULL,
+      reason       TEXT,
+      createdAt    INTEGER DEFAULT (strftime('%s','now')),
+      updatedAt    INTEGER DEFAULT (strftime('%s','now'))
+    );
+
+    CREATE TRIGGER IF NOT EXISTS trg_transactions_updatedAt
+    AFTER UPDATE ON transactions FOR EACH ROW
+    BEGIN
+      UPDATE transactions SET updatedAt = strftime('%s','now') WHERE txId = OLD.txId;
+    END;
+
+    CREATE INDEX IF NOT EXISTS idx_transactions_status_txTimestamp
+      ON transactions(status, txTimestamp);
+    CREATE INDEX IF NOT EXISTS idx_transactions_sender
+      ON transactions(sender);
+    CREATE INDEX IF NOT EXISTS idx_transactions_type
+      ON transactions(type);
+  `);
+
+  stmtGetById = db.prepare("SELECT * FROM transactions WHERE txId = ?");
+
+  stmtInsert = db.prepare(`
+    INSERT OR IGNORE INTO transactions
+      (txId, sender, value, type, txTimestamp, receiptId, chainId, status, reason)
+    VALUES
+      (@txId, @sender, @value, @type, @txTimestamp, @receiptId, @chainId, @status, @reason)
+  `);
+
+  stmtUpdateStatus = db.prepare(
+    "UPDATE transactions SET status = @status, receiptId = @receiptId, reason = @reason WHERE txId = @txId"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public API — all synchronous
+// ---------------------------------------------------------------------------
+
+export function saveTransaction(transaction: Transaction): void {
+  const result = stmtInsert.run({
+    txId: transaction.txId,
+    sender: transaction.sender,
+    value: transaction.value,
+    type: transaction.type,
+    txTimestamp: transaction.txTimestamp,
+    receiptId: transaction.receiptId,
+    chainId: transaction.chainId,
+    status: transaction.status,
+    reason: transaction.reason ?? null,
+  });
+  if (result.changes === 0) {
+    console.warn(`[db] saveTransaction: txId ${transaction.txId} already exists — insert ignored`);
+  }
+}
+
+export function updateTransactionSource(
+  txId: string,
+  data: {
+    chainId: number;
+    txTimestamp: number;
+    sender?: string;
+    txType?: TransactionType;
+  }
+): void {
+  const { chainId, txTimestamp, sender, txType } = data;
+
+  let sql = "UPDATE transactions SET chainId = @chainId, txTimestamp = @txTimestamp";
+  const params: Record<string, any> = { chainId, txTimestamp, txId };
+
+  if (sender !== undefined) {
+    sql += ", sender = @sender";
+    params.sender = sender;
+  }
+  if (txType !== undefined) {
+    sql += ", type = @type";
+    params.type = txType;
+  }
+  sql += " WHERE txId = @txId";
+
+  db.prepare(sql).run(params);
+}
+
+/**
+ * Atomically reads the current status, applies transition guards, and updates
+ * the status if the transition is allowed.
+ *
+ * Guards (in priority order):
+ *   1. Idempotent: same status + receiptId already stored → 'duplicate'
+ *   2. No COMPLETED → FAILED/REVERTED downgrade → 'no_downgrade'
+ *   3. No REVERTED → FAILED downgrade → 'no_downgrade'
+ *
+ * Uses BEGIN IMMEDIATE so the read-check-write block is held under a single
+ * write lock across both the observer and tss-party processes.
+ */
+export type UpdateStatusResult = "ok" | "not_found" | "duplicate" | "no_downgrade";
+
+export function updateTransactionStatus(
+  txId: string,
+  status: TransactionStatus,
+  receiptId: string,
+  reason: string | null
+): UpdateStatusResult {
+  const run = db.transaction((): UpdateStatusResult => {
+    const current = stmtGetById.get(txId) as Transaction | undefined;
+    if (!current) return "not_found";
+
+    if (current.status === status && current.receiptId === receiptId) return "duplicate";
+
+    if (
+      current.status === TransactionStatus.COMPLETED &&
+      status !== TransactionStatus.COMPLETED
+    ) {
+      return "no_downgrade";
+    }
+
+    if (
+      current.status === TransactionStatus.REVERTED &&
+      status === TransactionStatus.FAILED
+    ) {
+      return "no_downgrade";
+    }
+
+    const effectiveReason = status === TransactionStatus.FAILED ? (reason ?? "") : "";
+    stmtUpdateStatus.run({
+      status,
+      receiptId,
+      reason: effectiveReason,
+      txId,
+    });
+    return "ok";
+  });
+
+  return run();
+}
+
+export function getTransactionById(txId: string): Transaction | null {
+  return (stmtGetById.get(txId) as Transaction) ?? null;
+}
+
+export function getTotalTransactions(options?: {
+  sender?: string;
+  type?: TransactionType;
+  status?: TransactionStatus;
+  unprocessed?: boolean;
+}): number {
+  const { sql, params } = buildWhereClause(options);
+  const query = `SELECT COUNT(*) as count FROM transactions${sql ? ` WHERE ${sql}` : ""}`;
+  const row = db.prepare(query).get(params) as { count: number };
+  return row?.count ?? 0;
+}
+
+export function getTransactionsByPage(
+  limit: number,
+  offset: number,
+  options?: {
+    sender?: string;
+    type?: TransactionType;
+    status?: TransactionStatus;
+    unprocessed?: boolean;
+  }
+): Transaction[] {
+  const { sql, params } = buildWhereClause(options);
+  const orderBy = options?.unprocessed ? "txTimestamp ASC" : "txTimestamp DESC";
+  const query = `SELECT * FROM transactions${sql ? ` WHERE ${sql}` : ""} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`;
+  return db.prepare(query).all({ ...params, limit, offset }) as Transaction[];
+}
+
+export function getTransactionCountsByStatus(): {
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  reverted: number;
+} {
+  const rows = db
+    .prepare("SELECT status, COUNT(*) as count FROM transactions GROUP BY status")
+    .all() as { status: number; count: number }[];
+  const map = new Map(rows.map((r) => [r.status, r.count]));
+  return {
+    pending:    map.get(TransactionStatus.PENDING)    ?? 0,
+    processing: map.get(TransactionStatus.PROCESSING) ?? 0,
+    completed:  map.get(TransactionStatus.COMPLETED)  ?? 0,
+    failed:     map.get(TransactionStatus.FAILED)     ?? 0,
+    reverted:   map.get(TransactionStatus.REVERTED)   ?? 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function buildWhereClause(options?: {
+  sender?: string;
+  type?: TransactionType;
+  status?: TransactionStatus;
+  unprocessed?: boolean;
+}): { sql: string; params: Record<string, any> } {
+  const clauses: string[] = [];
+  const params: Record<string, any> = {};
+
+  if (options?.sender) {
+    clauses.push("sender = @sender");
+    params.sender = options.sender;
+  }
+  if (options?.type !== undefined) {
+    clauses.push("type = @type");
+    params.type = options.type;
+  }
+  if (options?.unprocessed) {
+    clauses.push("status IN (0, 1)");
+  } else if (options?.status !== undefined) {
+    clauses.push("status = @status");
+    params.status = options.status;
+  }
+
+  return { sql: clauses.join(" AND "), params };
+}
