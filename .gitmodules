@@ -1,3 +1,4 @@
 [submodule "tss"]
 	path = tss
 	url = https://github.com/bnb-chain/tss.git
+	branch = master

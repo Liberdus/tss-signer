@@ -284,28 +284,14 @@ function ensureGoBinary(tssRoot: string): string {
   return vendoredGo;
 }
 
-function pickCachePath(preferredPath: string, fallbackPath: string): string {
-  if (hasDirectoryEntries(preferredPath)) {
-    return preferredPath;
-  }
-  if (hasDirectoryEntries(fallbackPath)) {
-    return fallbackPath;
-  }
-  return preferredPath;
-}
-
 function buildGoEnv(signerRoot: string, tssRoot: string): NodeJS.ProcessEnv {
-  const toolingRoot = resolveTssToolingRoot(tssRoot);
-  const preferredGoCache = path.join(toolingRoot, 'go-cache');
-  const preferredGoModCache = path.join(toolingRoot, 'go-modcache');
+  const tssToolingRoot = resolveTssToolingRoot(tssRoot);
+  const goCache = path.join(tssToolingRoot, 'go-cache');
+  const goModCache = path.join(tssToolingRoot, 'go-modcache');
   return {
     ...process.env,
-    GOCACHE:
-      process.env.GOCACHE ||
-      pickCachePath(preferredGoCache, path.join(tssRoot, '.tooling', 'go-cache')),
-    GOMODCACHE:
-      process.env.GOMODCACHE ||
-      pickCachePath(preferredGoModCache, path.join(tssRoot, '.tooling', 'go-modcache')),
+    GOCACHE: process.env.GOCACHE || goCache,
+    GOMODCACHE: process.env.GOMODCACHE || goModCache,
   };
 }
 

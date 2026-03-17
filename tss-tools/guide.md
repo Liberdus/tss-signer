@@ -96,7 +96,6 @@ npm run tss-init -- --party 5 --chain-id 80002
 # By default, tss-tools/keygen.ts uses params.json for:
 # - parties
 # - threshold
-#
 # For same-host local runs, the wrapper also supplies deterministic local peer addresses
 # via --p2p.peer_addrs:
 #   /ip4/127.0.0.1/tcp/<derived-port>
@@ -191,18 +190,18 @@ EOF
 # Run the same command in separate terminals for participating parties.
 # With params.json threshold 3, that means at least 4 participating parties.
 #
-# If you do not pass --channel-id and do not set BNB_TSS_CHANNEL_ID, this wrapper
+# If --channel-id is omitted and BNB_TSS_CHANNEL_ID is unset, sign-ethereum-tx.ts
 # derives a fallback signing channel id from:
 # - the unsigned tx hash
 # - the current 30-minute time bucket
 #
-# If you do not pass --channel-password and do not set BNB_TSS_CHANNEL_PASSWORD,
-# this wrapper derives a fallback signing channel password from:
+# If --channel-password is omitted and BNB_TSS_CHANNEL_PASSWORD is unset,
+# sign-ethereum-tx.ts derives a fallback signing channel password from:
 # - the resolved channel id
 # - SHARDUS_CRYPTO_HASH_KEY
 #
-# That means all participating parties should start the command within the same
-# 30-minute bucket when using the fallback.
+# So all participating parties should start the command within the same
+# 30-minute bucket when using the sign-ethereum-tx.ts fallback.
 
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
 npm run tss-sign-ethereum-tx -- --party 2 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
@@ -219,7 +218,6 @@ npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ./keystores/un
 #   ethereum_address
 #   public_key_ethereum
 #   public_key_compressed
-#
 # During signing, native tss logs are streamed to stderr line by line.
 # The final signed transaction payload is still printed as one JSON object on stdout.
 
@@ -275,6 +273,9 @@ npm run tss-party -- 1
 #   native keygen/regroup flows.
 # - The long-lived tss-party signer derives a deterministic signing channel id
 #   from each coordinator txId + txTimestamp, and a deterministic signing channel
+#   password from channelId + SHARDUS_CRYPTO_HASH_KEY.
+# - sign-ethereum-tx.ts can fall back to a derived channel id from the unsigned
+#   tx hash plus the current 30-minute time bucket, and a derived channel
 #   password from channelId + SHARDUS_CRYPTO_HASH_KEY.
 # - Vaults must exist for each required chain under:
 #     keystores/bnbtss/party-<idx>/chain-<chainId>/default/
