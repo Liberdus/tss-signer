@@ -183,6 +183,9 @@ node tss-tools/sign-ethereum-tx.js --party 4 --chain-id 97 --tx-file ./keystores
 #   ethereum_address
 #   public_key_ethereum
 #   public_key_compressed
+#
+# During signing, native tss logs are streamed to stderr line by line.
+# The final signed transaction payload is still printed as one JSON object on stdout.
 
 
 # 14) Regroup flow

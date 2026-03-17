@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const {spawnSync} = require('node:child_process');
+const {spawn, spawnSync} = require('node:child_process');
 const {ethers} = require('ethers');
 
 const DEFAULT_VAULT_NAME = 'default';
@@ -185,6 +185,54 @@ function runOrThrow(command, args, options = {}) {
     stdout: result.stdout || '',
     stderr: result.stderr || '',
   };
+}
+
+function runWithLiveLogs(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env ? {...process.env, ...options.env} : process.env,
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutPending = '';
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      stdoutPending += text;
+      const lines = stdoutPending.split(/\r?\n/);
+      stdoutPending = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          continue;
+        }
+        process.stderr.write(`${line}\n`);
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderr += text;
+      process.stderr.write(text);
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        const output = (stderr || stdout || '').trim();
+        reject(new Error(output || `${path.basename(command)} exited with status ${code}`));
+        return;
+      }
+      resolve({stdout, stderr});
+    });
+  });
 }
 
 function checkCommand(command, args, options = {}) {
@@ -489,12 +537,11 @@ function deriveRecoveryId(digestHex, signature, expectedAddress) {
   throw new Error(`Unable to derive recovery id for ${expectedAddress}`);
 }
 
-function signDigest(options = {}) {
+async function signDigest(options = {}) {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
-  const home = getPartyHome({...options, signerRoot});
-  const vaultName = getVaultName(options.vaultName);
+  const {home, vaultName} = requireInitialized({...options, signerRoot, tssRoot, binary});
   const password = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
   const channelId = requireEnvOrValue(options.channelId, 'BNB_TSS_CHANNEL_ID', 'BNB TSS channel id');
   const channelPassword = requireEnvOrValue(
@@ -522,7 +569,8 @@ function signDigest(options = {}) {
   if (Array.isArray(options.extraArgs) && options.extraArgs.length > 0) {
     args.push(...options.extraArgs);
   }
-  const result = runOrThrow(binary, args, {
+  console.log(`Running ${binary} ${args.join(' ')}`);
+  const result = await runWithLiveLogs(binary, args, {
     cwd: tssRoot,
     env: {
       TSS_PASSWORD: password,
@@ -548,9 +596,9 @@ function signDigest(options = {}) {
   };
 }
 
-function signEthereumTransaction(options = {}) {
+async function signEthereumTransaction(options = {}) {
   const digest = ethers.utils.keccak256(ethers.utils.serializeTransaction(options.tx));
-  const signed = signDigest({...options, digest});
+  const signed = await signDigest({...options, digest});
   const signature = {
     r: signed.r,
     s: signed.s,

@@ -64,10 +64,10 @@ function parseArgs(argv) {
   return options;
 }
 
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   const tx = JSON.parse(fs.readFileSync(options.txFile, 'utf8'));
-  const signed = bnbTss.signEthereumTransaction({...options, tx});
+  const signed = await bnbTss.signEthereumTransaction({...options, tx});
   process.stdout.write(
     `${JSON.stringify({
       signed_tx: signed.signedTx,
@@ -84,7 +84,10 @@ function main() {
 }
 
 try {
-  main();
+  Promise.resolve(main()).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

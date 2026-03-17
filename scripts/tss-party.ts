@@ -11,8 +11,10 @@ import {toEthereumAddress, toShardusAddress} from './transformAddress'
 import {isNormalizedTxId, normalizeTxId} from './transformTxId'
 import * as rpcUrls from './lib/rpcUrls'
 import {getHttpProviderForChain} from './lib/httpProviderHelper'
+const bnbTss = require('../tss-tools/lib/bnbTss')
 
 const {BigNumber, utils: ethersUtils} = ethers
+const useBnbTss = true
 
 ;(function enableTimestampedConsoleLogs() {
   const methods: Array<'log' | 'info' | 'warn' | 'error'> = ['log', 'info', 'warn', 'error']
@@ -1426,7 +1428,7 @@ function isValidTransactionStatus(value: unknown): value is TransactionStatus {
 async function checkTxStatusFromCoordinator(txId: string): Promise<TransactionStatus | null> {
   try {
     const url = `${coordinatorUrl}/transaction?txId=${encodeURIComponent(txId)}`
-    const response = await axios.get(url)
+    const response = await axios.get(url, { timeout: 2000 })
     const data = response.data
     if (!data || typeof data !== 'object') {
       throw new Error('Invalid coordinator response shape: missing or non-object data')
@@ -1548,18 +1550,71 @@ async function DKG(party: KeyShare, chainId?: number): Promise<KeyShare> {
   return party
 }
 
+function getBnbTssExpectedAddresses(): Record<number, string> {
+  const expected: Record<number, string> = {}
+  for (const chainId of getEffectiveChainIds()) {
+    const config = getChainConfigById(chainId)
+    if (config?.tssSenderAddress) {
+      expected[chainId] = config.tssSenderAddress
+    }
+  }
+  return expected
+}
+
+async function validateBnbTssSetup(): Promise<void> {
+  const expectedAddressesByChainId = getBnbTssExpectedAddresses()
+  const chainIds = Object.keys(expectedAddressesByChainId).map(Number)
+  if (chainIds.length === 0) {
+    throw new Error('useBnbTss is enabled, but no chain has tssSenderAddress configured')
+  }
+  const results = bnbTss.validatePartyVaults({
+    partyIdx: ourParty.idx,
+    chainIds,
+    expectedAddressesByChainId,
+  })
+  console.log(`Validated BNB TSS vaults for party ${ourParty.idx}:`)
+  for (const result of results) {
+    console.log(
+      `  chain ${result.chainId}: ${result.ethereum_address} (${result.home})`,
+    )
+  }
+}
+
+function signDigestWithBnbTss(chainId: number, digest: string) {
+  console.log('Signing digest with BNB TSS', chainId, digest )
+  return bnbTss.signDigest({
+    partyIdx: ourParty.idx,
+    chainId,
+    digest,
+  })
+}
+
 async function signEthereumTransaction(
-  item: KeyShare,
+  item: KeyShare | null,
   tx: any,
   digest: string,
+  chainId?: number,
 ): Promise<string | null> {
   const startMemory = process.memoryUsage()
-  const delay = SIGN_POLL_DELAY_MS
-  const res = JSON.parse(await sign(gg18, item.res, delay, digest))
-  const signature = {
-    r: '0x' + res[0],
-    s: '0x' + res[1],
-    v: res[2],
+  let signature
+  if (useBnbTss) {
+    if (chainId == null) {
+      throw new Error('BNB TSS Ethereum signing requires a chainId')
+    }
+    const signed = await signDigestWithBnbTss(chainId, digest)
+    signature = {
+      r: signed.r,
+      s: signed.s,
+      v: signed.v,
+    }
+  } else {
+    const delay = SIGN_POLL_DELAY_MS
+    const res = JSON.parse(await sign(gg18, item!.res, delay, digest))
+    signature = {
+      r: '0x' + res[0],
+      s: '0x' + res[1],
+      v: res[2],
+    }
   }
   const address = ethersUtils.recoverAddress(digest, signature)
   const publicKey = ethersUtils.recoverPublicKey(digest, signature)
@@ -1586,17 +1641,31 @@ async function signEthereumTransaction(
 }
 
 async function signLiberdusTransaction(
-  item: KeyShare,
+  item: KeyShare | null,
   tx: LiberdusTx,
   digest: string,
+  chainId?: number,
 ): Promise<SignedTx | null> {
   const startMemory = process.memoryUsage()
-  const delay = SIGN_POLL_DELAY_MS
-  const res = JSON.parse(await sign(gg18, item.res, delay, digest))
-  const signature = {
-    r: '0x' + res[0],
-    s: '0x' + res[1],
-    v: Number(res[2]),
+  let signature
+  if (useBnbTss) {
+    if (chainId == null) {
+      throw new Error('BNB TSS Liberdus signing requires a chainId')
+    }
+    const signed = await signDigestWithBnbTss(chainId, digest)
+    signature = {
+      r: signed.r,
+      s: signed.s,
+      v: signed.v,
+    }
+  } else {
+    const delay = SIGN_POLL_DELAY_MS
+    const res = JSON.parse(await sign(gg18, item!.res, delay, digest))
+    signature = {
+      r: '0x' + res[0],
+      s: '0x' + res[1],
+      v: Number(res[2]),
+    }
   }
   const serializedSignature = ethersUtils.joinSignature(signature)
   const signedTx: SignedTx = {
@@ -1744,8 +1813,8 @@ async function processCoinToToken(
   if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusCoinToToken === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing
-  let keyShare = await DKG(ourParty, targetChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest)
+  let keyShare = useBnbTss ? null : await DKG(ourParty, targetChainId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest, targetChainId)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -1894,8 +1963,8 @@ async function processVaultBridge(
   if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusVaultBridge === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use destination chain's keystore for signing
-  let keyShare = await DKG(ourParty, destinationChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest)
+  let keyShare = useBnbTss ? null : await DKG(ourParty, destinationChainId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest, destinationChainId)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2007,8 +2076,8 @@ async function processTokenToCoin(
   if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusTokenToCoin === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
-  let keyShare = await DKG(ourParty, sourceChainId)
-  signedTx = await signLiberdusTransaction(keyShare, tx, digest)
+  let keyShare = useBnbTss ? null : await DKG(ourParty, sourceChainId)
+  signedTx = await signLiberdusTransaction(keyShare, tx, digest, sourceChainId)
   if (!signedTx) {
     console.log(`Failed to sign liberdus transaction from ${sourceChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2385,6 +2454,8 @@ function calculateChatId(from: string, to: string): string {
 }
 
 async function main(): Promise<void> {
+  console.log(`Signing backend: ${useBnbTss ? 'BNB TSS' : 'WASM GG18'}`)
+
   // Show help if no valid operation flag is provided
   if (!generateKeystore && !verifyKeystores && !recoverFromBackup && !process.argv[3]) {
     console.log('\nUsage: ts-node scripts/tss-party.ts <party_index> <operation> [options]')
@@ -2509,14 +2580,25 @@ async function main(): Promise<void> {
     }
   }
 
-  // Ensure all chain keystores exist before starting normal operation
-  try {
-    console.log(`Ensuring all chain keystores exist for party ${ourParty.idx}...`)
-    await ensureChainKeystores(ourParty.idx)
-    console.log('All chain keystores are ready')
-  } catch (e) {
-    console.error('Failed to ensure chain keystores:', e)
-    process.exit(1)
+  if (useBnbTss) {
+    try {
+      console.log(`Validating BNB TSS vaults for party ${ourParty.idx}...`)
+      await validateBnbTssSetup()
+      console.log('BNB TSS vaults are ready')
+    } catch (e) {
+      console.error('Failed to validate BNB TSS setup:', e)
+      process.exit(1)
+    }
+  } else {
+    // Ensure all chain keystores exist before starting normal operation
+    try {
+      console.log(`Ensuring all chain keystores exist for party ${ourParty.idx}...`)
+      await ensureChainKeystores(ourParty.idx)
+      console.log('All chain keystores are ready')
+    } catch (e) {
+      console.error('Failed to ensure chain keystores:', e)
+      process.exit(1)
+    }
   }
 
   // Load persisted queue state
