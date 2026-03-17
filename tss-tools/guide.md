@@ -49,6 +49,8 @@ export BNB_TSS_CHANNEL_PASSWORD=1234567890
 # The long-lived tss-party signer derives a deterministic signing channel id from
 # each coordinator txId + txTimestamp. Keep BNB_TSS_CHANNEL_ID for manual native
 # keygen/regroup flows and ad-hoc direct tss signing.
+# The long-lived tss-party signer also derives a deterministic signing channel
+# password from channelId + SHARDUS_CRYPTO_HASH_KEY.
 
 
 # 8) Key storage layout used by tss-signer native mode
@@ -194,6 +196,11 @@ EOF
 # - the unsigned tx hash
 # - the current 30-minute time bucket
 #
+# If you do not pass --channel-password and do not set BNB_TSS_CHANNEL_PASSWORD,
+# this wrapper derives a fallback signing channel password from:
+# - the resolved channel id
+# - SHARDUS_CRYPTO_HASH_KEY
+#
 # That means all participating parties should start the command within the same
 # 30-minute bucket when using the fallback.
 
@@ -264,9 +271,11 @@ npm run tss-party -- 1
 # - Shared env vars must be set for all participating parties:
 #     BNB_TSS_PASSWORD
 #     BNB_TSS_CHANNEL_PASSWORD
-# - BNB_TSS_CHANNEL_ID is still required for manual native keygen/regroup flows.
-#   The long-lived tss-party signer derives a deterministic signing channel id
-#   from each coordinator txId + txTimestamp.
+# - BNB_TSS_CHANNEL_ID and BNB_TSS_CHANNEL_PASSWORD are still required for manual
+#   native keygen/regroup flows.
+# - The long-lived tss-party signer derives a deterministic signing channel id
+#   from each coordinator txId + txTimestamp, and a deterministic signing channel
+#   password from channelId + SHARDUS_CRYPTO_HASH_KEY.
 # - Vaults must exist for each required chain under:
 #     keystores/bnbtss/party-<idx>/chain-<chainId>/default/
 # - Derived ethereum_address from the vault must match chain-config.json -> tssSenderAddress

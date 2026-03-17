@@ -84,7 +84,7 @@ export BNB_TSS_CHANNEL_ID=<shared-channel-id>
 export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>
 ```
 
-`BNB_TSS_CHANNEL_ID` is still required for manual native keygen and regroup flows. The long-lived `tss-party` signer derives a deterministic signing `channelId` per transaction from the coordinator `txId` and `txTimestamp`.
+`BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD` are still required for manual native keygen and regroup flows. The long-lived `tss-party` signer derives a deterministic signing `channelId` per transaction from the coordinator `txId` and `txTimestamp`, and a deterministic signing `channelPassword` from `channelId + SHARDUS_CRYPTO_HASH_KEY`.
 
 Native vaults are stored under `keystores/bnbtss/party-<idx>/chain-<chainId>/default/`.
 User-facing party indices start at `1`.

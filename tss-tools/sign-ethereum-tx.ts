@@ -2,7 +2,11 @@
 import * as fs from 'node:fs'
 import {ethers} from 'ethers'
 import * as bnbTss from './lib/bnbTss'
-import {deriveDeterministicChannelId} from './lib/channelId'
+import {
+  DEFAULT_SHARDUS_CRYPTO_HASH_KEY,
+  deriveDeterministicChannelId,
+  deriveDeterministicChannelPassword,
+} from './lib/channelId'
 import {normalizeTxId} from '../scripts/transformTxId'
 
 const SIGN_CHANNEL_TIME_BUCKET_MS = 30 * 60 * 1000
@@ -79,7 +83,14 @@ async function main() {
     options.channelId ||
     process.env.BNB_TSS_CHANNEL_ID ||
     deriveDeterministicChannelId(normalizeTxId(txHash), txTimestampMs);
-  const signed = await bnbTss.signEthereumTransaction({...options, tx, channelId});
+  const channelPassword =
+    options.channelPassword ||
+    process.env.BNB_TSS_CHANNEL_PASSWORD ||
+    deriveDeterministicChannelPassword(
+      channelId,
+      (process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRYPTO_HASH_KEY).trim(),
+    );
+  const signed = await bnbTss.signEthereumTransaction({...options, tx, channelId, channelPassword});
   process.stdout.write(
     `${JSON.stringify({
       signed_tx: signed.signedTx,

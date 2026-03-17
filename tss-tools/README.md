@@ -15,6 +15,7 @@ Structure:
   - committee topology helper for deterministic local peer addresses and parsed `tss describe` output
 - `lib/channelId.ts`
   - deterministic signing `channelId` helper derived from `txId` and `txTimestamp`
+  - deterministic signing `channelPassword` helper derived from `channelId` and `SHARDUS_CRYPTO_HASH_KEY`
 - `init.ts`, `keygen.ts`, `regroup.ts`, `verify.ts`, `sign-ethereum-tx.ts`
   - TypeScript entrypoints for native TSS flows
   - compiled into `dist/tss-tools/*.js` by `npm run compile-tss`

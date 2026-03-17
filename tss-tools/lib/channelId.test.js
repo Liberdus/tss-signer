@@ -21,7 +21,10 @@ function requireTypeScriptModule(filePath) {
   return tsModule.exports;
 }
 
-const {deriveDeterministicChannelId} = requireTypeScriptModule(path.join(__dirname, 'channelId.ts'));
+const {
+  deriveDeterministicChannelId,
+  deriveDeterministicChannelPassword,
+} = requireTypeScriptModule(path.join(__dirname, 'channelId.ts'));
 
 function testDeterministicChannelIdFormat() {
   const txId = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
@@ -54,10 +57,25 @@ function testDeterministicChannelIdRejectsInvalidInputs() {
   );
 }
 
+function testDeterministicChannelPassword() {
+  const channelPassword = deriveDeterministicChannelPassword(
+    'ABC65EC8E88',
+    '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc',
+  );
+
+  assert.equal(channelPassword.length, 64);
+  assert.match(channelPassword, /^[0-9a-f]+$/);
+  assert.equal(
+    channelPassword,
+    'ed4414fdc567a53fe22fb53de2da69149a897af1ae804fd8ac41b50a14cacc4f',
+  );
+}
+
 function main() {
   testDeterministicChannelIdFormat();
   testDeterministicChannelIdAdvancesExpiredTimestamp();
   testDeterministicChannelIdRejectsInvalidInputs();
+  testDeterministicChannelPassword();
   console.log('channel id tests passed');
 }
 

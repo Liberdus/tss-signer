@@ -9,7 +9,7 @@ import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
 import {toEthereumAddress, toShardusAddress} from './transformAddress'
 import {isNormalizedTxId, normalizeTxId} from './transformTxId'
-import {deriveDeterministicChannelId} from '../tss-tools/lib/channelId'
+import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
 import * as rpcUrls from './lib/rpcUrls'
 import {getHttpProviderForChain} from './lib/httpProviderHelper'
 const bnbTss = require('../tss-tools/lib/bnbTss')
@@ -420,7 +420,7 @@ for (const [chainId] of chainProviders.entries()) {
   )
 }
 
-const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc'
+const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRYPTO_HASH_KEY
 crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
@@ -1581,13 +1581,14 @@ async function validateBnbTssSetup(): Promise<void> {
   }
 }
 
-function signDigestWithBnbTss(chainId: number, digest: string, channelId: string) {
+function signDigestWithBnbTss(chainId: number, digest: string, channelId: string, channelPassword: string) {
   console.log('Signing digest with BNB TSS', chainId, digest, channelId)
   return bnbTss.signDigest({
     partyIdx: ourParty.idx,
     chainId,
     digest,
     channelId,
+    channelPassword,
   })
 }
 
@@ -1597,11 +1598,12 @@ async function signEthereumTransaction(
   digest: string,
   chainId: number,
   channelId: string,
+  channelPassword: string,
 ): Promise<string | null> {
   const startMemory = process.memoryUsage()
   let signature
   if (useBnbTss) {
-    const signed = await signDigestWithBnbTss(chainId, digest, channelId)
+    const signed = await signDigestWithBnbTss(chainId, digest, channelId, channelPassword)
     signature = {
       r: signed.r,
       s: signed.s,
@@ -1646,11 +1648,12 @@ async function signLiberdusTransaction(
   digest: string,
   chainId: number,
   channelId: string,
+  channelPassword: string,
 ): Promise<SignedTx | null> {
   const startMemory = process.memoryUsage()
   let signature
   if (useBnbTss) {
-    const signed = await signDigestWithBnbTss(chainId, digest, channelId)
+    const signed = await signDigestWithBnbTss(chainId, digest, channelId, channelPassword)
     signature = {
       r: signed.r,
       s: signed.s,
@@ -1808,13 +1811,14 @@ async function processCoinToToken(
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
+  const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const coordinatorStatusCoinToToken = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusCoinToToken != null) return coordinatorStatusCoinToToken === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusCoinToToken === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing
   let keyShare = useBnbTss ? null : await DKG(ourParty, targetChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest, targetChainId, channelId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest, targetChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -1960,13 +1964,14 @@ async function processVaultBridge(
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
+  const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const coordinatorStatusVaultBridge = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusVaultBridge != null) return coordinatorStatusVaultBridge === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusVaultBridge === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use destination chain's keystore for signing
   let keyShare = useBnbTss ? null : await DKG(ourParty, destinationChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest, destinationChainId, channelId)
+  const signedTx = await signEthereumTransaction(keyShare, tx, digest, destinationChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2075,13 +2080,14 @@ async function processTokenToCoin(
   const hashMessage = crypto.hashObj(tx)
   let digest = ethersUtils.hashMessage(hashMessage)
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
+  const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const coordinatorStatusTokenToCoin = await reconcileTxStatusWithCoordinator(txId, 'pre-sign')
   if (coordinatorStatusTokenToCoin != null) return coordinatorStatusTokenToCoin === 'completed' ? 'skipped_coordinator_completed' : coordinatorStatusTokenToCoin === 'reverted' ? 'skipped_coordinator_reverted' : 'skipped_coordinator_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
   let keyShare = useBnbTss ? null : await DKG(ourParty, sourceChainId)
-  signedTx = await signLiberdusTransaction(keyShare, tx, digest, sourceChainId, channelId)
+  signedTx = await signLiberdusTransaction(keyShare, tx, digest, sourceChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign liberdus transaction from ${sourceChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
