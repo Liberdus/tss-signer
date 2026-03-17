@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-const fs = require('node:fs');
-const bnbTss = require('./lib/bnbTss');
+import * as fs from 'node:fs'
+import {ethers} from 'ethers'
+import * as bnbTss from './lib/bnbTss'
 
-function usage() {
+function usage(): never {
   console.error(
     'Usage: node tss-tools/sign-ethereum-tx.js --party <idx>=1..N --chain-id <id> --tx-file <path> [--password <value>] [--channel-id <id>] [--channel-password <value>] [--vault <name>] [--home-root <path>] [-- <extra sign args...>]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv) {
-  const options = {extraArgs: []};
+function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {partyIdx: number; chainId: number; txFile: string; extraArgs: string[]} {
+  const options: Partial<bnbTss.SignEthereumTxOptions> & {extraArgs: string[]} = {extraArgs: []};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--') {
@@ -61,12 +62,12 @@ function parseArgs(argv) {
     }
   }
   if (!Number.isInteger(options.partyIdx) || options.partyIdx < 1 || !Number.isInteger(options.chainId) || !options.txFile) usage();
-  return options;
+  return options as bnbTss.SignEthereumTxOptions & {partyIdx: number; chainId: number; txFile: string; extraArgs: string[]};
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const tx = JSON.parse(fs.readFileSync(options.txFile, 'utf8'));
+  const tx = JSON.parse(fs.readFileSync(options.txFile, 'utf8')) as ethers.UnsignedTransaction;
   const signed = await bnbTss.signEthereumTransaction({...options, tx});
   process.stdout.write(
     `${JSON.stringify({

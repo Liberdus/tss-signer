@@ -8,11 +8,14 @@ Structure:
   - Git submodule pointing to `https://github.com/bnb-chain/tss.git`
 - `patches/tss-source.patch`
   - source patch applied onto `../tss` before build/use
-- `lib/bnbTss.js`
+- `lib/bnbTss.ts`
   - runtime/build helpers for preparing the upstream tree
   - builds the native binaries into `../tss/.tooling/bin/tss` and `../tss/.tooling/bin/tss-derive-pubkey`
-- `keygen.js`, `regroup.js`, `verify.js`, `sign-ethereum-tx.js`
-  - direct Node entrypoints for native TSS flows
+- `lib/committeeTopology.ts`
+  - committee topology helper for deterministic local peer addresses and parsed `tss describe` output
+- `init.ts`, `keygen.ts`, `regroup.ts`, `verify.ts`, `sign-ethereum-tx.ts`
+  - TypeScript entrypoints for native TSS flows
+  - compiled into `dist/tss-tools/*.js` by `npm run compile-tss`
 - `derive-pubkey/main.go`
   - Go helper source that is staged into `../tss/.tooling` and run inside the patched `tss` module to derive Ethereum pubkey/address
 - `guide.md`

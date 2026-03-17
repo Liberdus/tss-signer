@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-const bnbTss = require('./lib/bnbTss');
+import * as bnbTss from './lib/bnbTss'
 
-function usage() {
+function usage(): never {
   console.error(
     'Usage: node tss-tools/verify.js --party <idx>=1..N --chain-id <id> [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--format compressed|ethereum-pubkey|ethereum-address|all]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv) {
-  const options = {format: 'all'};
+function parseArgs(argv: string[]): bnbTss.VerifyOptions & {partyIdx: number; chainId: number; format: bnbTss.DerivePubkeyFormat} {
+  const options: Partial<bnbTss.VerifyOptions> & {format: bnbTss.DerivePubkeyFormat} = {format: 'all'};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = argv[i + 1];
@@ -39,7 +39,7 @@ function parseArgs(argv) {
         i += 1;
         break;
       case '--format':
-        options.format = value;
+        options.format = value as bnbTss.DerivePubkeyFormat;
         i += 1;
         break;
       case '-h':
@@ -52,7 +52,7 @@ function parseArgs(argv) {
     }
   }
   if (!Number.isInteger(options.partyIdx) || options.partyIdx < 1 || !Number.isInteger(options.chainId)) usage();
-  return options;
+  return options as bnbTss.VerifyOptions & {partyIdx: number; chainId: number; format: bnbTss.DerivePubkeyFormat};
 }
 
 try {

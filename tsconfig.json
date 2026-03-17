@@ -18,9 +18,9 @@
     "skipLibCheck": true,
     "moduleResolution": "node",
     "resolveJsonModule": true,
-    "allowJs": true,
+    "allowJs": false,
     "noEmitOnError": false
   },
-  "include": ["scripts/**/*.ts"],
+  "include": ["scripts/**/*.ts", "tss-tools/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

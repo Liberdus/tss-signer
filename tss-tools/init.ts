@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-const bnbTss = require('./lib/bnbTss');
+import * as bnbTss from './lib/bnbTss'
 
-function usage() {
+function usage(): never {
   console.error(
     'Usage: node tss-tools/init.js --party <idx>=1..N --chain-id <id> [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--binary <path>] [--moniker <value>] [--listen-addr <multiaddr>] [--listen-port <port>]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv) {
-  const options = {};
+function parseArgs(argv: string[]): bnbTss.InitPartyOptions & {partyIdx: number; chainId: number} {
+  const options: Partial<bnbTss.InitPartyOptions> = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = argv[i + 1];
@@ -69,7 +69,7 @@ function parseArgs(argv) {
   if (options.listenPort !== undefined && !Number.isInteger(options.listenPort)) {
     usage();
   }
-  return options;
+  return options as bnbTss.InitPartyOptions & {partyIdx: number; chainId: number};
 }
 
 try {

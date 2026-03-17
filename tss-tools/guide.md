@@ -71,39 +71,56 @@ export BNB_TSS_CHANNEL_PASSWORD=1234567890
 
 # Example: BSC Testnet chainId 97
 # For the current params.json you should initialize all 5 parties:
-node tss-tools/init.js --party 1 --chain-id 97
-node tss-tools/init.js --party 2 --chain-id 97
-node tss-tools/init.js --party 3 --chain-id 97
-node tss-tools/init.js --party 4 --chain-id 97
-node tss-tools/init.js --party 5 --chain-id 97
+npm run tss-init -- --party 1 --chain-id 97
+npm run tss-init -- --party 2 --chain-id 97
+npm run tss-init -- --party 3 --chain-id 97
+npm run tss-init -- --party 4 --chain-id 97
+npm run tss-init -- --party 5 --chain-id 97
 
 # Example: Polygon Amoy chainId 80002
-node tss-tools/init.js --party 1 --chain-id 80002
-node tss-tools/init.js --party 2 --chain-id 80002
-node tss-tools/init.js --party 3 --chain-id 80002
-node tss-tools/init.js --party 4 --chain-id 80002
-node tss-tools/init.js --party 5 --chain-id 80002
+npm run tss-init -- --party 1 --chain-id 80002
+npm run tss-init -- --party 2 --chain-id 80002
+npm run tss-init -- --party 3 --chain-id 80002
+npm run tss-init -- --party 4 --chain-id 80002
+npm run tss-init -- --party 5 --chain-id 80002
 
 
 # 10) Run keygen in separate terminals
 # This matches the known-good root tss flow: init all parties first, then keygen.
-# By default, tss-tools/keygen.js uses params.json for:
+# By default, tss-tools/keygen.ts uses params.json for:
 # - parties
 # - threshold
+#
+# For same-host local runs, the wrapper also supplies deterministic local peer addresses
+# via --p2p.peer_addrs:
+#   /ip4/127.0.0.1/tcp/<derived-port>
+#
+# This auto-derived topology is only for same-machine local runs.
+# If parties run on different machines, pass explicit --peer-addrs for each party
+# using the other parties' real reachable IP:port values.
+#
+# Example for party 1 in a 3-party multi-machine run:
+#   --peer-addrs /ip4/10.0.0.22/tcp/43382,/ip4/10.0.0.23/tcp/43383
+#
+# To override that behavior explicitly:
+#   --peer-addrs /ip4/127.0.0.1/tcp/43382,/ip4/127.0.0.1/tcp/43383
+#
+# To disable auto local peer addresses:
+#   --no-local-peer-addrs
 
 # Example: BSC Testnet chainId 97
-node tss-tools/keygen.js --party 1 --chain-id 97
-node tss-tools/keygen.js --party 2 --chain-id 97
-node tss-tools/keygen.js --party 3 --chain-id 97
-node tss-tools/keygen.js --party 4 --chain-id 97
-node tss-tools/keygen.js --party 5 --chain-id 97
+npm run tss-keygen -- --party 1 --chain-id 97
+npm run tss-keygen -- --party 2 --chain-id 97
+npm run tss-keygen -- --party 3 --chain-id 97
+npm run tss-keygen -- --party 4 --chain-id 97
+npm run tss-keygen -- --party 5 --chain-id 97
 
 # Example: Polygon Amoy chainId 80002
-node tss-tools/keygen.js --party 1 --chain-id 80002
-node tss-tools/keygen.js --party 2 --chain-id 80002
-node tss-tools/keygen.js --party 3 --chain-id 80002
-node tss-tools/keygen.js --party 4 --chain-id 80002
-node tss-tools/keygen.js --party 5 --chain-id 80002
+npm run tss-keygen -- --party 1 --chain-id 80002
+npm run tss-keygen -- --party 2 --chain-id 80002
+npm run tss-keygen -- --party 3 --chain-id 80002
+npm run tss-keygen -- --party 4 --chain-id 80002
+npm run tss-keygen -- --party 5 --chain-id 80002
 
 # Local debugging override example only:
 # If you intentionally want a temporary 3-party / threshold-1 committee, pass:
@@ -133,9 +150,9 @@ node tss-tools/keygen.js --party 5 --chain-id 80002
 
 
 # 11) Verify / derive the public key and address from a party vault
-node tss-tools/verify.js --party 1 --chain-id 97 --password 1234567890
-node tss-tools/verify.js --party 2 --chain-id 97 --password 1234567890
-node tss-tools/verify.js --party 3 --chain-id 97 --password 1234567890
+npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890
+npm run tss-verify -- --party 2 --chain-id 97 --password 1234567890
+npm run tss-verify -- --party 3 --chain-id 97 --password 1234567890
 
 # All parties in the same committee should show the same:
 #   ethereum_address
@@ -143,10 +160,10 @@ node tss-tools/verify.js --party 3 --chain-id 97 --password 1234567890
 #   public_key_compressed
 
 # Output formats:
-node tss-tools/verify.js --party 1 --chain-id 97 --password 1234567890 --format all
-node tss-tools/verify.js --party 1 --chain-id 97 --password 1234567890 --format ethereum-address
-node tss-tools/verify.js --party 1 --chain-id 97 --password 1234567890 --format ethereum-pubkey
-node tss-tools/verify.js --party 1 --chain-id 97 --password 1234567890 --format compressed
+npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format all
+npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format ethereum-address
+npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format ethereum-pubkey
+npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format compressed
 
 
 # 12) Prepare an unsigned Ethereum transaction JSON
@@ -168,10 +185,10 @@ EOF
 # Run the same command in separate terminals for participating parties.
 # With params.json threshold 3, that means at least 4 participating parties.
 
-node tss-tools/sign-ethereum-tx.js --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
-node tss-tools/sign-ethereum-tx.js --party 2 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
-node tss-tools/sign-ethereum-tx.js --party 3 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
-node tss-tools/sign-ethereum-tx.js --party 4 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
+npm run tss-sign-ethereum-tx -- --party 2 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
+npm run tss-sign-ethereum-tx -- --party 3 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
+npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
 
 # Expected JSON output:
 #   signed_tx
@@ -210,13 +227,13 @@ node tss-tools/sign-ethereum-tx.js --party 4 --chain-id 97 --tx-file ./keystores
 # - The wrapper auto-answers `no` to the upstream "old committee?" prompt for the `--is-new-member` only case
 
 # Existing members that also remain in the new committee
-node tss-tools/regroup.js --party 1 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-node tss-tools/regroup.js --party 2 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-node tss-tools/regroup.js --party 3 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-node tss-tools/regroup.js --party 4 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 1 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 2 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 3 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 4 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 
 # Newly added members
-node tss-tools/regroup.js --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 
 
 # 15) Run the long-lived tss-party process in native mode
@@ -258,7 +275,7 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/un
 # - Did ./tss-tools/build-tss.sh succeed?
 # - Did you set the three env vars?
 # - Are all parties using the same channel id and channel password?
-# - Did you run node tss-tools/init.js for every participating party first?
+# - Did you run npm run tss-init -- ... for every participating party first?
 # - Did keygen complete for this party and chain?
 # - Does the vault exist under keystores/bnbtss/.../default/?
 # - Does chainId match the tx JSON chainId?

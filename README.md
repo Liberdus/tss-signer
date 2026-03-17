@@ -151,14 +151,15 @@ These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing h
 |---|---|
 | `tss-tools/build-tss.sh` | Applies the local patch to the upstream `tss` checkout and builds `./tss/.tooling/bin/tss` plus `./tss/.tooling/bin/tss-derive-pubkey`. |
 | `tss-tools/setup-mise-go.sh` | Bootstraps a local Go toolchain under `tss/.tooling/mise` when system `go` is unavailable. |
-| `tss-tools/init.js` | Initializes one native TSS party home and vault for a given party index and chain id. |
-| `tss-tools/keygen.js` | Runs native TSS keygen for one party using the shared channel settings and `params.json` defaults unless overridden. |
-| `tss-tools/verify.js` | Derives and prints the compressed pubkey, Ethereum pubkey, or Ethereum address from an existing native vault. |
-| `tss-tools/sign-ethereum-tx.js` | Signs an unsigned Ethereum transaction JSON through native TSS and prints the signed tx payload. |
-| `tss-tools/regroup.js` | Runs native TSS regroup for an existing or new committee member. |
-| `tss-tools/lib/bnbTss.js` | Shared runtime helper used by the Node scripts for binary resolution, patch prep, vault paths, and signing helpers. |
+| `tss-tools/init.ts` | Initializes one native TSS party home and vault for a given party index and chain id. |
+| `tss-tools/keygen.ts` | Runs native TSS keygen for one party using the shared channel settings and `params.json` defaults unless overridden. By default it supplies deterministic local `--p2p.peer_addrs` for same-host committees. |
+| `tss-tools/verify.ts` | Derives and prints the compressed pubkey, Ethereum pubkey, or Ethereum address from an existing native vault. |
+| `tss-tools/sign-ethereum-tx.ts` | Signs an unsigned Ethereum transaction JSON through native TSS and prints the signed tx payload. |
+| `tss-tools/regroup.ts` | Runs native TSS regroup for an existing or new committee member. |
+| `tss-tools/lib/bnbTss.ts` | Shared TypeScript runtime helper used by the tooling scripts for binary resolution, patch prep, vault paths, committee topology, and signing helpers. |
+| `tss-tools/lib/committeeTopology.ts` | Committee topology helper for deterministic local peer addresses and parsing `tss describe` topology output. |
 | `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. |
-| `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.js` and post-keygen address derivation. |
+| `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.ts` and post-keygen address derivation. |
 | `tss-tools/guide.md` | Step-by-step local operator guide for build, init, keygen, verify, sign, and regroup. |
 
 ## PM2 Process Management

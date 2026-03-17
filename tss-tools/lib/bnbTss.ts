@@ -1,15 +1,156 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const {spawn, spawnSync} = require('node:child_process');
-const {ethers} = require('ethers');
+import * as fs from 'node:fs'
+import Module from 'node:module'
+import * as path from 'node:path'
+import {spawn, spawnSync} from 'node:child_process'
+import {ethers} from 'ethers'
 
-const DEFAULT_VAULT_NAME = 'default';
+export {}
+
+export const DEFAULT_VAULT_NAME = 'default';
 const DEFAULT_GO_VERSION = '1.20.3';
 const DEFAULT_MISE_VERSION = 'v2026.3.8';
 const DEFAULT_BINARY_NAME = 'tss';
 const DEFAULT_DERIVE_BINARY_NAME = 'tss-derive-pubkey';
 
-function resolveSignerRoot(startDir = __dirname) {
+type ExecOptions = {
+  cwd?: string
+  env?: NodeJS.ProcessEnv
+}
+
+type CommandResult = {
+  stdout: string
+  stderr: string
+}
+
+type InitializedParty = {
+  home: string
+  vaultName: string
+  binary: string
+  tssRoot: string
+}
+
+export type ParamsConfig = {
+  parties: number
+  threshold: number
+}
+
+type DerivedPubkeyAll = {
+  compressed: string
+  ethereum_address: string
+  ethereum_pubkey: string
+  [key: string]: string
+}
+
+export type DerivePubkeyFormat = 'compressed' | 'ethereum-pubkey' | 'ethereum-address' | 'all'
+
+export type BasePartyOptions = {
+  partyIdx: number
+  chainId: number
+  password?: string
+  vaultName?: string
+  homeRoot?: string
+  homePath?: string
+  binary?: string
+  signerRoot?: string
+  tssRoot?: string
+}
+
+export type InitPartyOptions = BasePartyOptions & {
+  moniker?: string
+  listenAddr?: string
+  listenPort?: number
+}
+
+export type KeygenOptions = BasePartyOptions & {
+  channelId?: string
+  channelPassword?: string
+  threshold?: number
+  parties?: number
+  peerAddrs?: string[]
+  useLocalPeerAddrs?: boolean
+  extraArgs?: string[]
+}
+
+export type RegroupOptions = BasePartyOptions & {
+  channelId?: string
+  channelPassword?: string
+  threshold?: number
+  parties?: number
+  newThreshold?: number
+  newParties?: number
+  pubkey?: string
+  isOld?: boolean
+  isNewMember?: boolean
+  extraArgs?: string[]
+}
+
+export type VerifyOptions = BasePartyOptions & {
+  format?: DerivePubkeyFormat
+}
+
+export type SignEthereumTxOptions = BasePartyOptions & {
+  txFile?: string
+  tx?: ethers.UnsignedTransaction
+  channelId?: string
+  channelPassword?: string
+  extraArgs?: string[]
+}
+
+type ResolvedInitPartyOptions = InitPartyOptions & {
+  partyIdx: number
+  chainId: number
+}
+
+type ResolvedKeygenOptions = KeygenOptions & {
+  partyIdx: number
+  chainId: number
+  extraArgs: string[]
+  useLocalPeerAddrs: boolean
+}
+
+type ResolvedRegroupOptions = RegroupOptions & {
+  partyIdx: number
+  chainId: number
+  extraArgs: string[]
+}
+
+type ResolvedVerifyOptions = VerifyOptions & {
+  partyIdx: number
+  chainId: number
+  format: DerivePubkeyFormat
+}
+
+type ResolvedSignEthereumTxOptions = SignEthereumTxOptions & {
+  partyIdx: number
+  chainId: number
+  txFile: string
+  extraArgs: string[]
+}
+
+type CommitteeTopologySnapshot = {
+  peerAddrs: string[]
+  expectedPeers: string[]
+}
+
+type SignDigestResult = {
+  digest: string
+  messageDecimal: string
+  r: string
+  s: string
+  recoveryParam: number
+  v: number
+  ethereumAddress: string
+  publicKeyEthereum: string
+  publicKeyCompressed: string
+  signatureHex: string
+}
+
+type SignEthereumTransactionResult = SignDigestResult & {
+  signedTx: string
+  txHash: string
+}
+
+export function resolveSignerRoot(startDir = __dirname): string {
   let current = path.resolve(startDir);
   while (true) {
     if (
@@ -26,19 +167,19 @@ function resolveSignerRoot(startDir = __dirname) {
   }
 }
 
-function resolveOverlayRoot(signerRoot = resolveSignerRoot()) {
+export function resolveOverlayRoot(signerRoot = resolveSignerRoot()): string {
   return path.join(signerRoot, 'tss-tools');
 }
 
-function resolveToolingRoot(signerRoot = resolveSignerRoot()) {
+export function resolveToolingRoot(signerRoot = resolveSignerRoot()): string {
   return path.join(signerRoot, '.tooling');
 }
 
-function resolveTssToolingRoot(tssRoot) {
+export function resolveTssToolingRoot(tssRoot: string): string {
   return path.join(tssRoot, '.tooling');
 }
 
-function hasDirectoryEntries(dirPath) {
+function hasDirectoryEntries(dirPath: string): boolean {
   try {
     return fs.readdirSync(dirPath).length > 0;
   } catch {
@@ -46,7 +187,7 @@ function hasDirectoryEntries(dirPath) {
   }
 }
 
-function resolveTssRoot(signerRoot = resolveSignerRoot()) {
+export function resolveTssRoot(signerRoot = resolveSignerRoot()): string {
   const candidates = [];
   if (process.env.BNB_TSS_ROOT) {
     candidates.push(path.resolve(process.env.BNB_TSS_ROOT));
@@ -62,11 +203,11 @@ function resolveTssRoot(signerRoot = resolveSignerRoot()) {
   );
 }
 
-function resolvePatchPath(signerRoot = resolveSignerRoot()) {
+function resolvePatchPath(signerRoot = resolveSignerRoot()): string {
   return path.join(resolveOverlayRoot(signerRoot), 'patches', 'tss-source.patch');
 }
 
-function resolveGoBinary(tssRoot) {
+function resolveGoBinary(tssRoot: string): string | null {
   if (process.env.GO_BIN && fs.existsSync(process.env.GO_BIN)) {
     return process.env.GO_BIN;
   }
@@ -91,7 +232,7 @@ function resolveGoBinary(tssRoot) {
   return null;
 }
 
-function ensureGoBinary(tssRoot) {
+function ensureGoBinary(tssRoot: string): string {
   const existing = resolveGoBinary(tssRoot);
   if (existing) {
     return existing;
@@ -143,7 +284,7 @@ function ensureGoBinary(tssRoot) {
   return vendoredGo;
 }
 
-function pickCachePath(preferredPath, fallbackPath) {
+function pickCachePath(preferredPath: string, fallbackPath: string): string {
   if (hasDirectoryEntries(preferredPath)) {
     return preferredPath;
   }
@@ -153,7 +294,7 @@ function pickCachePath(preferredPath, fallbackPath) {
   return preferredPath;
 }
 
-function buildGoEnv(signerRoot, tssRoot) {
+function buildGoEnv(signerRoot: string, tssRoot: string): NodeJS.ProcessEnv {
   const toolingRoot = resolveTssToolingRoot(tssRoot);
   const preferredGoCache = path.join(toolingRoot, 'go-cache');
   const preferredGoModCache = path.join(toolingRoot, 'go-modcache');
@@ -168,7 +309,7 @@ function buildGoEnv(signerRoot, tssRoot) {
   };
 }
 
-function runOrThrow(command, args, options = {}) {
+function runOrThrow(command: string, args: any[], options: ExecOptions = {}): CommandResult {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     env: options.env ? {...process.env, ...options.env} : process.env,
@@ -187,7 +328,7 @@ function runOrThrow(command, args, options = {}) {
   };
 }
 
-function runWithLiveLogs(command, args, options = {}) {
+function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -235,7 +376,7 @@ function runWithLiveLogs(command, args, options = {}) {
   });
 }
 
-function checkCommand(command, args, options = {}) {
+function checkCommand(command: string, args: any[], options: ExecOptions = {}) {
   return spawnSync(command, args, {
     cwd: options.cwd,
     env: options.env ? {...process.env, ...options.env} : process.env,
@@ -243,7 +384,7 @@ function checkCommand(command, args, options = {}) {
   });
 }
 
-function ensurePatchApplied(signerRoot = resolveSignerRoot()) {
+function ensurePatchApplied(signerRoot = resolveSignerRoot()): 'applied' | 'already_applied' {
   const tssRoot = resolveTssRoot(signerRoot);
   const patchPath = resolvePatchPath(signerRoot);
   if (!fs.existsSync(patchPath)) {
@@ -262,7 +403,7 @@ function ensurePatchApplied(signerRoot = resolveSignerRoot()) {
   throw new Error(`TSS patch could not be applied cleanly.\n${errorOutput}`);
 }
 
-function buildTssBinary(options = {}) {
+export function buildTssBinary(options: any = {}): string {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const toolingRoot = resolveTssToolingRoot(tssRoot);
@@ -305,7 +446,7 @@ function buildTssBinary(options = {}) {
   return binaryPath;
 }
 
-function ensureTssPrepared(options = {}) {
+export function ensureTssPrepared(options: any = {}): string {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binaryPath =
@@ -319,7 +460,7 @@ function ensureTssPrepared(options = {}) {
   return binaryPath;
 }
 
-function resolveBnbTssBinary(options = {}) {
+export function resolveBnbTssBinary(options: any = {}): string {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const toolingRoot = resolveTssToolingRoot(tssRoot);
@@ -333,15 +474,15 @@ function resolveBnbTssBinary(options = {}) {
   return ensureTssPrepared({...options, signerRoot, tssRoot});
 }
 
-function getVaultName(explicitVaultName) {
+function getVaultName(explicitVaultName?: string): string {
   return explicitVaultName || process.env.BNB_TSS_VAULT_NAME || DEFAULT_VAULT_NAME;
 }
 
-function getHomeRoot(signerRoot = resolveSignerRoot(), explicitHomeRoot) {
+function getHomeRoot(signerRoot = resolveSignerRoot(), explicitHomeRoot?: string): string {
   return path.resolve(explicitHomeRoot || process.env.BNB_TSS_HOME_ROOT || path.join(signerRoot, 'keystores', 'bnbtss'));
 }
 
-function getPartyHome(options) {
+export function getPartyHome(options: any): string {
   if (options.homePath) {
     return path.resolve(options.homePath);
   }
@@ -350,34 +491,69 @@ function getPartyHome(options) {
   return path.join(homeRoot, `party-${options.partyIdx}`, `chain-${options.chainId}`);
 }
 
-function getVaultDir(options) {
+export function getVaultDir(options: any): string {
   return path.join(getPartyHome(options), getVaultName(options.vaultName));
 }
 
-function getMoniker(partyIdx, chainId) {
+export function getMoniker(partyIdx: number, chainId: number): string {
   return `party-${partyIdx}-chain-${chainId}`;
 }
 
-function getDeterministicListenPort(chainId, partyIdx) {
+export function getDeterministicListenPort(chainId: number, partyIdx: number): number {
   if (!Number.isInteger(chainId) || !Number.isInteger(partyIdx) || partyIdx < 1) {
     throw new Error(`Invalid deterministic listen port inputs: chainId=${chainId}, partyIdx=${partyIdx}`);
   }
   return 40000 + (Math.abs(chainId) % 1000) * 10 + partyIdx;
 }
 
-function getLocalListenAddr(chainId, partyIdx) {
+export function getLocalListenAddr(chainId: number, partyIdx: number): string {
   return `/ip4/0.0.0.0/tcp/${getDeterministicListenPort(chainId, partyIdx)}`;
 }
 
-function getLocalPeerAddr(chainId, partyIdx) {
+export function getLocalPeerAddr(chainId: number, partyIdx: number): string {
   return `/ip4/127.0.0.1/tcp/${getDeterministicListenPort(chainId, partyIdx)}`;
 }
 
-function readParams(signerRoot = resolveSignerRoot()) {
-  return JSON.parse(fs.readFileSync(path.join(signerRoot, 'params.json'), 'utf8'));
+export function readParams(signerRoot = resolveSignerRoot()): ParamsConfig {
+  return JSON.parse(fs.readFileSync(path.join(signerRoot, 'params.json'), 'utf8')) as ParamsConfig;
 }
 
-function lastNonEmptyLine(text) {
+function requireTypeScriptModule(filePath: string): any {
+  let ts;
+  try {
+    ts = require('typescript');
+  } catch (error) {
+    throw new Error(`typescript is required to load ${path.basename(filePath)} at runtime`);
+  }
+
+  const source = fs.readFileSync(filePath, 'utf8');
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+    },
+    fileName: filePath,
+  });
+  const tsModule = new Module(filePath, module);
+  tsModule.filename = filePath;
+  tsModule.paths = (Module as any)._nodeModulePaths(path.dirname(filePath));
+  ;(tsModule as any)._compile(transpiled.outputText, filePath);
+  return tsModule.exports;
+}
+
+let committeeTopologyModule = null;
+
+function getCommitteeTopologyModule(signerRoot = resolveSignerRoot()): any {
+  if (committeeTopologyModule) {
+    return committeeTopologyModule;
+  }
+  const helperPath = path.join(resolveOverlayRoot(signerRoot), 'lib', 'committeeTopology.ts');
+  committeeTopologyModule = requireTypeScriptModule(helperPath);
+  return committeeTopologyModule;
+}
+
+function lastNonEmptyLine(text: string): string | undefined {
   return (text || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -385,7 +561,7 @@ function lastNonEmptyLine(text) {
     .pop();
 }
 
-function extractJsonLine(text) {
+function extractJsonLine(text: string): any {
   const lines = (text || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -397,7 +573,7 @@ function extractJsonLine(text) {
   return JSON.parse(jsonLine);
 }
 
-function requireEnvOrValue(value, envKey, label) {
+function requireEnvOrValue(value: string | undefined, envKey: string, label: string): string {
   const resolved = value || process.env[envKey] || '';
   if (!resolved) {
     throw new Error(`${label} is required (${envKey})`);
@@ -405,7 +581,44 @@ function requireEnvOrValue(value, envKey, label) {
   return resolved;
 }
 
-function initParty(options = {}) {
+export function buildKeygenArgs({
+  home,
+  vaultName,
+  password,
+  channelId,
+  channelPassword,
+  threshold,
+  parties,
+  peerAddrs,
+  extraArgs,
+}): string[] {
+  const args = [
+    'keygen',
+    '--home',
+    home,
+    '--vault_name',
+    vaultName,
+    '--password',
+    password,
+    '--channel_id',
+    channelId,
+    '--channel_password',
+    channelPassword,
+    '--threshold',
+    String(threshold),
+    '--parties',
+    String(parties),
+  ];
+  if (Array.isArray(peerAddrs) && peerAddrs.length > 0) {
+    args.push('--p2p.peer_addrs', peerAddrs.join(','));
+  }
+  if (Array.isArray(extraArgs) && extraArgs.length > 0) {
+    args.push(...extraArgs);
+  }
+  return args;
+}
+
+export function initParty(options: InitPartyOptions = {} as InitPartyOptions): InitializedParty {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
@@ -440,7 +653,7 @@ function initParty(options = {}) {
   return {home, vaultName, binary, tssRoot};
 }
 
-function requireInitialized(options = {}) {
+export function requireInitialized(options: BasePartyOptions = {} as BasePartyOptions): InitializedParty {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
@@ -455,7 +668,7 @@ function requireInitialized(options = {}) {
   return {home, vaultName, binary, tssRoot};
 }
 
-function derivePubkey(options = {}) {
+export function derivePubkey(options: VerifyOptions = {} as VerifyOptions): DerivedPubkeyAll | string {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   ensureTssPrepared({signerRoot, tssRoot});
@@ -488,7 +701,45 @@ function derivePubkey(options = {}) {
   return line;
 }
 
-function validatePartyVaults(options = {}) {
+export function deriveLocalPeerAddrs(options: KeygenOptions = {} as KeygenOptions): string[] {
+  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const helper = getCommitteeTopologyModule(signerRoot);
+  return helper.deriveLocalPeerAddrs(options);
+}
+
+export function describeVault(options: (BasePartyOptions & {initialized?: InitializedParty}) = {} as BasePartyOptions & {initialized?: InitializedParty}): string {
+  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
+  const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
+  const {home, vaultName} =
+    options.initialized || requireInitialized({...options, signerRoot, tssRoot, binary});
+  const password = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const args = [
+    'describe',
+    '--home',
+    home,
+    '--vault_name',
+    vaultName,
+    '--password',
+    password,
+  ];
+  return runOrThrow(binary, args, {
+    cwd: tssRoot,
+    env: {
+      TSS_PASSWORD: password,
+    },
+  }).stdout;
+}
+
+export function getCommitteeTopology(options: BasePartyOptions & {describeOutput?: string} = {} as BasePartyOptions & {describeOutput?: string}): CommitteeTopologySnapshot {
+  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const helper = getCommitteeTopologyModule(signerRoot);
+  return helper.extractCommitteeTopologyFromDescribeOutput(
+    options.describeOutput || describeVault({...options, signerRoot}),
+  );
+}
+
+export function validatePartyVaults(options: BasePartyOptions & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>} = {} as BasePartyOptions & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>}): Array<DerivedPubkeyAll & {chainId: number; home: string; vaultDir: string}> {
   const results = [];
   const chainIds = options.chainIds || [];
   for (const chainId of chainIds) {
@@ -499,7 +750,7 @@ function validatePartyVaults(options = {}) {
     if (!fs.existsSync(pkPath) || !fs.existsSync(skPath)) {
       throw new Error(`Missing BNB TSS vault files for party ${options.partyIdx} chain ${chainId} at ${vaultDir}`);
     }
-    const derived = derivePubkey({...options, chainId, format: 'all'});
+    const derived = derivePubkey({...options, chainId, format: 'all'}) as DerivedPubkeyAll;
     const expectedAddress = options.expectedAddressesByChainId?.[chainId];
     if (expectedAddress) {
       if (ethers.utils.getAddress(derived.ethereum_address) !== ethers.utils.getAddress(expectedAddress)) {
@@ -518,11 +769,11 @@ function validatePartyVaults(options = {}) {
   return results;
 }
 
-function toMessageDecimal(digestHex) {
+function toMessageDecimal(digestHex: string): string {
   return BigInt(digestHex).toString(10);
 }
 
-function deriveRecoveryId(digestHex, signature, expectedAddress) {
+function deriveRecoveryId(digestHex: string, signature: {r: string; s: string}, expectedAddress: string): number {
   const normalized = ethers.utils.getAddress(expectedAddress);
   for (const recoveryParam of [0, 1]) {
     const recovered = ethers.utils.recoverAddress(digestHex, {
@@ -537,7 +788,7 @@ function deriveRecoveryId(digestHex, signature, expectedAddress) {
   throw new Error(`Unable to derive recovery id for ${expectedAddress}`);
 }
 
-async function signDigest(options = {}) {
+export async function signDigest(options: SignEthereumTxOptions & {digest: string} = {} as SignEthereumTxOptions & {digest: string}): Promise<SignDigestResult> {
   const signerRoot = options.signerRoot || resolveSignerRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
@@ -570,7 +821,7 @@ async function signDigest(options = {}) {
     args.push(...options.extraArgs);
   }
   console.log(`Running ${binary} ${args.join(' ')}`);
-  const result = await runWithLiveLogs(binary, args, {
+  const result: any = await runWithLiveLogs(binary, args, {
     cwd: tssRoot,
     env: {
       TSS_PASSWORD: password,
@@ -596,7 +847,7 @@ async function signDigest(options = {}) {
   };
 }
 
-async function signEthereumTransaction(options = {}) {
+export async function signEthereumTransaction(options: SignEthereumTxOptions = {} as SignEthereumTxOptions): Promise<SignEthereumTransactionResult> {
   const digest = ethers.utils.keccak256(ethers.utils.serializeTransaction(options.tx));
   const signed = await signDigest({...options, digest});
   const signature = {
@@ -616,29 +867,3 @@ async function signEthereumTransaction(options = {}) {
     ...signed,
   };
 }
-
-module.exports = {
-  DEFAULT_VAULT_NAME,
-  buildTssBinary,
-  derivePubkey,
-  ensurePatchApplied,
-  ensureTssPrepared,
-  getMoniker,
-  getDeterministicListenPort,
-  getLocalListenAddr,
-  getLocalPeerAddr,
-  getPartyHome,
-  getVaultDir,
-  initParty,
-  readParams,
-  requireInitialized,
-  resolveBnbTssBinary,
-  resolveOverlayRoot,
-  resolveSignerRoot,
-  resolveTssRoot,
-  resolveToolingRoot,
-  resolveTssToolingRoot,
-  signDigest,
-  signEthereumTransaction,
-  validatePartyVaults,
-};
