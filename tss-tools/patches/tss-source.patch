@@ -1,4 +1,27 @@
+diff --git a/cmd/root.go b/cmd/root.go
+index 181efd3..eadcfc2 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -4,6 +4,7 @@ import (
+ 	"github.com/ipfs/go-log"
+ 	"os"
+ 	"path"
++	"time"
+ 
+ 	"github.com/spf13/cobra"
+ 	"github.com/spf13/viper"
+@@ -104,6 +105,9 @@ func bindClientConfigs() {
+ 	signCmd.PersistentFlags().String("channel_password", "", "channel password of this session")
+ 	regroupCmd.PersistentFlags().String("channel_password", "", "channel password of this session")
+ 
++	signCmd.PersistentFlags().Duration("sign_discovery_timeout", 5*time.Second,
++		"how long to wait for additional signers after the first peer connects during sign bootstrap (0 = require all n parties)")
++
+ 	channelCmd.PersistentFlags().Int("channel_expire", 0, "expire time in minutes of this channel")
+ 
+ 	regroupCmd.PersistentFlags().Bool("is_old", false, "whether this party is an old committee. If it is set to true, it will participant signing in regroup. There should be only t+1 parties set this to true for one regroup")
 diff --git a/cmd/sign.go b/cmd/sign.go
+index c324c48..868af28 100644
 --- a/cmd/sign.go
 +++ b/cmd/sign.go
 @@ -1,8 +1,10 @@
@@ -12,7 +35,7 @@ diff --git a/cmd/sign.go b/cmd/sign.go
  
  	"github.com/bnb-chain/tss/client"
  	"github.com/bnb-chain/tss/common"
-@@ -36,5 +38,15 @@
+@@ -36,5 +38,15 @@ var signCmd = &cobra.Command{
  
  // TODO: use MessageBridge
  func setMessage() {
@@ -29,3 +52,188 @@ diff --git a/cmd/sign.go b/cmd/sign.go
 +	}
 +	common.TssCfg.Message = message
  }
+diff --git a/common/bootstrapper.go b/common/bootstrapper.go
+index 580ab2a..4243ddf 100644
+--- a/common/bootstrapper.go
++++ b/common/bootstrapper.go
+@@ -5,6 +5,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/bgentry/speakeasy"
+ )
+@@ -31,6 +32,10 @@ type Bootstrapper struct {
+ 	Cfg             *TssConfig
+ 
+ 	Peers sync.Map // id -> peerInfo
++
++	// time-boxed discovery for SignMode
++	firstPeerOnce     sync.Once
++	discoveryDeadline time.Time
+ }
+ 
+ func NewBootstrapper(expectedPeers int, config *TssConfig) *Bootstrapper {
+@@ -121,6 +126,12 @@ func (b *Bootstrapper) HandleBootstrapMsg(peerMsg BootstrapMessage) error {
+ 				return fmt.Errorf("received different new t for party: %s, %s", peerParam.Moniker, peerParam.Id)
+ 			}
+ 
++			b.firstPeerOnce.Do(func() {
++				if b.Cfg.BMode == SignMode && b.Cfg.SignDiscoveryTimeout > 0 {
++					b.discoveryDeadline = time.Now().Add(b.Cfg.SignDiscoveryTimeout)
++					logger.Debugf("sign discovery window started, deadline in %v", b.Cfg.SignDiscoveryTimeout)
++				}
++			})
+ 			pi := PeerInfo{
+ 				Id:         peerParam.Id,
+ 				Moniker:    peerParam.Moniker,
+@@ -142,8 +153,20 @@ func (b *Bootstrapper) IsFinished() bool {
+ 		logger.Debugf("received peers: %d, expect peers: %v", received, b.ExpectedPeers)
+ 		return received == b.ExpectedPeers
+ 	case SignMode:
+-		logger.Debugf("received peers: %d, expect peers: %d", received, b.Cfg.Threshold)
+-		return received == b.Cfg.Threshold
++		// Fast path: all expected keygen parties connected
++		if received == b.Cfg.Parties-1 {
++			logger.Debugf("sign bootstrap done: all %d peers connected", received)
++			return true
++		}
++		// Timeout path: discovery window elapsed with enough signers
++		if !b.discoveryDeadline.IsZero() &&
++			time.Now().After(b.discoveryDeadline) &&
++			received >= b.Cfg.Threshold {
++			logger.Debugf("sign bootstrap done: discovery window elapsed with %d peers (threshold=%d)", received, b.Cfg.Threshold)
++			return true
++		}
++		logger.Debugf("sign bootstrap waiting: received=%d, need all=%d or timeout with >=%d", received, b.Cfg.Parties-1, b.Cfg.Threshold)
++		return false
+ 	case PreRegroupMode:
+ 		logger.Debugf("received peers: %d, expect peers: %d, expect peers: %v", received, b.ExpectedPeers, b.Cfg.ExpectedPeers)
+ 		return received == b.ExpectedPeers
+diff --git a/common/config.go b/common/config.go
+index 2b9069e..d6ab2d1 100644
+--- a/common/config.go
++++ b/common/config.go
+@@ -10,6 +10,7 @@ import (
+ 	"reflect"
+ 	"strings"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/mitchellh/mapstructure"
+ 	"github.com/multiformats/go-multiaddr"
+@@ -97,6 +98,8 @@ type TssConfig struct {
+ 	ChannelId       string `mapstructure:"channel_id" json:"-"`
+ 	ChannelPassword string `mapstructure:"channel_password" json:"-"`
+ 
++	SignDiscoveryTimeout time.Duration `mapstructure:"sign_discovery_timeout" json:"-"`
++
+ 	IsOldCommittee bool          `mapstructure:"is_old" json:"-"`
+ 	IsNewCommittee bool          `mapstructure:"is_new_member" json:"-"`
+ 	BMode          BootstrapMode `json:"mode"`
+@@ -128,31 +131,34 @@ func ReadConfigFromHome(v *viper.Viper, init bool, home, vault, passphrase strin
+ 
+ 	var config TssConfig
+ 	err = v.Unmarshal(&config, func(config *mapstructure.DecoderConfig) {
+-		config.DecodeHook = func(from, to reflect.Type, data interface{}) (interface{}, error) {
+-			if from.Kind() == reflect.Slice && from.Elem().Kind() == reflect.String && to == reflect.TypeOf(addrList{}) {
+-				var al addrList
+-				for _, value := range data.([]string) {
+-					addr, err := multiaddr.NewMultiaddr(value)
+-					if err != nil {
+-						return nil, err
++		config.DecodeHook = mapstructure.ComposeDecodeHookFunc(
++			mapstructure.StringToTimeDurationHookFunc(),
++			func(from, to reflect.Type, data interface{}) (interface{}, error) {
++				if from.Kind() == reflect.Slice && from.Elem().Kind() == reflect.String && to == reflect.TypeOf(addrList{}) {
++					var al addrList
++					for _, value := range data.([]string) {
++						addr, err := multiaddr.NewMultiaddr(value)
++						if err != nil {
++							return nil, err
++						}
++						al = append(al, addr)
+ 					}
+-					al = append(al, addr)
++					return al, nil
+ 				}
+-				return al, nil
+-			}
+-			if from.Kind() == reflect.Slice && from.Elem().Kind() == reflect.Interface && to == reflect.TypeOf(addrList{}) {
+-				var al addrList
+-				for _, value := range data.([]interface{}) {
+-					addr, err := multiaddr.NewMultiaddr(value.(string))
+-					if err != nil {
+-						return nil, err
++				if from.Kind() == reflect.Slice && from.Elem().Kind() == reflect.Interface && to == reflect.TypeOf(addrList{}) {
++					var al addrList
++					for _, value := range data.([]interface{}) {
++						addr, err := multiaddr.NewMultiaddr(value.(string))
++						if err != nil {
++							return nil, err
++						}
++						al = append(al, addr)
+ 					}
+-					al = append(al, addr)
++					return al, nil
+ 				}
+-				return al, nil
+-			}
+-			return data, nil
+-		}
++				return data, nil
++			},
++		)
+ 	})
+ 	if err != nil {
+ 		return err
+diff --git a/p2p/p2p_transporter.go b/p2p/p2p_transporter.go
+index bdf475b..21dfc8c 100644
+--- a/p2p/p2p_transporter.go
++++ b/p2p/p2p_transporter.go
+@@ -171,8 +171,11 @@ func NewP2PTransporter(
+ 	if err != nil {
+ 		common.Panic(err)
+ 	}
+-	host.SetStreamHandler(partyProtocolId, t.handleStream)
+-	host.SetStreamHandler(bootstrapProtocolId, t.handleSigner)
++	if bootstrapper != nil {
++		host.SetStreamHandler(bootstrapProtocolId, t.handleSigner)
++	} else {
++		host.SetStreamHandler(partyProtocolId, t.handleStream)
++	}
+ 	t.host = host
+ 	t.closed = make(chan bool)
+ 	logger.Debug("Host created. We are:", host.ID())
+@@ -560,7 +563,7 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
+ 		case <-timeout.C:
+ 			break
+ 		default:
+-			time.Sleep(1000 * time.Millisecond)
++			time.Sleep(500 * time.Millisecond)
+ 			if len(t.host.Peerstore().Addrs(pid)) == 0 {
+ 				_, err := dht.FindPeer(t.ctx, pid)
+ 				if err == nil {
+@@ -594,6 +597,9 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
+ 					return
+ 				}
+ 			} else {
++				if sw, ok := t.host.Network().(*swarm.Swarm); ok {
++					sw.Backoff().Clear(pid)
++				}
+ 				err := t.host.Connect(t.ctx, peer.AddrInfo{pid, t.host.Peerstore().Addrs(pid)})
+ 				if err != nil {
+ 					if err != swarm.ErrDialBackoff {
+@@ -608,8 +614,9 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
+ 
+ 					stream, err := t.host.NewStream(t.ctx, pid, protocol.ID(protocolId))
+ 					if err != nil {
+-						logger.Info("Direct Connection failed, Will give up")
+-						common.Panic(err)
++						logger.Infof("Direct Connection to %s failed (stream negotiation), will retry: %v", pid.Pretty(), err)
++						t.host.Network().ClosePeer(pid)
++						continue
+ 					} else {
+ 						switch protocolId {
+ 						case partyProtocolId:

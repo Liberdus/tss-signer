@@ -94,6 +94,7 @@ export type SignEthereumTxOptions = BasePartyOptions & {
   tx?: ethers.UnsignedTransaction
   channelId?: string
   channelPassword?: string
+  signDiscoveryTimeout?: string
   extraArgs?: string[]
 }
 
@@ -624,6 +625,7 @@ export function buildSignArgs({
   channelId,
   channelPassword,
   messageDecimal,
+  signDiscoveryTimeout,
   extraArgs,
 }: {
   home: string
@@ -633,6 +635,7 @@ export function buildSignArgs({
   channelId: string
   channelPassword: string
   messageDecimal: string
+  signDiscoveryTimeout?: string
   extraArgs?: string[]
 }): string[] {
   const args = [
@@ -652,6 +655,9 @@ export function buildSignArgs({
     '--message',
     messageDecimal,
   ];
+  if (signDiscoveryTimeout) {
+    args.push('--sign_discovery_timeout', signDiscoveryTimeout);
+  }
   if (Array.isArray(extraArgs) && extraArgs.length > 0) {
     args.push(...extraArgs);
   }
@@ -850,6 +856,7 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
     channelId,
     channelPassword,
     messageDecimal,
+    signDiscoveryTimeout: options.signDiscoveryTimeout,
     extraArgs: options.extraArgs,
   });
   console.log(`Running ${binary} ${args.join(' ')}`);
