@@ -3,21 +3,21 @@
     "name": "Polygon Amoy Testnet",
     "chainId": 80002,
     "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
-    "contractAddress": "0xaA2616CD3A3d3d63F8e1ac9c7d7BDc37f16709dA",
-    "deploymentBlock": 34708788
+    "contractAddress": "0xf563937Bc07cEFE9Cf028956EDF575234d8303ED",
+    "deploymentBlock": 35355000
   },
   "secondaryChainConfig": {
     "name": "BSC Testnet",
     "chainId": 97,
     "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
-    "contractAddress": "0xf5A75e4bC827c9cC31BacD4c4d365107C698b465",
-    "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
-    "bridgeAddress": "43178f0e762433e8aa0e50eb6d691a3254f957ee000000000000000000000000",
+    "contractAddress": "0x4113aED4Cb0930A7DFD76c8fF694Be7c669b50f1",
+    "tssSenderAddress": "0xb1325c98Bc338986B64355cD72deC0E5eEa22416",
+    "bridgeAddress": "b1325c98bc338986b64355cd72dec0e5eea22416000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [5, 10, 15, 20, 25, 30]
     },
-    "deploymentBlock": 93766691
+    "deploymentBlock": 96441497
   },
   "supportedChains": {
     "80002": {
@@ -37,17 +37,17 @@
       "name": "BSC Testnet",
       "chainId": 97,
       "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
-      "contractAddress": "0xf5A75e4bC827c9cC31BacD4c4d365107C698b465",
-      "tssSenderAddress": "0x43178f0E762433E8Aa0E50EB6d691a3254f957EE",
-      "bridgeAddress": "43178f0e762433e8aa0e50eb6d691a3254f957ee000000000000000000000000",
+      "contractAddress": "0x4113aED4Cb0930A7DFD76c8fF694Be7c669b50f1",
+      "tssSenderAddress": "0xb1325c98Bc338986B64355cD72deC0E5eEa22416",
+      "bridgeAddress": "b1325c98bc338986b64355cd72dec0e5eea22416000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [5, 10, 15, 20, 25, 30]
       },
-      "deploymentBlock": 93766691
+      "deploymentBlock": 96441497
     }
   },
-  "enableShardusCryptoAuth": true,
+  "enableShardusCryptoAuth": false,
   "enableLiberdusNetwork": false,
   "coordinatorUrl": "http://127.0.0.1:8000",
   "collectorHost": "https://dev.liberdus.com:3035",
