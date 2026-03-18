@@ -1,14 +1,18 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bgentry/speakeasy"
-	"github.com/bnb-chain/tss/client"
+	"github.com/bnb-chain/tss/common"
+	"github.com/btcsuite/btcd/btcec"
+	"golang.org/x/crypto/sha3"
 )
 
 type allOutput struct {
@@ -50,22 +54,15 @@ func main() {
 		passphrase = prompt
 	}
 
-	os.Setenv("TSS_PASSWORD", passphrase)
-	compressed, err := client.LoadPubkeyAsCompressedHexString(home, resolvedVault)
+	ecdsaPubKey, err := common.LoadEcdsaPubkey(home, resolvedVault, passphrase)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load compressed public key from %s/%s: %v\n", home, resolvedVault, err)
+		fmt.Fprintf(os.Stderr, "failed to load public key from %s/%s: %v\n", home, resolvedVault, err)
 		os.Exit(1)
 	}
-	ethPubkey, err := client.LoadEthereumPubkeyHexString(home, resolvedVault)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load ethereum public key from %s/%s: %v\n", home, resolvedVault, err)
-		os.Exit(1)
-	}
-	ethAddress, err := client.LoadEthereumAddress(home, resolvedVault)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load ethereum address from %s/%s: %v\n", home, resolvedVault, err)
-		os.Exit(1)
-	}
+	btcecPubKey := (*btcec.PublicKey)(ecdsaPubKey)
+	compressed := hex.EncodeToString(btcecPubKey.SerializeCompressed())
+	ethPubkey := hex.EncodeToString(btcecPubKey.SerializeUncompressed()[1:])
+	ethAddress := ethereumAddress(btcecPubKey.SerializeUncompressed()[1:])
 
 	switch format {
 	case "compressed":
@@ -97,4 +94,34 @@ func normalizeHomeAndVault(homeArg, vault string) (string, string) {
 		return filepath.Dir(cleanHome), filepath.Base(cleanHome)
 	}
 	return cleanHome, vault
+}
+
+func ethereumAddress(uncompressedWithoutPrefix []byte) string {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write(uncompressedWithoutPrefix)
+	sum := hasher.Sum(nil)
+	lowerHex := hex.EncodeToString(sum[12:])
+	return toChecksumAddress(lowerHex)
+}
+
+func toChecksumAddress(lowerHex string) string {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write([]byte(lowerHex))
+	hashHex := hex.EncodeToString(hasher.Sum(nil))
+
+	var builder strings.Builder
+	builder.Grow(42)
+	builder.WriteString("0x")
+	for i, ch := range lowerHex {
+		if ch >= '0' && ch <= '9' {
+			builder.WriteRune(ch)
+			continue
+		}
+		if hashHex[i] >= '8' {
+			builder.WriteString(strings.ToUpper(string(ch)))
+		} else {
+			builder.WriteRune(ch)
+		}
+	}
+	return builder.String()
 }

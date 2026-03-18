@@ -548,16 +548,24 @@ function lastNonEmptyLine(text: string): string | undefined {
     .pop();
 }
 
-function extractJsonLine(text: string): any {
-  const lines = (text || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const jsonLine = [...lines].reverse().find((line) => line.startsWith('{') && line.endsWith('}'));
-  if (!jsonLine) {
-    throw new Error(`Failed to locate JSON output.\n${text}`);
+function extractSignatureHex(text: string): string {
+  const matches = Array.from(text.matchAll(/received signature:\s*([0-9a-fA-F]{128})\b/g));
+  const signatureHex = matches.length > 0 ? matches[matches.length - 1][1] : undefined;
+  if (!signatureHex) {
+    throw new Error(`Failed to locate compact signature in signer output.\n${text}`);
   }
-  return JSON.parse(jsonLine);
+  return `0x${signatureHex.toLowerCase()}`;
+}
+
+function parseCompactSignature(signatureHex: string): {r: string; s: string} {
+  const normalized = signatureHex.startsWith('0x') ? signatureHex.slice(2) : signatureHex;
+  if (!/^[0-9a-fA-F]{128}$/.test(normalized)) {
+    throw new Error(`Expected a 64-byte compact signature, got ${signatureHex}`);
+  }
+  return {
+    r: `0x${normalized.slice(0, 64)}`,
+    s: `0x${normalized.slice(64)}`,
+  };
 }
 
 function requireEnvOrValue(value: string | undefined, envKey: string, label: string): string {
@@ -643,7 +651,6 @@ export function buildSignArgs({
     channelPassword,
     '--message',
     messageDecimal,
-    '--json',
   ];
   if (Array.isArray(extraArgs) && extraArgs.length > 0) {
     args.push(...extraArgs);
@@ -852,12 +859,11 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
       TSS_PASSWORD: password,
     },
   });
-  const parsed = extractJsonLine(result.stdout);
-  const signature = {
-    r: `0x${parsed.r}`,
-    s: `0x${parsed.s}`,
-  };
-  const recoveryParam = deriveRecoveryId(options.digest, signature, parsed.ethereum_address);
+  const signatureHex = extractSignatureHex(`${result.stdout}\n${result.stderr}`);
+  const signature = parseCompactSignature(signatureHex);
+  const derived = derivePubkey({...options, signerRoot, tssRoot, format: 'all'}) as DerivedPubkeyAll;
+  const ethereumAddress = ethers.utils.getAddress(derived.ethereum_address);
+  const recoveryParam = deriveRecoveryId(options.digest, signature, ethereumAddress);
   return {
     digest: options.digest,
     messageDecimal,
@@ -865,10 +871,10 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
     s: signature.s,
     recoveryParam,
     v: 27 + recoveryParam,
-    ethereumAddress: ethers.utils.getAddress(parsed.ethereum_address),
-    publicKeyEthereum: `0x${parsed.public_key_ethereum}`,
-    publicKeyCompressed: `0x${parsed.public_key_compressed}`,
-    signatureHex: `0x${parsed.signature_compact_hex}`,
+    ethereumAddress,
+    publicKeyEthereum: `0x${derived.ethereum_pubkey}`,
+    publicKeyCompressed: `0x${derived.compressed}`,
+    signatureHex,
   };
 }
 
