@@ -160,7 +160,8 @@ These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing h
 | `tss-tools/regroup.ts` | Runs native TSS regroup for an existing or new committee member. |
 | `tss-tools/lib/bnbTss.ts` | Shared TypeScript runtime helper used by the tooling scripts for binary resolution, patch prep, vault paths, committee topology, and signing helpers. |
 | `tss-tools/lib/committeeTopology.ts` | Committee topology helper for deterministic local peer addresses and parsing `tss describe` topology output. |
-| `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. |
+| `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. See [`tss-tools/patches/README.md`](tss-tools/patches/README.md) for a description of every change. |
+| `tss-tools/test-sign-rounds.sh` | Multi-scenario signing test harness. Runs configurable rounds across varying party startup delays and reports PASS/FAIL. Logs to `tss-tools/test-result.log` and `tss-tools/test-party{1,2,3}.log`. |
 | `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.ts` and post-keygen address derivation. |
 | `tss-tools/guide.md` | Step-by-step local operator guide for build, init, keygen, verify, sign, and regroup. |
 

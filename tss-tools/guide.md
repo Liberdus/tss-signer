@@ -295,7 +295,47 @@ npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --p
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
 
 
-# 18) If verify/sign fails, check these first
+# 18) Sign bootstrap — flexible k-of-n signing and discovery timeout
+#
+# The patched tss binary supports flexible k-of-n signing. Once the first peer
+# connects during sign bootstrap, a discovery window opens. If all n parties
+# connect before the window closes, all sign. If the window expires with at
+# least threshold peers present, signing proceeds with that available subset.
+#
+# Default window: 5 s (--sign_discovery_timeout default)
+#
+# This means:
+#   - Parties starting within 5 s of each other → all participate
+#   - A party starting more than 5 s after the first peer → others proceed without it
+#     (still valid if ≥ threshold+1 parties are present)
+#
+# To extend the window (e.g. for high-latency multi-machine setups):
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json --sign_discovery_timeout 10s
+#
+# To disable the window and require all n parties (strict mode):
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json --sign_discovery_timeout 0
+
+
+# 19) Test harness — verify sign bootstrap across delay scenarios
+#
+# tss-tools/test-sign-rounds.sh runs multiple rounds of 3-party signing with
+# varying startup delays to validate the bootstrap fix. Results are written to:
+#   tss-tools/test-result.log   — overall PASS/FAIL per round
+#   tss-tools/test-party1.log   — party 1 output (all rounds, with separators)
+#   tss-tools/test-party2.log   — party 2 output
+#   tss-tools/test-party3.log   — party 3 output
+#
+# Run with default 5 rounds per scenario:
+bash tss-tools/test-sign-rounds.sh
+#
+# Run with a custom number of rounds:
+bash tss-tools/test-sign-rounds.sh 3
+#
+# Expected: all scenarios with delays ≤ 5 s between first and last party → PASS 3/3
+#           scenarios where a party starts > 5 s late → PASS 2/3 (threshold signing)
+
+
+# 20) If verify/sign fails, check these first
 # - Did ./tss-tools/build-tss.sh succeed?
 # - Did you set the three env vars?
 # - Are all parties using the same channel id and channel password?
