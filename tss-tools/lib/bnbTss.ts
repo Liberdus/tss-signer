@@ -47,6 +47,7 @@ export type BasePartyOptions = {
   partyIdx: number
   chainId: number
   password?: string
+  logLevel?: string
   vaultName?: string
   homeRoot?: string
   homePath?: string
@@ -571,6 +572,7 @@ export function buildKeygenArgs({
   home,
   vaultName,
   password,
+  logLevel,
   channelId,
   channelPassword,
   threshold,
@@ -586,6 +588,8 @@ export function buildKeygenArgs({
     vaultName,
     '--password',
     password,
+    '--log_level',
+    logLevel || 'debug',
     '--channel_id',
     channelId,
     '--channel_password',
@@ -608,6 +612,7 @@ export function buildSignArgs({
   home,
   vaultName,
   password,
+  logLevel,
   channelId,
   channelPassword,
   messageDecimal,
@@ -616,6 +621,7 @@ export function buildSignArgs({
   home: string
   vaultName: string
   password: string
+  logLevel?: string
   channelId: string
   channelPassword: string
   messageDecimal: string
@@ -629,6 +635,8 @@ export function buildSignArgs({
     vaultName,
     '--password',
     password,
+    '--log_level',
+    logLevel || 'debug',
     '--channel_id',
     channelId,
     '--channel_password',
@@ -667,6 +675,8 @@ export function initParty(options: InitPartyOptions = {} as InitPartyOptions): I
       options.moniker || getMoniker(options.partyIdx, options.chainId),
       '--password',
       vaultPassword,
+      '--log_level',
+      options.logLevel || 'debug',
       '--p2p.listen',
       options.listenAddr || getLocalListenAddr(options.chainId, options.partyIdx),
     ],

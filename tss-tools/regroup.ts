@@ -4,7 +4,7 @@ import * as bnbTss from './lib/bnbTss'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/regroup.js --party <idx>=1..N --chain-id <id> [--password <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--new-threshold <n>] [--new-parties <n>] [--is-old] [--is-new-member] [--pubkey <hex>] [--vault <name>] [--home-root <path>] [--binary <path>] [-- <extra regroup args...>]',
+    'Usage: node tss-tools/regroup.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--new-threshold <n>] [--new-parties <n>] [--is-old] [--is-new-member] [--pubkey <hex>] [--vault <name>] [--home-root <path>] [--binary <path>] [-- <extra regroup args...>]',
   );
   process.exit(1);
 }
@@ -29,6 +29,10 @@ function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; c
         break;
       case '--password':
         options.password = value;
+        i += 1;
+        break;
+      case '--log_level':
+        options.logLevel = value;
         i += 1;
         break;
       case '--channel-id':
@@ -113,6 +117,8 @@ function main() {
     initialized.vaultName,
     '--password',
     password,
+    '--log_level',
+    options.logLevel || 'debug',
     '--channel_id',
     channelId,
     '--channel_password',

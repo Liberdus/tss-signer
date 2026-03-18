@@ -3,7 +3,7 @@ import * as bnbTss from './lib/bnbTss'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/init.js --party <idx>=1..N --chain-id <id> [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--binary <path>] [--moniker <value>] [--listen-addr <multiaddr>] [--listen-port <port>]',
+    'Usage: node tss-tools/init.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--binary <path>] [--moniker <value>] [--listen-addr <multiaddr>] [--listen-port <port>]',
   );
   process.exit(1);
 }
@@ -24,6 +24,10 @@ function parseArgs(argv: string[]): bnbTss.InitPartyOptions & {partyIdx: number;
         break;
       case '--password':
         options.password = value;
+        i += 1;
+        break;
+      case '--log_level':
+        options.logLevel = value;
         i += 1;
         break;
       case '--vault':

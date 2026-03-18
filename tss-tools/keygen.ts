@@ -4,7 +4,7 @@ import * as bnbTss from './lib/bnbTss'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/keygen.js --party <idx>=1..N --chain-id <id> [--password <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--peer-addrs <addr1,addr2>] [--no-local-peer-addrs] [--vault <name>] [--home-root <path>] [--home-path <path>] [--binary <path>]',
+    'Usage: node tss-tools/keygen.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--peer-addrs <addr1,addr2>] [--no-local-peer-addrs] [--vault <name>] [--home-root <path>] [--home-path <path>] [--binary <path>]',
   );
   process.exit(1);
 }
@@ -29,6 +29,10 @@ function parseArgs(argv: string[]): bnbTss.KeygenOptions & {partyIdx: number; ch
         break;
       case '--password':
         options.password = value;
+        i += 1;
+        break;
+      case '--log_level':
+        options.logLevel = value;
         i += 1;
         break;
       case '--channel-id':
@@ -116,6 +120,7 @@ function main() {
     home: initialized.home,
     vaultName: initialized.vaultName,
     password,
+    logLevel: options.logLevel,
     channelId,
     channelPassword,
     threshold,
