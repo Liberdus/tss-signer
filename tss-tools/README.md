@@ -22,8 +22,8 @@ Structure:
 - `derive-pubkey/main.go`
   - Go helper source that is staged into `../tss/.tooling` and run inside the patched `tss` module to derive Ethereum pubkey/address
 - `test-sign-rounds.sh`
-  - multi-scenario signing test harness; runs configurable rounds across varying party startup delays and reports PASS/FAIL per round
-  - logs per-party output to `test-party{1,2,3}.log` and overall results to `test-result.log`
+  - multi-scenario signing test harness for a 7-party (threshold=3) setup; runs configurable rounds across 34 startup-delay scenarios and reports PASS/FAIL per scenario
+  - logs per-party output to `test-party{1..7}.log` and overall results to `test-result.log`
 - `guide.md`
   - step-by-step operator guide for local native-TSS workflows
 - `patches/README.md`

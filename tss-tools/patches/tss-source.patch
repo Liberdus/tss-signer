@@ -1,3 +1,26 @@
+diff --git a/client/client.go b/client/client.go
+index 35ca66f..f7d234d 100644
+--- a/client/client.go
++++ b/client/client.go
+@@ -271,9 +271,17 @@ func (client *TssClient) handleMessageRoutine() {
+ 		if err != nil {
+ 			common.Panic(fmt.Errorf("[%s] failed to extract message inside message wrapper: %v", client.config.Moniker, err))
+ 		}
++		// Guard against nil dereference if the sender is not in our signing committee
++		// (e.g. a late party that formed a different committee and injected messages).
++		fromPartyId := client.idToPartyIds[messageWrapper.From.Id]
++		if fromPartyId == nil {
++			Logger.Warningf("[%s] ignoring message from unknown party %s",
++				client.config.Moniker, messageWrapper.From.Id)
++			continue
++		}
+ 		ok, err := client.localParty.UpdateFromBytes(
+ 			any,
+-			client.idToPartyIds[messageWrapper.From.Id],
++			fromPartyId,
+ 			messageWrapper.IsBroadcast)
+ 		if !ok && err != nil {
+ 			common.Panic(fmt.Errorf("[%s] error updating local party state: %v", client.config.Moniker, err))
 diff --git a/cmd/root.go b/cmd/root.go
 index 181efd3..eadcfc2 100644
 --- a/cmd/root.go
@@ -53,42 +76,81 @@ index c324c48..868af28 100644
 +	common.TssCfg.Message = message
  }
 diff --git a/common/bootstrapper.go b/common/bootstrapper.go
-index 580ab2a..4243ddf 100644
+index 580ab2a..776c496 100644
 --- a/common/bootstrapper.go
 +++ b/common/bootstrapper.go
-@@ -5,6 +5,7 @@ import (
+@@ -5,6 +5,8 @@ import (
  	"fmt"
  	"os"
  	"sync"
++	"sync/atomic"
 +	"time"
  
  	"github.com/bgentry/speakeasy"
  )
-@@ -31,6 +32,10 @@ type Bootstrapper struct {
+@@ -31,6 +33,12 @@ type Bootstrapper struct {
  	Cfg             *TssConfig
  
  	Peers sync.Map // id -> peerInfo
 +
 +	// time-boxed discovery for SignMode
 +	firstPeerOnce     sync.Once
++	deadlineMu        sync.RWMutex
 +	discoveryDeadline time.Time
++	committed         int32 // atomic: 1 after initBootstrapConnection commits
  }
  
  func NewBootstrapper(expectedPeers int, config *TssConfig) *Bootstrapper {
-@@ -121,6 +126,12 @@ func (b *Bootstrapper) HandleBootstrapMsg(peerMsg BootstrapMessage) error {
+@@ -93,6 +101,23 @@ func NewBootstrapper(expectedPeers int, config *TssConfig) *Bootstrapper {
+ 	}
+ }
+ 
++func (b *Bootstrapper) Commit() {
++	atomic.StoreInt32(&b.committed, 1)
++}
++
++func (b *Bootstrapper) IsCommitted() bool {
++	return atomic.LoadInt32(&b.committed) == 1
++}
++
++func (b *Bootstrapper) GetDiscoveryDeadlineNano() int64 {
++	b.deadlineMu.RLock()
++	defer b.deadlineMu.RUnlock()
++	if b.discoveryDeadline.IsZero() {
++		return 0
++	}
++	return b.discoveryDeadline.UnixNano()
++}
++
+ func (b *Bootstrapper) HandleBootstrapMsg(peerMsg BootstrapMessage) error {
+ 	if peerParam, err := Decrypt(peerMsg.PeerInfo, b.ChannelId, b.ChannelPassword); err != nil {
+ 		return err
+@@ -121,6 +146,24 @@ func (b *Bootstrapper) HandleBootstrapMsg(peerMsg BootstrapMessage) error {
  				return fmt.Errorf("received different new t for party: %s, %s", peerParam.Moniker, peerParam.Id)
  			}
  
 +			b.firstPeerOnce.Do(func() {
 +				if b.Cfg.BMode == SignMode && b.Cfg.SignDiscoveryTimeout > 0 {
++					b.deadlineMu.Lock()
 +					b.discoveryDeadline = time.Now().Add(b.Cfg.SignDiscoveryTimeout)
++					b.deadlineMu.Unlock()
 +					logger.Debugf("sign discovery window started, deadline in %v", b.Cfg.SignDiscoveryTimeout)
 +				}
 +			})
++			// Propagate earlier deadline from peer (they started before us; inherit their session time)
++			if b.Cfg.BMode == SignMode && peerParam.DiscoveryExpiry != 0 {
++				b.deadlineMu.Lock()
++				peerDeadline := time.Unix(0, peerParam.DiscoveryExpiry)
++				if b.discoveryDeadline.IsZero() || peerDeadline.Before(b.discoveryDeadline) {
++					b.discoveryDeadline = peerDeadline
++					logger.Debugf("propagated earlier discovery deadline from peer: %v", peerDeadline)
++				}
++				b.deadlineMu.Unlock()
++			}
  			pi := PeerInfo{
  				Id:         peerParam.Id,
  				Moniker:    peerParam.Moniker,
-@@ -142,8 +153,20 @@ func (b *Bootstrapper) IsFinished() bool {
+@@ -142,8 +185,21 @@ func (b *Bootstrapper) IsFinished() bool {
  		logger.Debugf("received peers: %d, expect peers: %v", received, b.ExpectedPeers)
  		return received == b.ExpectedPeers
  	case SignMode:
@@ -100,9 +162,10 @@ index 580ab2a..4243ddf 100644
 +			return true
 +		}
 +		// Timeout path: discovery window elapsed with enough signers
-+		if !b.discoveryDeadline.IsZero() &&
-+			time.Now().After(b.discoveryDeadline) &&
-+			received >= b.Cfg.Threshold {
++		b.deadlineMu.RLock()
++		dl := b.discoveryDeadline
++		b.deadlineMu.RUnlock()
++		if !dl.IsZero() && time.Now().After(dl) && received >= b.Cfg.Threshold {
 +			logger.Debugf("sign bootstrap done: discovery window elapsed with %d peers (threshold=%d)", received, b.Cfg.Threshold)
 +			return true
 +		}
@@ -188,8 +251,20 @@ index 2b9069e..d6ab2d1 100644
  	})
  	if err != nil {
  		return err
+diff --git a/common/messages.go b/common/messages.go
+index 10b69c5..5955ce7 100644
+--- a/common/messages.go
++++ b/common/messages.go
+@@ -39,6 +39,7 @@ type PeerParam struct {
+ 	ChannelId, Moniker, Msg, Id string
+ 	N, T, NewN, NewT            int
+ 	IsOld, IsNew                bool
++	DiscoveryExpiry             int64 // Unix nanoseconds; 0 = deadline not yet set
+ }
+ 
+ func NewBootstrapMessage(channelId, channelPassword, addr string, param PeerParam) (*BootstrapMessage, error) {
 diff --git a/p2p/p2p_transporter.go b/p2p/p2p_transporter.go
-index bdf475b..21dfc8c 100644
+index bdf475b..fe6a6d5 100644
 --- a/p2p/p2p_transporter.go
 +++ b/p2p/p2p_transporter.go
 @@ -171,8 +171,11 @@ func NewP2PTransporter(
@@ -206,7 +281,81 @@ index bdf475b..21dfc8c 100644
  	t.host = host
  	t.closed = make(chan bool)
  	logger.Debug("Host created. We are:", host.ID())
-@@ -560,7 +563,7 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
+@@ -283,6 +286,21 @@ func (t *p2pTransporter) Notifee() network.Notifiee {
+ 
+ func (t *p2pTransporter) handleStream(stream network.Stream) {
+ 	pid := stream.Conn().RemotePeer().Pretty()
++	// Only accept sign-phase connections from expected committee members.
++	// This prevents a late party that bootstrapped with a different committee
++	// from injecting messages into our signing session.
++	isExpected := false
++	for _, ep := range t.expectedPeers {
++		if ep.Pretty() == pid {
++			isExpected = true
++			break
++		}
++	}
++	if !isExpected {
++		logger.Warningf("rejecting sign stream from non-committee peer %s", pid)
++		stream.Reset()
++		return
++	}
+ 	logger.Infof("Connected to: %s(%s)", pid, stream.Protocol())
+ 
+ 	if _, loaded := t.streams.LoadOrStore(pid, stream); !loaded {
+@@ -292,6 +310,15 @@ func (t *p2pTransporter) handleStream(stream network.Stream) {
+ }
+ 
+ func (t *p2pTransporter) handleSigner(stream network.Stream) {
++	// Reject late-connecting parties if our bootstrap discovery is already done.
++	// Without this guard, a 1-s polling gap in initBootstrapConnection allows late
++	// parties to connect, form a different signing committee, and corrupt the ongoing session.
++	if t.bootstrapper.IsCommitted() {
++		logger.Warningf("bootstrap already committed, rejecting late connection from %s",
++			stream.Conn().RemotePeer().Pretty())
++		stream.Reset()
++		return
++	}
+ 	pid := stream.Conn().RemotePeer().Pretty()
+ 	logger.Infof("Connected to: %s(%s)", pid, stream.Protocol())
+ 
+@@ -304,16 +331,17 @@ func (t *p2pTransporter) handleSigner(stream network.Stream) {
+ 		t.bootstrapper.ChannelPassword,
+ 		localAddr,
+ 		common.PeerParam{
+-			ChannelId: common.TssCfg.ChannelId,
+-			Moniker:   common.TssCfg.Moniker,
+-			Msg:       common.TssCfg.Message,
+-			Id:        string(common.TssCfg.Id),
+-			N:         common.TssCfg.Parties,
+-			T:         common.TssCfg.Threshold,
+-			NewN:      common.TssCfg.NewParties,
+-			NewT:      common.TssCfg.NewThreshold,
+-			IsOld:     common.TssCfg.IsOldCommittee,
+-			IsNew:     !common.TssCfg.IsOldCommittee,
++			ChannelId:       common.TssCfg.ChannelId,
++			Moniker:         common.TssCfg.Moniker,
++			Msg:             common.TssCfg.Message,
++			Id:              string(common.TssCfg.Id),
++			N:               common.TssCfg.Parties,
++			T:               common.TssCfg.Threshold,
++			NewN:            common.TssCfg.NewParties,
++			NewT:            common.TssCfg.NewThreshold,
++			IsOld:           common.TssCfg.IsOldCommittee,
++			IsNew:           !common.TssCfg.IsOldCommittee,
++			DiscoveryExpiry: t.bootstrapper.GetDiscoveryDeadlineNano(),
+ 		}); err == nil {
+ 		payload, err := proto.Marshal(msg)
+ 		if err != nil {
+@@ -522,6 +550,7 @@ func (t *p2pTransporter) initBootstrapConnection(dht *libp2pdht.IpfsDHT) {
+ 			time.Sleep(time.Second)
+ 		}
+ 	}
++	t.bootstrapper.Commit()
+ }
+ 
+ func (t *p2pTransporter) initConnection(dht *libp2pdht.IpfsDHT) {
+@@ -560,7 +589,7 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
  		case <-timeout.C:
  			break
  		default:
@@ -215,7 +364,7 @@ index bdf475b..21dfc8c 100644
  			if len(t.host.Peerstore().Addrs(pid)) == 0 {
  				_, err := dht.FindPeer(t.ctx, pid)
  				if err == nil {
-@@ -594,6 +597,9 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
+@@ -594,6 +623,9 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
  					return
  				}
  			} else {
@@ -225,7 +374,7 @@ index bdf475b..21dfc8c 100644
  				err := t.host.Connect(t.ctx, peer.AddrInfo{pid, t.host.Peerstore().Addrs(pid)})
  				if err != nil {
  					if err != swarm.ErrDialBackoff {
-@@ -608,8 +614,9 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
+@@ -608,8 +640,9 @@ func (t *p2pTransporter) connectRoutine(dht *libp2pdht.IpfsDHT, pid peer.ID, pro
  
  					stream, err := t.host.NewStream(t.ctx, pid, protocol.ID(protocolId))
  					if err != nil {

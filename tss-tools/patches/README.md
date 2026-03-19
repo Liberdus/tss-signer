@@ -28,27 +28,46 @@ Adds `SignDiscoveryTimeout time.Duration` to `TssConfig` with a `mapstructure:"s
 
 ---
 
+### `common/messages.go` — add `DiscoveryExpiry` to `PeerParam`
+
+Adds `DiscoveryExpiry int64` (Unix nanoseconds) to `PeerParam`. Zero means the sender's deadline is not yet set.
+
+**Why:** Parties that start late would otherwise open a fresh discovery window when their first peer connected, accumulating a different (larger) set of signers than the early parties and causing committee inconsistency. By piggybacking the session deadline in every bootstrap exchange, a late party can adopt the already-elapsed deadline of the early session and close immediately rather than reopening a new window.
+
+---
+
 ### `common/bootstrapper.go` — time-boxed discovery for flexible k-of-n signing
 
-Adds two fields to `Bootstrapper`:
+Adds fields to `Bootstrapper`:
 
-- `firstPeerOnce sync.Once` — ensures the deadline is started exactly once per session
+- `firstPeerOnce sync.Once` — ensures the local deadline is started exactly once per session
+- `deadlineMu sync.RWMutex` — guards concurrent reads/writes of `discoveryDeadline`
 - `discoveryDeadline time.Time` — absolute cutoff set when the first peer arrives
+- `committed int32` — atomic flag set to 1 after `initBootstrapConnection` exits its polling loop
 
-Modifies `HandleBootstrapMsg` to start the discovery timer on the first peer connection in `SignMode`.
+Adds three new methods:
+
+- `Commit()` — sets `committed = 1` atomically
+- `IsCommitted() bool` — reads `committed` atomically
+- `GetDiscoveryDeadlineNano() int64` — returns the deadline as Unix nanoseconds (0 if not set), used to populate `DiscoveryExpiry` in outgoing bootstrap messages
+
+Modifies `HandleBootstrapMsg` to:
+
+1. Start the discovery timer (via `firstPeerOnce`) on the first new peer in `SignMode`
+2. Adopt a peer's `DiscoveryExpiry` if it is earlier than the local deadline — late-arriving parties inherit the already-elapsed session deadline
 
 Replaces the `SignMode` case in `IsFinished()` with two exit conditions:
 
 - **Fast path:** all `n-1` expected peers connected → close immediately
 - **Timeout path:** `SignDiscoveryTimeout` has elapsed since the first peer arrived AND at least `threshold` peers are present → close with the available subset
 
-**Why:** The original code exited discovery as soon as `received == threshold`, which caused a race condition: different parties could exit at different moments with different peer counts, forming inconsistent signer sets. Signing rounds then deadlocked because each party expected messages from a different participant set.
+**Why:** The original code exited discovery as soon as `received >= threshold`, which caused a race: different parties could exit at different moments with different peer counts, forming inconsistent signer sets and deadlocking all signing rounds. The discovery window gives all simultaneously-starting parties time to connect before the session closes, while still allowing partial signing when some parties are genuinely absent.
 
-The fix works because the bootstrap communication graph is fully symmetric — every party calls `connectRoutine` for all expected peers and `handleSigner` runs on both sides — so all online parties always observe the same peer set and reach the timeout at the same logical moment, producing a consistent signer subset. `tss-lib` only requires `len(signers) >= threshold+1`; any `k ≥ t+1` is valid via Lagrange interpolation.
+The `committed` flag and `Commit()`/`IsCommitted()` separation address a secondary race: `IsFinished()` returns true as soon as the deadline elapses and enough peers exist, but the 1-second polling loop in `initBootstrapConnection` hasn't exited yet. During that gap, late-arriving parties could still be accepted by `handleSigner` and form a different committee size. `handleSigner` now guards on `IsCommitted()` instead of `IsFinished()`, so the window only closes after the loop exits and calls `Commit()`.
 
 ---
 
-### `p2p/p2p_transporter.go` — three p2p reliability fixes
+### `p2p/p2p_transporter.go` — p2p reliability fixes
 
 **Fix A — Protocol handler phase separation**
 
@@ -67,6 +86,30 @@ The fix calls `sw.Backoff().Clear(pid)` before each connect attempt to reset the
 When `NewStream` returned "protocol not supported" (sign stream hitting a peer's still-running bootstrap host — a transient startup overlap), the original code called `common.Panic`, crashing the party.
 
 The fix logs the error, calls `ClosePeer` to reset the connection, and `continue`s the retry loop. The inter-retry sleep is also reduced from 1000 ms to 500 ms to avoid narrowly missing the discovery deadline.
+
+**Fix D — `handleSigner` uses `IsCommitted()` instead of `IsFinished()`**
+
+`handleSigner` now rejects incoming bootstrap connections only after `IsCommitted()` is true (i.e. after `initBootstrapConnection` has exited its polling loop and called `Commit()`). Previously it checked `IsFinished()`, which returned true up to 1 second before the loop exited. During that gap, simultaneously arriving late parties could be split — some accepted, some rejected — forming committees of different sizes.
+
+**Fix E — `handleSigner` includes `DiscoveryExpiry` in bootstrap reply**
+
+The bootstrap reply message now includes `DiscoveryExpiry: t.bootstrapper.GetDiscoveryDeadlineNano()`. This lets late-connecting parties adopt the session's already-elapsed deadline (see `common/bootstrapper.go` above).
+
+**Fix F — `Commit()` called after `initBootstrapConnection` polling loop**
+
+After the `for { if IsFinished() break; sleep 1s }` loop exits, `t.bootstrapper.Commit()` is called immediately. This atomically closes the window so that `handleSigner` rejects any subsequent incoming bootstrap connections.
+
+**Fix G — `handleStream` committee membership filter**
+
+`handleStream` (the sign-phase connection handler) now rejects streams from peers not in `t.expectedPeers`. This prevents a late party that bootstrapped with a different committee from injecting TSS messages into an ongoing signing session.
+
+---
+
+### `client/client.go` — nil guard in `handleMessageRoutine`
+
+`handleMessageRoutine` now checks whether the sender ID maps to a known party before calling `UpdateFromBytes`. If the sender is not in `idToPartyIds` (e.g. a late party that formed a different committee and got a message through), the message is logged and skipped instead of causing a nil-pointer panic.
+
+**Why:** Without this guard, a message from an unknown party ID causes `client.idToPartyIds[id]` to return `nil`, and passing `nil` as the `from` argument to `UpdateFromBytes` panics inside tss-lib.
 
 ---
 

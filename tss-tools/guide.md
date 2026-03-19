@@ -318,21 +318,23 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ./keystores
 
 # 19) Test harness — verify sign bootstrap across delay scenarios
 #
-# tss-tools/test-sign-rounds.sh runs multiple rounds of 3-party signing with
-# varying startup delays to validate the bootstrap fix. Results are written to:
-#   tss-tools/test-result.log   — overall PASS/FAIL per round
-#   tss-tools/test-party1.log   — party 1 output (all rounds, with separators)
-#   tss-tools/test-party2.log   — party 2 output
-#   tss-tools/test-party3.log   — party 3 output
+# tss-tools/test-sign-rounds.sh runs configurable rounds across 34 startup-delay
+# scenarios for a 7-party (threshold=3, min_sign=4) setup. Results are written to:
+#   tss-tools/test-result.log        — overall PASS/FAIL per scenario/round
+#   tss-tools/test-party{1..7}.log   — per-party output (all rounds, with separators)
 #
-# Run with default 5 rounds per scenario:
-bash tss-tools/test-sign-rounds.sh
+# Run with 1 round per scenario (34 total runs):
+bash tss-tools/test-sign-rounds.sh 1
 #
-# Run with a custom number of rounds:
+# Run with a custom number of rounds per scenario:
 bash tss-tools/test-sign-rounds.sh 3
 #
-# Expected: all scenarios with delays ≤ 5 s between first and last party → PASS 3/3
-#           scenarios where a party starts > 5 s late → PASS 2/3 (threshold signing)
+# Run only the first N scenarios:
+bash tss-tools/test-sign-rounds.sh 1 5
+#
+# Expected: PASS=34 FAIL=0
+# Scenarios where a party starts > 5 s late pass with a reduced signer count
+# (threshold signing) as long as at least threshold+1 parties are present.
 
 
 # 20) If verify/sign fails, check these first

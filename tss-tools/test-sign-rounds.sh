@@ -1,42 +1,89 @@
 #!/usr/bin/env bash
-# Runs N rounds of 3-party signing with configurable startup delays.
+# Runs signing scenarios for a 7-party (threshold-3) TSS setup.
 # Usage: ./tss-tools/test-sign-rounds.sh [rounds]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ROUNDS="${1:-5}"
+ROUNDS="${1:-1}"
+MAX_SCENARIOS="${2:-0}"   # 0 = run all
+PARTIES=7       # total signers
+THRESHOLD=3     # BNB TSS threshold — needs threshold+1 = 4 to sign
+MIN_SIGN=$((THRESHOLD + 1))
 PASS=0
 FAIL=0
 RESULTS_LOG="${SCRIPT_DIR}/test-result.log"
-LOG1="${SCRIPT_DIR}/test-party1.log"
-LOG2="${SCRIPT_DIR}/test-party2.log"
-LOG3="${SCRIPT_DIR}/test-party3.log"
 PARTY_TIMEOUT=30  # seconds before killing a stalled party
 
 # Clear logs from previous run
 > "$RESULTS_LOG"
-> "$LOG1"
-> "$LOG2"
-> "$LOG3"
+for i in $(seq 1 "$PARTIES"); do
+  > "${SCRIPT_DIR}/test-party${i}.log"
+done
 
-# Delays between party starts (seconds): (p1_delay, p2_delay, p3_delay)
-# Each tuple represents one test scenario
+# Delays (seconds) for each party's startup: one value per party (P1..P7).
+# Discovery window is ~5s — parties that start >5s after the session opens miss it.
+# Min required to sign: threshold+1 = 4
 SCENARIOS=(
-  "0 0 0"      # all simultaneous
-  "0 1 2"      # staggered 1s apart
-  "0 2 4"      # staggered 2s apart
-  "0 0 3"      # p3 starts 3s late
-  "0 0 4"      # p3 starts 4s late
-  "0 0 5"      # p3 starts exactly at discovery boundary
-  "0 0 6"      # p3 starts 6s late — only 2-of-3 expected
-  "0 0 8"      # p3 starts 8s late — only 2-of-3 expected
-  "0 3 3"      # p2 and p3 both start 3s late
-  "0 2 5"      # p2 delayed 2s, p3 delayed 5s
-  "0 4 4"      # p2 and p3 both start 4s late
-  "2 0 0"      # p1 starts 2s late
-  "4 0 0"      # p1 starts 4s late
-  "1 3 5"      # all different, spread over 5s
+  # KEY INSIGHT: behavior depends on early_count = number of parties with delay <= 5s
+  #   early_count < threshold+1 (4) → bootstrap keeps waiting → late parties can join
+  #   early_count >= threshold+1  → bootstrap closes at t=5s, signing starts
+  #     └─ late parties arriving DURING signing  → 0/7 disruption (full failure)
+  #     └─ late parties arriving AFTER signing   → safe partial miss
+
+  # --- all within window (delay <=5s) — 7 early → 7/7 ---
+  "0 0 0 0 0 0 0"       # all simultaneous
+  "0 1 2 3 4 5 5"       # staggered 1s apart, last two at boundary
+  "0 0 5 5 5 5 5"       # first two immediate, rest at boundary
+  "0 1 0 2 0 3 0"       # alternating early/late within window
+  "3 0 1 5 2 4 0"       # random spread within window
+  "0 5 0 5 0 5 0"       # alternating 0 and boundary
+  "1 3 5 0 2 4 1"       # fully mixed, all within window
+
+  # --- high-indexed party far beyond — 6 early, signing fast → 6/7 ---
+  "0 0 0 0 0 0 6"       # p7 misses, others done before p7 arrives
+  "0 0 0 0 0 14 0"      # p6 far beyond, safe partial
+
+  # --- p1 (lowest-indexed) beyond — disrupts ongoing signing → 0/7 ---
+  # p1 arriving 1s after bootstrap-close causes full disruption (protocol-level)
+  "6 0 0 0 0 0 0"       # p1 at 6s, 6 early sign, p1 arrives mid-signing → 0/7
+
+  # --- 2 parties beyond window — 5 early, fast signing → safe partial ---
+  "0 0 0 0 0 7 14"      # p6,p7 far beyond, 5/7
+  "0 0 0 0 0 10 20"     # p6,p7 extreme, 5/7
+  "8 12 0 0 0 0 0"      # p1,p2 arrive well after signing done → 5/7
+  "0 0 6 0 0 17 0"      # p3 arrives ~1s after close (may land in/out), p6 far → 5-6/7
+  "6 0 0 0 7 0 0"       # p1,p5 arrive after fast 5-party signing → 5/7
+  "0 0 0 0 0 15 20"     # p6,p7 extreme, 5/7
+
+  # --- 3 parties beyond window — only 4 early, bootstrap waits full timeout ---
+  # All late parties arrive AFTER bootstrap-close; signing completes with the
+  # first 4 that formed a group, rest miss cleanly → 4/7
+  "0 0 0 0 6 12 18"     # 4 early sign; p5/p6/p7 arrive staggered after → 4/7
+  "6 6 6 0 0 0 0"       # 4 early sign; p1/p2/p3 arrive staggered after → 4/7
+  "0 6 0 6 0 6 0"       # 4 early sign; p2/p4/p6 staggered after → 4/7
+  "0 0 0 0 8 14 20"     # 4 early, p5/p6/p7 extreme → 4/7
+  "0 0 0 6 17 20 0"     # 4 early (p1-p3,p7), p4 just beyond, p5/p6 extreme → 4-5/7
+  "0 0 0 0 7 14 20"     # 4 early, p5/p6/p7 varied delays → 4/7
+  "0 0 6 8 10 0 0"      # 4 early (p1,p2,p6,p7); p3/p4/p5 staggered after → 4/7
+  "6 8 0 0 0 0 17"      # 4 early (p3-p6); p1 arrives 1s into signing → 0/7 DISRUPTION
+
+  # --- 4 parties exactly beyond (3 early < threshold+1) → bootstrap WAITS ---
+  # Only 3 early parties — below threshold+1=4 — bootstrap keeps open.
+  # All 4 late parties MUST arrive TOGETHER (same delay) to all join;
+  # if staggered, the first late one triggers close and the rest disrupt → 0/7
+  "6 6 6 6 0 0 0"       # 3 early wait; all 4 late arrive together at t=6 → 7/7
+  "6 0 6 0 6 0 6"       # 3 early wait; all 4 late arrive together at t=6 → 7/7
+  "0 0 0 6 8 12 17"     # 3 early wait; p4 at t=6 triggers close (4 total), p5-p7 disrupt → 0/7
+  "6 7 8 9 0 0 0"       # 3 early wait; p1 at t=6 triggers close, p2-p4 disrupt → 0/7
+  "0 0 0 6 7 17 20"     # 3 early wait; p4 at t=6 triggers close, p5 at t=7 disrupts → 0/7
+
+  # --- 5+ beyond (2 early < threshold+1) → bootstrap WAITS for late arrivals ---
+  "0 0 6 6 14 17 20"    # 2 early wait; p3,p4 arrive together at t=6 → close; p5-p7 disrupt? → 4/7
+  "6 6 6 6 6 0 0"       # 2 early wait; all 5 late arrive together at t=6 → 7/7
+  "0 2 4 6 10 14 20"    # 3 early by t=4, bootstrap still waiting; p4 at t=6 triggers, rest disrupt → 0/7
+  "6 12 0 0 0 17 20"    # 3 early wait; p1 at t=6 triggers close, p1+3 sign; p2/p6/p7 miss → 4/7
+  "0 6 8 12 14 17 20"   # 1 early; accumulates until signing triggered, rest disrupt → 0/7
 )
 
 log() {
@@ -55,41 +102,40 @@ run_timed() {
   wait "$killer" 2>/dev/null || true
 }
 
-run_round() {
-  local d1=$1 d2=$2 d3=$3 round=$4
+run_scenario() {
+  local round=$1; shift
+  local delays=("$@")
 
-  # Record current line offsets before this round so we can isolate its output
-  local off1 off2 off3
-  off1=$(wc -l < "$LOG1")
-  off2=$(wc -l < "$LOG2")
-  off3=$(wc -l < "$LOG3")
+  # Unique channel ID per scenario — prevents cross-scenario bootstrap interference.
+  # Format: 3-char prefix (scenario index) + 8-char expiry hex (now + 30min), total 11 chars.
+  # The TSS binary rejects channel IDs whose embedded expiry <= now.
+  local expiry channel_id
+  expiry=$(( $(date +%s) + 1800 ))
+  channel_id=$(printf '%03X%08X' "$round" "$expiry")
 
-  echo "--- Round ${round} ---" >> "$LOG1"
-  echo "--- Round ${round} ---" >> "$LOG2"
-  echo "--- Round ${round} ---" >> "$LOG3"
+  # Record current line offsets before this round
+  local offsets=()
+  for i in $(seq 1 "$PARTIES"); do
+    offsets+=( "$(wc -l < "${SCRIPT_DIR}/test-party${i}.log")" )
+    echo "--- Round ${round} ---" >> "${SCRIPT_DIR}/test-party${i}.log"
+  done
 
-  # Launch parties with delays; kill if stalled after PARTY_TIMEOUT
-  (sleep "$d1"; run_timed "$PARTY_TIMEOUT" env BNB_TSS_PASSWORD=1234567890 node dist/tss-tools/sign-ethereum-tx.js \
-    --party 1 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json \
-    2>&1) >> "$LOG1" &
-  local pid1=$!
+  # Launch all parties with their respective delays
+  local pids=()
+  for i in $(seq 1 "$PARTIES"); do
+    local d="${delays[$((i-1))]}"
+    (sleep "$d"; run_timed "$PARTY_TIMEOUT" env BNB_TSS_PASSWORD=1234567890 node dist/tss-tools/sign-ethereum-tx.js \
+      --party "$i" --chain-id 31338 --tx-file ./keystores/unsigned-tx.json \
+      --channel-id "$channel_id" \
+      2>&1) >> "${SCRIPT_DIR}/test-party${i}.log" &
+    pids+=( $! )
+  done
 
-  (sleep "$d2"; run_timed "$PARTY_TIMEOUT" env BNB_TSS_PASSWORD=1234567890 node dist/tss-tools/sign-ethereum-tx.js \
-    --party 2 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json \
-    2>&1) >> "$LOG2" &
-  local pid2=$!
+  wait "${pids[@]}" || true
 
-  (sleep "$d3"; run_timed "$PARTY_TIMEOUT" env BNB_TSS_PASSWORD=1234567890 node dist/tss-tools/sign-ethereum-tx.js \
-    --party 3 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json \
-    2>&1) >> "$LOG3" &
-  local pid3=$!
-
-  wait $pid1 $pid2 $pid3 || true
-
-  # Check each party's output for this round only (from recorded offset)
+  # Count successful signers
   local ok=0 failed_parties=""
-  local offsets=("$off1" "$off2" "$off3")
-  for i in 1 2 3; do
+  for i in $(seq 1 "$PARTIES"); do
     local plog="${SCRIPT_DIR}/test-party${i}.log"
     local off="${offsets[$((i-1))]}"
     if tail -n +$((off+1)) "$plog" 2>/dev/null | grep -q "signed_tx"; then
@@ -99,13 +145,13 @@ run_round() {
     fi
   done
 
-  if [ "$ok" -ge 2 ]; then
-    log "  PASS ($ok/3 signed)${failed_parties:+ — failed:${failed_parties}}"
+  if [ "$ok" -ge "$MIN_SIGN" ]; then
+    log "  PASS ($ok/${PARTIES} signed)${failed_parties:+ — failed:${failed_parties}}"
     PASS=$((PASS+1))
   else
-    log "  FAIL ($ok/3 signed) — failed:${failed_parties}"
+    log "  FAIL ($ok/${PARTIES} signed) — failed:${failed_parties}"
     FAIL=$((FAIL+1))
-    for i in 1 2 3; do
+    for i in $(seq 1 "$PARTIES"); do
       local plog="${SCRIPT_DIR}/test-party${i}.log"
       local off="${offsets[$((i-1))]}"
       if ! tail -n +$((off+1)) "$plog" 2>/dev/null | grep -q "signed_tx"; then
@@ -127,24 +173,36 @@ TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
   echo "$SEPARATOR"
 } | tee -a "$RESULTS_LOG"
 
-log "Rounds per scenario: $ROUNDS"
+log "Parties: ${PARTIES}  Threshold: ${THRESHOLD}  Min-sign: ${MIN_SIGN}"
 log "Party timeout: ${PARTY_TIMEOUT}s"
 log ""
 
 ROUND_COUNTER=0
+SCENARIO_COUNTER=0
 
 for scenario in "${SCENARIOS[@]}"; do
-  read -r d1 d2 d3 <<< "$scenario"
+  if [ "$MAX_SCENARIOS" -gt 0 ] && [ "$SCENARIO_COUNTER" -ge "$MAX_SCENARIOS" ]; then
+    break
+  fi
+  SCENARIO_COUNTER=$((SCENARIO_COUNTER+1))
+  read -r -a delays <<< "$scenario"
+
+  # Build header line: "P1=Xs P2=Ys ..."
+  header=""
+  for i in $(seq 1 "$PARTIES"); do
+    header="${header} P${i}=${delays[$((i-1))]}s"
+  done
+
   {
     echo ""
     echo "----------------------------------------------------------------"
-    echo "  Scenario: P1 delay=${d1}s  P2 delay=${d2}s  P3 delay=${d3}s"
+    echo "  Scenario:${header}"
     echo "----------------------------------------------------------------"
   } | tee -a "$RESULTS_LOG"
+
   for r in $(seq 1 "$ROUNDS"); do
     ROUND_COUNTER=$((ROUND_COUNTER+1))
-    printf "  Round %d/%d ... " "$r" "$ROUNDS" | tee -a "$RESULTS_LOG"
-    run_round "$d1" "$d2" "$d3" "$ROUND_COUNTER"
+    run_scenario "$ROUND_COUNTER" "${delays[@]}"
   done
   log ""
 done
