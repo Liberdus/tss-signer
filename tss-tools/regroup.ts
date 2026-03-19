@@ -4,7 +4,7 @@ import * as bnbTss from './lib/bnbTss'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/regroup.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--new-threshold <n>] [--new-parties <n>] [--is-old] [--is-new-member] [--pubkey <hex>] [--vault <name>] [--home-root <path>] [--binary <path>] [-- <extra regroup args...>]',
+    'Usage: node tss-tools/regroup.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--new-threshold <n>] [--new-parties <n>] [--new-peer-addrs <addr1,addr2>] [--new-listen-addr <multiaddr>] (--is-old | --is-new-member) [--pubkey <hex>] [--vault <name>] [--home-root <path>] [--binary <path>] [-- <extra regroup args...>]',
   );
   process.exit(1);
 }
@@ -59,6 +59,17 @@ function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; c
         options.newParties = Number.parseInt(value, 10);
         i += 1;
         break;
+      case '--new-peer-addrs':
+        options.newPeerAddrs = value
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        i += 1;
+        break;
+      case '--new-listen-addr':
+        options.newListenAddr = value;
+        i += 1;
+        break;
       case '--pubkey':
         options.pubkey = value;
         i += 1;
@@ -96,8 +107,18 @@ function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; c
   return options as bnbTss.RegroupOptions & {partyIdx: number; chainId: number; extraArgs: string[]};
 }
 
+function hasExtraFlag(extraArgs: string[], flag: string): boolean {
+  return extraArgs.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.isOld && options.isNewMember) {
+    throw new Error('Use either --is-old or --is-new-member, not both. In the wrapper, --is-old means an existing member who stays in the new committee.');
+  }
+  if (!options.isOld && !options.isNewMember) {
+    throw new Error('Regroup requires exactly one wrapper role: use --is-old for an existing member who stays, or --is-new-member for a fresh new member.');
+  }
   const signerRoot = bnbTss.resolveSignerRoot();
   const tssRoot = bnbTss.resolveTssRoot(signerRoot);
   const binary = bnbTss.resolveBnbTssBinary({...options, signerRoot, tssRoot});
@@ -109,6 +130,25 @@ function main() {
   }
   const params = bnbTss.readParams(signerRoot);
   const initialized = bnbTss.requireInitialized({...options, signerRoot, tssRoot, binary});
+  const threshold = options.threshold ?? params.threshold;
+  const parties = options.parties ?? params.parties;
+  const newThreshold = options.newThreshold;
+  const newParties = options.newParties;
+  const hasExplicitNewPeerAddrs = hasExtraFlag(options.extraArgs, '--p2p.new_peer_addrs');
+  const hasExplicitNewListenAddr = hasExtraFlag(options.extraArgs, '--p2p.new_listen');
+  const newPeerAddrs =
+    options.newPeerAddrs ||
+    (!hasExplicitNewPeerAddrs && Number.isInteger(newParties)
+      ? bnbTss.deriveLocalRegroupPeerAddrs({
+          chainId: options.chainId,
+          parties,
+          threshold,
+          newParties,
+          partyIdx: options.partyIdx,
+          isOld: options.isOld,
+          isNewMember: options.isNewMember,
+        })
+      : []);
   const args = [
     'regroup',
     '--home',
@@ -124,21 +164,33 @@ function main() {
     '--channel_password',
     channelPassword,
     '--threshold',
-    String(options.threshold ?? params.threshold),
+    String(threshold),
     '--parties',
-    String(options.parties ?? params.parties),
+    String(parties),
   ];
+  if (!hasExplicitNewListenAddr && options.isOld) {
+    args.push('--p2p.new_listen', options.newListenAddr || bnbTss.getLocalRegroupListenAddr(options.chainId, options.partyIdx));
+  }
   if (Number.isInteger(options.newThreshold)) {
     args.push('--new_threshold', String(options.newThreshold));
   }
   if (Number.isInteger(options.newParties)) {
     args.push('--new_parties', String(options.newParties));
   }
-  if (options.isOld) args.push('--is_old');
-  if (options.isNewMember) args.push('--is_new_member');
+  if (!hasExplicitNewPeerAddrs && newPeerAddrs.length > 0) {
+    args.push('--p2p.new_peer_addrs', newPeerAddrs.join(','));
+  }
+  if (options.isOld) {
+    args.push('--is_old', '--is_new_member');
+  } else if (options.isNewMember) {
+    args.push('--is_new_member');
+  }
   if (options.pubkey) args.push('--pubkey', options.pubkey);
   args.push(...options.extraArgs);
-  const autoInput = options.isNewMember && !options.isOld ? 'n\n' : undefined;
+  let autoInput: string | undefined;
+  if (options.isNewMember) {
+    autoInput = 'n\n';
+  }
   const result = spawnSync(binary, args, {
     cwd: tssRoot,
     env: {...process.env, TSS_PASSWORD: password},

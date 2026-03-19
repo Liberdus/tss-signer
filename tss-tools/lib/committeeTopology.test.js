@@ -57,7 +57,6 @@ function testBuildKeygenArgsIncludesPeerAddrs() {
     threshold: 1,
     parties: 3,
     peerAddrs: ['/ip4/127.0.0.1/tcp/43382', '/ip4/127.0.0.1/tcp/43383'],
-    extraArgs: ['--log_level', 'debug'],
   });
 
   assert.deepEqual(args, [
@@ -68,6 +67,8 @@ function testBuildKeygenArgsIncludesPeerAddrs() {
     'default',
     '--password',
     'vault-password',
+    '--log_level',
+    'debug',
     '--channel_id',
     '12369B44E38',
     '--channel_password',
@@ -78,9 +79,80 @@ function testBuildKeygenArgsIncludesPeerAddrs() {
     '3',
     '--p2p.peer_addrs',
     '/ip4/127.0.0.1/tcp/43382,/ip4/127.0.0.1/tcp/43383',
-    '--log_level',
-    'debug',
   ]);
+}
+
+function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember() {
+  const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
+    chainId: 31338,
+    parties: 3,
+    threshold: 1,
+    newParties: 3,
+    partyIdx: 1,
+    isOld: true,
+  });
+
+  assert.deepEqual(peerAddrs, [
+    '/ip4/127.0.0.1/tcp/43381',
+    '/ip4/127.0.0.1/tcp/43382',
+    '/ip4/127.0.0.1/tcp/44382',
+    '/ip4/127.0.0.1/tcp/43383',
+  ]);
+}
+
+function testDeriveLocalRegroupPeerAddrsForNewOnlyMember() {
+  const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
+    chainId: 31338,
+    parties: 3,
+    threshold: 1,
+    newParties: 3,
+    partyIdx: 3,
+    isNewMember: true,
+  });
+
+  assert.deepEqual(peerAddrs, [
+    '/ip4/127.0.0.1/tcp/43381',
+    '/ip4/127.0.0.1/tcp/43382',
+    '/ip4/127.0.0.1/tcp/44381',
+    '/ip4/127.0.0.1/tcp/44382',
+  ]);
+}
+
+function testBuildRegroupWrapperArgsUsesExplicitOverrides() {
+  const extraArgs = ['--p2p.new_peer_addrs', '/ip4/127.0.0.1/tcp/49991,/ip4/127.0.0.1/tcp/49992'];
+  assert.equal(
+    extraArgs.some((arg) => arg === '--p2p.new_peer_addrs' || arg.startsWith('--p2p.new_peer_addrs=')),
+    true,
+  );
+}
+
+function testDeriveLocalRegroupPeerAddrsHasNoDuplicates() {
+  const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
+    chainId: 31338,
+    parties: 3,
+    threshold: 1,
+    newParties: 3,
+    partyIdx: 2,
+    isOld: true,
+  });
+
+  assert.equal(new Set(peerAddrs).size, peerAddrs.length);
+}
+
+function testDeriveLocalRegroupPeerAddrsRejectsMixedWrapperRoles() {
+  assert.throws(
+    () =>
+      bnbTss.deriveLocalRegroupPeerAddrs({
+        chainId: 31338,
+        parties: 3,
+        threshold: 1,
+        newParties: 3,
+        partyIdx: 1,
+        isOld: true,
+        isNewMember: true,
+      }),
+    /mutually exclusive/,
+  );
 }
 
 function testGetCommitteeTopologyUsesParsedDescribeOutput() {
@@ -98,6 +170,11 @@ function main() {
   testDeriveLocalPeerAddrs();
   testExtractCommitteeTopologyFromDescribeOutput();
   testBuildKeygenArgsIncludesPeerAddrs();
+  testDeriveLocalRegroupPeerAddrsForCarryOverOldMember();
+  testDeriveLocalRegroupPeerAddrsForNewOnlyMember();
+  testBuildRegroupWrapperArgsUsesExplicitOverrides();
+  testDeriveLocalRegroupPeerAddrsHasNoDuplicates();
+  testDeriveLocalRegroupPeerAddrsRejectsMixedWrapperRoles();
   testGetCommitteeTopologyUsesParsedDescribeOutput();
   console.log('committee topology tests passed');
 }

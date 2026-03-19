@@ -12,6 +12,9 @@ const DEFAULT_MISE_VERSION = 'v2026.3.8';
 const DEFAULT_BINARY_NAME = 'tss';
 const DEFAULT_DERIVE_BINARY_NAME = 'tss-derive-pubkey';
 
+const REGROUP_LISTEN_PORT_OFFSET = 1000;
+
+
 type ExecOptions = {
   cwd?: string
   env?: NodeJS.ProcessEnv
@@ -79,6 +82,8 @@ export type RegroupOptions = BasePartyOptions & {
   parties?: number
   newThreshold?: number
   newParties?: number
+  newPeerAddrs?: string[]
+  newListenAddr?: string
   pubkey?: string
   isOld?: boolean
   isNewMember?: boolean
@@ -150,6 +155,16 @@ type SignDigestResult = {
 type SignEthereumTransactionResult = SignDigestResult & {
   signedTx: string
   txHash: string
+}
+
+type LocalRegroupPeerAddrsOptions = {
+  chainId: number
+  parties: number
+  threshold: number
+  newParties: number
+  partyIdx: number
+  isOld?: boolean
+  isNewMember?: boolean
 }
 
 export function resolveSignerRoot(startDir = __dirname): string {
@@ -500,6 +515,120 @@ export function getLocalListenAddr(chainId: number, partyIdx: number): string {
 
 export function getLocalPeerAddr(chainId: number, partyIdx: number): string {
   return `/ip4/127.0.0.1/tcp/${getDeterministicListenPort(chainId, partyIdx)}`;
+}
+
+export function getDeterministicRegroupListenPort(chainId: number, partyIdx: number): number {
+  return getDeterministicListenPort(chainId, partyIdx) + REGROUP_LISTEN_PORT_OFFSET;
+}
+
+export function getLocalRegroupListenAddr(chainId: number, partyIdx: number): string {
+  return `/ip4/0.0.0.0/tcp/${getDeterministicRegroupListenPort(chainId, partyIdx)}`;
+}
+
+export function getLocalRegroupPeerAddr(chainId: number, partyIdx: number): string {
+  return `/ip4/127.0.0.1/tcp/${getDeterministicRegroupListenPort(chainId, partyIdx)}`;
+}
+
+
+function deriveDefaultOldParticipantIndexes(parties: number, threshold: number): number[] {
+  const count = threshold + 1;
+  if (!Number.isInteger(parties) || parties < 2) {
+    throw new Error(`parties must be an integer >= 2, received ${parties}`);
+  }
+  if (!Number.isInteger(threshold) || threshold < 1) {
+    throw new Error(`threshold must be an integer >= 1, received ${threshold}`);
+  }
+  if (count > parties) {
+    throw new Error(`threshold + 1 (${count}) cannot exceed parties (${parties})`);
+  }
+
+  const indexes: number[] = [];
+  for (let idx = 1; idx <= count; idx += 1) {
+    indexes.push(idx);
+  }
+  return indexes;
+}
+
+function deriveDefaultNewCommitteeIndexes(newParties: number): number[] {
+  if (!Number.isInteger(newParties) || newParties < 2) {
+    throw new Error(`newParties must be an integer >= 2, received ${newParties}`);
+  }
+
+  const indexes: number[] = [];
+  for (let idx = 1; idx <= newParties; idx += 1) {
+    indexes.push(idx);
+  }
+  return indexes;
+}
+
+function pushUniqueAddr(target: string[], addr: string) {
+  if (!target.includes(addr)) {
+    target.push(addr);
+  }
+}
+
+export function deriveLocalRegroupPeerAddrs(options: LocalRegroupPeerAddrsOptions): string[] {
+  const {chainId, parties, threshold, newParties, partyIdx, isOld = false, isNewMember = false} = options;
+  if (isOld && isNewMember) {
+    throw new Error('Local regroup wrapper roles are mutually exclusive: use --is-old for a carry-over member or --is-new-member for a fresh new member.');
+  }
+  if (!isOld && !isNewMember) {
+    throw new Error('Local regroup peer derivation requires either --is-old or --is-new-member.');
+  }
+  const oldParticipantIdxs = deriveDefaultOldParticipantIndexes(parties, threshold);
+  const newCommitteeIdxs = deriveDefaultNewCommitteeIndexes(newParties);
+  const oldAndNewIdxs = oldParticipantIdxs.filter((idx) => newCommitteeIdxs.includes(idx));
+  const newOnlyIdxs = newCommitteeIdxs.filter((idx) => !oldParticipantIdxs.includes(idx));
+
+  if (isOld && !oldParticipantIdxs.includes(partyIdx)) {
+    throw new Error(
+      `party ${partyIdx} is marked old, but the local deterministic regroup default expects old parties to be 1..${threshold + 1}`,
+    );
+  }
+  if (isNewMember && !newCommitteeIdxs.includes(partyIdx)) {
+    throw new Error(
+      `party ${partyIdx} is marked new, but the local deterministic regroup default expects new committee parties to be 1..${newParties}`,
+    );
+  }
+  if (isOld && !newCommitteeIdxs.includes(partyIdx)) {
+    throw new Error(
+      `party ${partyIdx} is marked old, but in the wrapper --is-old means an existing member who also remains in the new committee. ` +
+        `The local deterministic regroup default expects carry-over members to be within new committee parties 1..${newParties}.`,
+    );
+  }
+
+  const peerAddrs: string[] = [];
+
+  for (const idx of oldParticipantIdxs) {
+    if (idx === partyIdx && !isOld) {
+      continue;
+    }
+    pushUniqueAddr(peerAddrs, getLocalPeerAddr(chainId, idx));
+  }
+
+  for (const idx of oldAndNewIdxs) {
+    if (idx === partyIdx && isOld) {
+      continue;
+    }
+    pushUniqueAddr(peerAddrs, getLocalRegroupPeerAddr(chainId, idx));
+  }
+
+  for (const idx of newOnlyIdxs) {
+    if (idx === partyIdx) {
+      continue;
+    }
+    pushUniqueAddr(peerAddrs, getLocalPeerAddr(chainId, idx));
+  }
+
+  const expectedCount = threshold + newParties;
+  if (peerAddrs.length !== expectedCount) {
+    throw new Error(
+      `Derived ${peerAddrs.length} regroup peer addrs for party ${partyIdx}, expected ${expectedCount}. ` +
+        `This local deterministic wrapper assumes old participants are parties 1..${threshold + 1} and the new committee is parties 1..${newParties}.`,
+    );
+  }
+
+  return peerAddrs;
 }
 
 export function readParams(signerRoot = resolveSignerRoot()): ParamsConfig {

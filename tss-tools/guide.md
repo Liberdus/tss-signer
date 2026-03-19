@@ -237,20 +237,41 @@ npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ./keystores/un
 # Run these in separate terminals with the same shared channel env vars.
 #
 # Flag meaning:
-# - --is-old: this party participates as an old committee member during regroup
-# - --is-new-member: this party is included in the new committee after regroup
-# - A party that stays across the regroup must use both flags
-# - A newly added party should use only --is-new-member
-# - The wrapper auto-answers `no` to the upstream "old committee?" prompt for the `--is-new-member` only case
+# - --is-old: this party is an existing committee member that also remains in the new committee
+# - --is-new-member: this party is a newly added committee member and was not part of the old committee
+# - Use exactly one of these wrapper flags per party
+# - The local deterministic wrapper assumes the participating old parties are
+#   `1..threshold+1`, and the new committee is `1..new-parties`
+# - For remote or non-deterministic layouts, pass explicit native flags through
+#   `-- ...`, especially `--p2p.new_listen` and `--p2p.new_peer_addrs`
 
 # Existing members that also remain in the new committee
-npm run tss-regroup -- --party 1 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 2 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 3 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 4 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 2 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 3 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 4 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 
 # Newly added members
 npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+
+# 3-party / threshold-1 local example:
+# - parties 1 and 2 are the participating old committee members
+# - parties 1 and 2 remain in the new committee
+# - party 3 is a newly added committee member
+npm run tss-regroup -- --party 1 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
+npm run tss-regroup -- --party 2 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
+npm run tss-regroup -- --party 3 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
+
+# 3-party / threshold-1 -> 5-party / threshold-3 local example:
+# - parties 1 and 2 are the participating old committee members
+# - new committee is parties 1,2,3,4,5
+npm run tss-init -- --party 4 --chain-id 31338
+npm run tss-init -- --party 5 --chain-id 31338
+npm run tss-regroup -- --party 1 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 2 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 3 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 4 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 5 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
 
 
 # 15) Run the long-lived tss-party process in native mode
@@ -289,8 +310,8 @@ npm run tss-build
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
 npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890
-npm run tss-regroup -- --party 1 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 4 --chain-id 97 --is-old --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 4 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
 
