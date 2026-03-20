@@ -12,7 +12,7 @@ import {isNormalizedTxId, normalizeTxId} from './transformTxId'
 import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
 import * as rpcUrls from './lib/rpcUrls'
 import {getHttpProviderForChain} from './lib/httpProviderHelper'
-const bnbTss = require('../tss-tools/lib/bnbTss')
+import * as bnbTss from '../tss-tools/lib/bnbTss'
 import * as TransactionDB from '../observer/src/storage/transactiondb'
 import {verifyTxOnChain} from '../observer/src/verification'
 
@@ -422,7 +422,7 @@ const enableShardusCryptoAuth =
   process.env.ENABLE_SHARDUS_CRYPTO_AUTH != null
     ? process.env.ENABLE_SHARDUS_CRYPTO_AUTH === 'true'
     : chainConfigs.enableShardusCryptoAuth === true
-const signerKeyStoreDir = path.join(__dirname, '../keystores')
+const signerKeyStoreDir = path.join(resolveRepoRoot(), 'keystores')
 const signerKeyPairFilePathFromEnv = (process.env.TSS_SIGNER_KEYPAIR_FILE || '').trim()
 
 type SignerKeyPair = {
@@ -532,7 +532,7 @@ function buildSignedCoordinatorRequest(payload: unknown): unknown {
   return obj
 }
 
-const KEYSTORE_DIR = path.join(__dirname, '../keystores')
+const KEYSTORE_DIR = path.join(resolveRepoRoot(), 'keystores')
 
 // enough party subscribed error
 const enoughPartyError = 'Enough party already registerd to sign this transaction'
@@ -640,13 +640,46 @@ function removeFromPendingTxQueue(txId: string): void {
   if (idx !== -1) pendingTxQueue.splice(idx, 1)
 }
 
+function resolveRepoRoot(): string {
+  const candidates = [
+    path.resolve(__dirname, '..'),
+    path.resolve(__dirname, '../..'),
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'keystores'))) {
+      return candidate
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (
+      fs.existsSync(path.join(candidate, 'params.json')) ||
+      fs.existsSync(path.join(candidate, 'chain-config.json'))
+    ) {
+      return candidate
+    }
+  }
+
+  throw new Error(`Could not resolve repo root. Tried: ${candidates.join(', ')}`)
+}
+
+function resolveRepoFile(fileName: string): string {
+  const filePath = path.join(resolveRepoRoot(), fileName)
+  if (fs.existsSync(filePath)) {
+    return filePath
+  }
+
+  throw new Error(`Could not find ${fileName} at ${filePath}`)
+}
+
 function loadParams(): Params {
-  const data = fs.readFileSync(path.join(__dirname, '../', 'params.json'), 'utf8')
+  const data = fs.readFileSync(resolveRepoFile('params.json'), 'utf8')
   return JSON.parse(data)
 }
 
 function loadChainConfigs(): ChainConfigs {
-  const data = fs.readFileSync(path.join(__dirname, '../', 'chain-config.json'), 'utf8')
+  const data = fs.readFileSync(resolveRepoFile('chain-config.json'), 'utf8')
   return JSON.parse(data)
 }
 
@@ -1311,6 +1344,8 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       .slice()
       .sort((a, b) => a.txTimestamp - b.txTimestamp)
     if (transactions.length === 0) return
+
+    console.log(`[poll] Found ${transactions.length} pending transactions`)
 
     let txAddedToQueue = false
     for (const tx of transactions) {

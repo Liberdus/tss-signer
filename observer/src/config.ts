@@ -39,8 +39,25 @@ export interface ChainConfigs {
 // Load config files (synchronous at module level — fail fast if missing)
 // ---------------------------------------------------------------------------
 
+function resolveChainConfigPath(): string {
+  const candidates = [
+    path.resolve(__dirname, "../../chain-config.json"),
+    path.resolve(__dirname, "../../../chain-config.json"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `[config] Could not find chain-config.json. Tried: ${candidates.join(", ")}`
+  );
+}
+
 export const chainConfigsRaw: ChainConfigs = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "../../chain-config.json"), "utf8"),
+  fs.readFileSync(resolveChainConfigPath(), "utf8"),
 );
 
 function requireFullChainConfig(config: ChainConfig, label: string): void {

@@ -916,7 +916,7 @@ export function getCommitteeTopology(options: BasePartyOptions & {describeOutput
   );
 }
 
-export function validatePartyVaults(options: BasePartyOptions & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>} = {} as BasePartyOptions & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>}): Array<DerivedPubkeyAll & {chainId: number; home: string; vaultDir: string}> {
+export function validatePartyVaults(options: Omit<BasePartyOptions, 'chainId'> & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>} = {} as Omit<BasePartyOptions, 'chainId'> & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>}): Array<DerivedPubkeyAll & {chainId: number; home: string; vaultDir: string}> {
   const results = [];
   const chainIds = options.chainIds || [];
   for (const chainId of chainIds) {
