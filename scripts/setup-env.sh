@@ -126,37 +126,6 @@ echo -e "${GREEN}Node.js installed!${NC}"
 node --version
 npm --version
 
-# Install Rust and Cargo
-echo -e "${YELLOW}Installing Rust and Cargo...${NC}"
-if [ -d "$HOME/.cargo" ]; then
-    echo -e "${YELLOW}Cargo directory already exists. Skipping Rust installation.${NC}"
-else
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-fi
-
-# Ensure Cargo is in profile
-if ! grep -q 'cargo/env' "$PROFILE_FILE" 2>/dev/null; then
-    echo -e "${YELLOW}Adding Cargo to $PROFILE_FILE${NC}"
-    cat >> "$PROFILE_FILE" << 'EOF'
-
-# Cargo configuration
-. "$HOME/.cargo/env"
-EOF
-fi
-
-# Load Cargo in current script
-export PATH="$HOME/.cargo/bin:$PATH"
-[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
-
-echo -e "${GREEN}Rust and Cargo installed!${NC}"
-rustc --version
-cargo --version
-
-# Install wasm-pack (required for TSS WASM build)
-echo -e "\n${YELLOW}Installing wasm-pack...${NC}"
-cargo install wasm-pack
-echo -e "${GREEN}wasm-pack installed!${NC}"
-
 # Install PM2 (process manager for TSS party nodes)
 echo -e "\n${YELLOW}Installing PM2...${NC}"
 npm install -g pm2
@@ -167,7 +136,6 @@ echo -e "\n${YELLOW}Cloning and building TSS signer...${NC}"
 git clone https://github.com/Liberdus/tss-signer.git
 cd tss-signer
 npm install
-npm run build_node
 npm run compile-tss
 echo -e "${GREEN}TSS signer cloned and built successfully!${NC}"
 
@@ -187,8 +155,6 @@ echo -e "\n${YELLOW}Installed versions:${NC}"
 echo -e "NVM: $(nvm --version)"
 echo -e "Node.js: $(node --version)"
 echo -e "NPM: $(npm --version)"
-echo -e "Rust: $(rustc --version)"
-echo -e "Cargo: $(cargo --version)"
 echo -e "PM2: $(pm2 --version)"
 
 echo -e "\n${BLUE}Tools have been installed for user: $(whoami)${NC}"
