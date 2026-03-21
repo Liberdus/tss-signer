@@ -653,6 +653,15 @@ function reconcileTxStatusWithLocalDB(
   }
 }
 
+// Maps the string returned by reconcileTxStatusWithLocalDB to the corresponding ProcessOutcome.
+function dbStatusToSkipOutcome(
+  status: 'completed' | 'failed' | 'reverted',
+): ProcessOutcome {
+  if (status === 'completed') return 'skipped_db_completed'
+  if (status === 'reverted') return 'skipped_db_reverted'
+  return 'skipped_db_failed'
+}
+
 function getBnbTssExpectedAddresses(): Record<number, string> {
   const expected: Record<number, string> = {}
   for (const chainId of getEffectiveChainIds()) {
@@ -911,7 +920,7 @@ async function processCoinToToken(
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const dbStatusCoinToToken = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
-  if (dbStatusCoinToToken != null) return dbStatusCoinToToken === 'completed' ? 'skipped_db_completed' : dbStatusCoinToToken === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
+  if (dbStatusCoinToToken != null) return dbStatusToSkipOutcome(dbStatusCoinToToken)
 
   // Use chain-specific keystore for signing
   const signedTx = await signEthereumTransaction(tx, digest, targetChainId, channelId, channelPassword)
@@ -1073,7 +1082,7 @@ async function processVaultBridge(
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const dbStatusVaultBridge = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
-  if (dbStatusVaultBridge != null) return dbStatusVaultBridge === 'completed' ? 'skipped_db_completed' : dbStatusVaultBridge === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
+  if (dbStatusVaultBridge != null) return dbStatusToSkipOutcome(dbStatusVaultBridge)
 
   // Use destination chain's keystore for signing
   const signedTx = await signEthereumTransaction(tx, digest, destinationChainId, channelId, channelPassword)
@@ -1193,7 +1202,7 @@ async function processTokenToCoin(
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const dbStatusTokenToCoin = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
-  if (dbStatusTokenToCoin != null) return dbStatusTokenToCoin === 'completed' ? 'skipped_db_completed' : dbStatusTokenToCoin === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
+  if (dbStatusTokenToCoin != null) return dbStatusToSkipOutcome(dbStatusTokenToCoin)
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
   signedTx = await signLiberdusTransaction(tx, digest, sourceChainId, channelId, channelPassword)
