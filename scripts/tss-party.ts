@@ -26,6 +26,7 @@ import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAUL
 import {initializeChainRpcConfig} from '../shared/chainRpc'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import * as TransactionDB from '../shared/storage/transactiondb'
+import {Transaction, TransactionStatus, TransactionType} from '../shared/storage/transactiondb'
 
 const {BigNumber, utils: ethersUtils} = ethers
 
@@ -102,30 +103,6 @@ interface SignedTx {
 
 type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
 
-// Transaction interface matching the observer DB schema
-export interface Transaction {
-  txId: string
-  sender: string
-  value: string
-  type: TransactionType
-  txTimestamp: number
-  chainId: number
-  status: TransactionStatus
-  receiptId: string;
-  reason?: string | null; // Optional field for error reason
-  createdAt?: string
-  updatedAt?: string
-}
-
-
-export enum TransactionStatus {
-  PENDING = 0,
-  PROCESSING = 1,
-  COMPLETED = 2,
-  FAILED = 3,
-  REVERTED = 4, // tx executed but reverted on-chain
-}
-
 function txStatusLabel(status: TransactionStatus): string {
   switch (status) {
     case TransactionStatus.PENDING:    return 'PENDING'
@@ -135,12 +112,6 @@ function txStatusLabel(status: TransactionStatus): string {
     case TransactionStatus.REVERTED:   return 'REVERTED'
     default: return `UNKNOWN(${status})`
   }
-}
-
-export enum TransactionType {
-  BRIDGE_IN = 0,    // COIN to TOKEN (Liberdus → EVM)
-  BRIDGE_OUT = 1,   // TOKEN to COIN (EVM → Liberdus)
-  BRIDGE_VAULT = 2, // VAULT to SECONDARY (vault chain → secondary EVM chain)
 }
 
 const parsedIdx = process.argv[2]
@@ -482,7 +453,7 @@ function updateTxStatusInLocalDB(
 
     const result = TransactionDB.updateTransactionStatus(
       normalizedTxId,
-      status as unknown as TransactionDB.TransactionStatus,
+      status,
       normalizedReceiptId,
       failedReason || null,
     )
@@ -509,7 +480,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
   console.log('Polling pending transactions from local DB...', new Date().toISOString())
   try {
     const dbTxs = TransactionDB.getTransactionsByPage(10, 0, { unprocessed: true })
-    const transactions: Transaction[] = (dbTxs as unknown as Transaction[])
+    const transactions: Transaction[] = dbTxs
       .slice()
       .sort((a, b) => a.txTimestamp - b.txTimestamp)
     if (transactions.length === 0) return
@@ -597,7 +568,7 @@ function checkTxStatusFromLocalDB(txId: string): TransactionStatus | null {
   try {
     const tx = TransactionDB.getTransactionById(txId)
     if (!tx) return null
-    return tx.status as unknown as TransactionStatus
+    return tx.status
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     throw new Error(`[checkTxStatus] DB read failed for ${txId}: ${errorMessage}`)
@@ -1675,7 +1646,7 @@ async function main(): Promise<void> {
         const alreadyInQueue = pendingTxQueue.some(t => t.txId === txId)
         if (!alreadyInQueue) {
           // Was processing when we crashed — recover tx data directly from local DB
-          const tx = TransactionDB.getTransactionById(txId) as unknown as Transaction | null
+          const tx = TransactionDB.getTransactionById(txId)
           if (
             tx &&
             tx.txId &&
