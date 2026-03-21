@@ -1562,7 +1562,7 @@ async function getLatestCycleRecord(): Promise<any> {
   const url = collectorHost + '/api/cycleinfo?count=1'
   const response = await axios.get(url)
   const {success, cycles} = response.data
-  if (success) return cycles[0].cycleRecord
+  if (success && Array.isArray(cycles) && cycles.length > 0) return cycles[0].cycleRecord
   return null
 }
 
