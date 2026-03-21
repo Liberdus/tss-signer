@@ -358,15 +358,13 @@ function cleanupOldTransactions() {
 
   if (removedTxIds.size > 0) {
     const before = pendingTxQueue.length
-    for (let i = pendingTxQueue.length - 1; i >= 0; i--) {
-      if (removedTxIds.has(pendingTxQueue[i].txId)) {
-        appendToFailedTxsLogs(
-          pendingTxQueue[i],
-          'removed from pending queue during cleanup due to max age',
-        )
-        pendingTxQueue.splice(i, 1)
+    for (const tx of pendingTxQueue) {
+      if (removedTxIds.has(tx.txId)) {
+        appendToFailedTxsLogs(tx, 'removed from pending queue during cleanup due to max age')
       }
     }
+    const kept = pendingTxQueue.filter((tx) => !removedTxIds.has(tx.txId))
+    pendingTxQueue.splice(0, pendingTxQueue.length, ...kept)
     const pruned = before - pendingTxQueue.length
     if (pruned > 0) {
       console.log(`🧹 Pruned ${pruned} stale transactions from pendingTxQueue`)
