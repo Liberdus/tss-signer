@@ -1515,6 +1515,7 @@ async function getLiberdusReceipt(txId: string, maxRetries = 30): Promise<any> {
         }
       }
     } catch (e) {
+      console.warn(`[getLiberdusReceipt] Attempt ${count + 1}/${maxRetries} failed for ${txId}:`, e instanceof Error ? e.message : e)
     }
     count++
     await sleep(1000)
@@ -1536,6 +1537,7 @@ async function getLiberdusAccountBalance(address: string): Promise<string | null
         break
       }
     } catch (e) {
+      console.warn(`[getLiberdusAccountBalance] Attempt ${count + 1}/10 failed for ${address}:`, e instanceof Error ? e.message : e)
     }
     count++
     await sleep(1000)
