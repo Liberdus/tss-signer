@@ -17,7 +17,6 @@ import * as TransactionDB from '../observer/src/storage/transactiondb'
 import {verifyTxOnChain} from '../observer/src/verification'
 
 const {BigNumber, utils: ethersUtils} = ethers
-const useBnbTss = true
 
 ;(function enableTimestampedConsoleLogs() {
   const methods: Array<'log' | 'info' | 'warn' | 'error'> = ['log', 'info', 'warn', 'error']
@@ -35,7 +34,6 @@ const useBnbTss = true
   }
 })()
 
-const gg18 = require(path.join(process.cwd(), 'pkg'))
 const {stringify, parse} = require(path.join(process.cwd(), 'external/stringify-shardus'))
 
 interface Params {
@@ -94,10 +92,8 @@ interface TxQueueEntry {
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'reverted'
 }
 
-interface KeyShare {
+interface PartyInfo {
   idx: number
-  res: string
-  chainId?: number // Add chainId to identify which chain this keystore is for
 }
 
 
@@ -170,11 +166,7 @@ export enum TransactionType {
 
 const parsedIdx = process.argv[2]
 const operationFlag = process.argv[3]
-const recoveryTimestamp = process.argv[4] // Optional timestamp for emergency recovery
 
-const generateKeystore = operationFlag === '--keygen'
-const verifyKeystores = operationFlag === '--verify'
-const recoverFromBackup = operationFlag === '--recover'
 const verboseLogs = true
 // When true, transactions older than TX_CLEANUP_MAX_AGE (24h) received from the
 // coordinator are archived to the data store and failed-tx log and skipped instead
@@ -216,20 +208,7 @@ if (chainConfigs.enableLiberdusNetwork) {
 let t = params.threshold
 let n = params.parties
 
-const SIGN_ROUND_TIMEOUT_MS = 60_000
 const SIGN_POLL_DELAY_MS = 100
-
-function signRound<T>(promise: Promise<T>, round: number | string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`Sign round ${round} timed out after ${SIGN_ROUND_TIMEOUT_MS / 1000}s — not enough parties`)),
-        SIGN_ROUND_TIMEOUT_MS,
-      )
-    ),
-  ])
-}
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 // Shared bridge contract ABI for state reads and bridgeIn
@@ -269,7 +248,7 @@ const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServe
 
 const tssPartyIdx =
   parsedIdx == null ? readline.question('Enter the party index (1 to 5): ') : parsedIdx
-const ourParty: KeyShare = {idx: parseInt(tssPartyIdx), res: ''}
+const ourParty: PartyInfo = {idx: parseInt(tssPartyIdx)}
 
 const observerUrl = `http://127.0.0.1:${8100 + ourParty.idx}`
 const dbPath = path.resolve(process.cwd(), 'db', `transactions-${ourParty.idx}.sqlite`)
@@ -484,12 +463,6 @@ let signerPublicKey = ''
 let signerSecretKey = ''
 
 if (enableShardusCryptoAuth) {
-  if (typeof gg18.gg18_shardus_crypto_init !== 'function' || typeof gg18.gg18_shardus_crypto_keys !== 'function') {
-    throw new Error(
-      '[auth] ENABLE_SHARDUS_CRYPTO_AUTH is true but gg18 Shardus Crypto exports are unavailable'
-    )
-  }
-
   const shardusCryptoHashKey = cryptoInitKey
   if (!shardusCryptoHashKey) {
     throw new Error(
@@ -518,11 +491,9 @@ if (enableShardusCryptoAuth) {
     )
   }
 
-  gg18.gg18_shardus_crypto_init(shardusCryptoHashKey)
-  gg18.gg18_shardus_crypto_keys(signerPublicKey, signerSecretKey)
-  console.log('[auth] gg18 Shardus Crypto request signing enabled for coordinator calls')
+  console.log('[auth] Shardus Crypto request signing enabled for coordinator calls')
 } else {
-  console.log('[auth] gg18 Shardus Crypto request signing disabled (local development mode)')
+  console.log('[auth] Shardus Crypto request signing disabled (local development mode)')
 }
 
 function buildSignedCoordinatorRequest(payload: unknown): unknown {
@@ -533,9 +504,6 @@ function buildSignedCoordinatorRequest(payload: unknown): unknown {
 }
 
 const KEYSTORE_DIR = path.join(resolveRepoRoot(), 'keystores')
-
-// enough party subscribed error
-const enoughPartyError = 'Enough party already registerd to sign this transaction'
 
 if (!fs.existsSync(KEYSTORE_DIR)) {
   fs.mkdirSync(KEYSTORE_DIR, {recursive: true})
@@ -683,93 +651,6 @@ function loadChainConfigs(): ChainConfigs {
   return JSON.parse(data)
 }
 
-const getKeystoreFilePath = (partyIdx: number, chainId?: number): string => {
-  if (chainId) {
-    return path.join(KEYSTORE_DIR, `keystore_party_${partyIdx}_chain_${chainId}.json`)
-  }
-  // Legacy path for backward compatibility
-  return path.join(KEYSTORE_DIR, `keystore_party_${partyIdx}.json`)
-}
-
-const keystoreExists = (partyIdx: number, chainId?: number): boolean => {
-  return fs.existsSync(getKeystoreFilePath(partyIdx, chainId))
-}
-
-const saveKeystore = (partyIdx: number, keystore: string, chainId?: number): void => {
-  const filePath = getKeystoreFilePath(partyIdx, chainId)
-  fs.writeFileSync(filePath, keystore)
-  if (chainId) {
-    console.log(`Keystore for party ${partyIdx} chain ${chainId} saved to ${filePath}`)
-  } else {
-    console.log(`Keystore for party ${partyIdx} saved to ${filePath}`)
-  }
-}
-
-const loadKeystore = (partyIdx: number, chainId?: number): string => {
-  return fs.readFileSync(getKeystoreFilePath(partyIdx, chainId), 'utf8')
-}
-
-// New function to get all available chain keystores for a party
-const getAvailableChainKeystores = (partyIdx: number): number[] => {
-  const chainIds: number[] = []
-
-  // Check for chain-specific keystores
-  for (const chainId of getEffectiveChainIds()) {
-    if (keystoreExists(partyIdx, chainId)) {
-      chainIds.push(chainId)
-    }
-  }
-
-  return chainIds
-}
-
-// New function to ensure all chain keystores exist for a party
-const ensureChainKeystores = async (partyIdx: number): Promise<Map<number, string>> => {
-  const keystores = new Map<number, string>()
-
-  for (const chainId of getEffectiveChainIds()) {
-
-    if (keystoreExists(partyIdx, chainId)) {
-      // Load existing keystore
-      keystores.set(chainId, loadKeystore(partyIdx, chainId))
-      console.log(`Loaded existing keystore for party ${partyIdx} chain ${chainId}`)
-    } else {
-      // Generate new keystore for this chain
-      console.log(`Generating new keystore for party ${partyIdx} chain ${chainId}`)
-      const delay = SIGN_POLL_DELAY_MS
-      // Create deterministic operation ID based on chain ID and a fixed identifier
-      const operationId = `keygen-chain-${chainId}`
-
-      try {
-        const newKeystore = await keygen(gg18, delay, operationId)
-        saveKeystore(partyIdx, newKeystore, chainId)
-        keystores.set(chainId, newKeystore)
-        console.log(`Generated new keystore for party ${partyIdx} chain ${chainId}`)
-      } catch (e) {
-        console.error(`Failed to generate keystore for party ${partyIdx} chain ${chainId}:`, e)
-        throw e
-      }
-    }
-  }
-
-  return keystores
-}
-
-// New function to get keystore for a specific chain
-const getKeystoreForChain = (partyIdx: number, chainId: number): string => {
-  if (keystoreExists(partyIdx, chainId)) {
-    return loadKeystore(partyIdx, chainId)
-  }
-
-  // Fallback to legacy keystore if chain-specific doesn't exist
-  if (keystoreExists(partyIdx)) {
-    console.warn(`Using legacy keystore for party ${partyIdx} chain ${chainId}`)
-    return loadKeystore(partyIdx)
-  }
-
-  throw new Error(`No keystore found for party ${partyIdx} chain ${chainId}`)
-}
-
 const saveQueueToFile = (partyIdx: number): void => {
   const party = partyIdx === undefined ? 'all' : String(partyIdx)
   const filePath = path.join(KEYSTORE_DIR, `queue_party_${party}.json`)
@@ -892,128 +773,6 @@ function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): voi
   }
 }
 
-// Function to recover from emergency backup if needed
-const recoverFromEmergencyBackup = (partyIdx: number, backupTimestamp?: number): boolean => {
-  try {
-    // Find the most recent emergency backup if no timestamp provided
-    const backupFiles = fs.readdirSync(KEYSTORE_DIR)
-      .filter(file => file.startsWith(`emergency_backup_party_${partyIdx}_`) && file.endsWith('.json'))
-      .sort((a, b) => {
-        const timestampA = parseInt(a.match(/emergency_backup_party_\d+_(\d+)\.json$/)?.[1] || '0')
-        const timestampB = parseInt(b.match(/emergency_backup_party_\d+_(\d+)\.json$/)?.[1] || '0')
-        return timestampB - timestampA // Most recent first
-      })
-    
-    if (backupFiles.length === 0) {
-      console.log('❌ No emergency backup files found')
-      return false
-    }
-    
-    const backupFile = backupTimestamp 
-      ? `emergency_backup_party_${partyIdx}_${backupTimestamp}.json`
-      : backupFiles[0]
-    
-    const backupPath = path.join(KEYSTORE_DIR, backupFile)
-    
-    if (!fs.existsSync(backupPath)) {
-      console.log(`❌ Emergency backup file not found: ${backupPath}`)
-      return false
-    }
-    
-    const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'))
-    
-    console.log(`💾 Recovering from emergency backup: ${backupFile}`)
-    console.log(`📊 Backup info: ${backupData.reason}, original size: ${backupData.originalSize}`)
-    
-    // Clear current queue and load from backup
-    pendingTxQueue.length = 0
-    txQueueMap.clear()
-    processingTransactionIds.clear()
-
-    if (Array.isArray(backupData.pending)) {
-      for (const tx of backupData.pending) {
-        pendingTxQueue.push({ ...tx, value: ethers.BigNumber.from(tx.value?.hex ?? tx.value ?? '0') })
-      }
-    }
-    if (Array.isArray(backupData.map)) {
-      for (const [txId, entry] of backupData.map as [string, any][]) {
-        txQueueMap.set(txId, {
-          txTimestamp: entry.txTimestamp ?? entry.timestamp ?? Date.now(),
-          status: entry.status ?? 'pending',
-        })
-      }
-    }
-
-    console.log(`✅ Successfully recovered ${txQueueMap.size} transactions from emergency backup`)
-    
-    // Save the recovered state as the current queue
-    saveQueueToFile(partyIdx)
-    
-    return true
-  } catch (error) {
-    console.error('❌ Failed to recover from emergency backup:', error)
-    return false
-  }
-}
-
-// Extract EOA address and public key from keystore without requiring TSS coordination
-const extractPublicKeyFromKeystore = (keystoreJson: string): { publicKey: string; address: string } => {
-  try {
-    const keystore = JSON.parse(keystoreJson)
-    
-    // The public key is stored in the keystore at index 5
-    // and it's in the format {x: "hex", y: "hex"}
-    const publicKeyData = keystore[5]
-    if (!publicKeyData || !publicKeyData.x || !publicKeyData.y) {
-      throw new Error('Invalid keystore structure: public key not found at index 5')
-    }
-    
-    let publicKeyX = publicKeyData.x
-    let publicKeyY = publicKeyData.y
-    
-    // Ensure even length hex strings
-    if (publicKeyX.length % 2 !== 0) publicKeyX = '0' + publicKeyX
-    if (publicKeyY.length % 2 !== 0) publicKeyY = '0' + publicKeyY
-    
-    // Convert the uncompressed public key to the format expected by ethers
-    // Ethereum uses uncompressed public keys: 0x04 + x + y
-    const uncompressedPublicKey = '0x04' + publicKeyX + publicKeyY
-    
-    // Compute the Ethereum address from the public key
-    const address = ethersUtils.computeAddress(uncompressedPublicKey)
-    
-    return {
-      publicKey: uncompressedPublicKey,
-      address: address
-    }
-  } catch (error) {
-    console.error('Failed to extract public key from keystore:', error)
-    throw error
-  }
-}
-
-// Generate public key file from keystore
-const generatePublicKeyFile = (partyIdx: number, chainId: number): void => {
-  try {
-    const keystore = getKeystoreForChain(partyIdx, chainId)
-    const { publicKey, address } = extractPublicKeyFromKeystore(keystore)
-    const chainConfig = getChainConfigById(chainId)
-    const chainName = chainConfig?.name || `Chain ${chainId}`
-    
-    const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}_chain_${chainId}.json`)
-    const publicKeyData = {
-      chainId,
-      chainName,
-      publicKey: publicKey,
-      address: address,
-      generated: new Date().toISOString()
-    }
-    fs.writeFileSync(publicKeyFilePath, JSON.stringify(publicKeyData, null, 2))
-    console.log(`📄 Generated public key file for ${chainName}: ${publicKeyFilePath}`)
-  } catch (error) {
-    console.error(`Failed to generate public key file for party ${partyIdx} chain ${chainId}:`, error)
-  }
-}
 
 // Display all EOA addresses for a party across all chains
 function verifyEthereumTx(obj: SignedTx): boolean {
@@ -1039,90 +798,6 @@ function verifyEthereumTx(obj: SignedTx): boolean {
   console.log('Recovered Address:', recoveredAddress)
   console.log('Recovered Shardus Address:', recoveredShardusAddress)
   return isValid
-}
-
-async function keygen(m: any, delay: number, operationId?: string): Promise<string> {
-  const keygenOperationId = operationId || cryptoInitKey.slice(2, 8)
-  let context = await m.gg18_keygen_client_new_context(
-    coordinatorUrl,
-    t,
-    n,
-    delay,
-    keygenOperationId,
-  )
-  console.log('Keygen context created:', context)
-  context = await m.gg18_keygen_client_round1(context, delay)
-  context = await m.gg18_keygen_client_round2(context, delay)
-  context = await m.gg18_keygen_client_round3(context, delay)
-  context = await m.gg18_keygen_client_round4(context, delay)
-  const keygen_json = await m.gg18_keygen_client_round5(context, delay)
-  return keygen_json
-}
-
-async function sign(m: any, key_store: string, delay: number, digest: string): Promise<string> {
-  const operationId = digest.slice(2, 8)
-  console.log('Signing digest:', digest)
-  console.log('Operation ID:', operationId)
-  console.log('Sign delay(ms):', delay, 'Sign round timeout(ms):', SIGN_ROUND_TIMEOUT_MS)
-  
-  let context = null
-  try {
-    context = await signRound(
-      m.gg18_sign_client_new_context(coordinatorUrl, t, n, key_store, digest.slice(2), operationId),
-      'new_context',
-    )
-    let contextJSON = JSON.parse(context)
-    if (contextJSON.party_num_int > t + 1) {
-      console.log('Party number is greater than threshold + 1, returning')
-      throw new Error(enoughPartyError)
-    }
-    console.log('our party number', contextJSON.party_num_int)
-
-    console.log('sign round', 0)
-    context = await signRound(m.gg18_sign_client_round0(context, delay), 0)
-    console.log('sign round', 1)
-    context = await signRound(m.gg18_sign_client_round1(context, delay), 1)
-    console.log('sign round', 2)
-    context = await signRound(m.gg18_sign_client_round2(context, delay), 2)
-    console.log('sign round', 3)
-    context = await signRound(m.gg18_sign_client_round3(context, delay), 3)
-    console.log('sign round', 4)
-    context = await signRound(m.gg18_sign_client_round4(context, delay), 4)
-    console.log('sign round', 5)
-    context = await signRound(m.gg18_sign_client_round5(context, delay), 5)
-    console.log('sign round', 6)
-    context = await signRound(m.gg18_sign_client_round6(context, delay), 6)
-    console.log('sign round', 7)
-    context = await signRound(m.gg18_sign_client_round7(context, delay), 7)
-    console.log('sign round', 8)
-    context = await signRound(m.gg18_sign_client_round8(context, delay), 8)
-    const sign_json = await signRound<string>(m.gg18_sign_client_round9(context, delay), 9)
-    console.log('Signature:', sign_json)
-    
-    // Force cleanup after successful signing
-    if (global.gc) {
-      global.gc()
-    }
-    
-    return sign_json
-  } catch (error) {
-    // Clean up any context or resources on error
-    console.log('Error in sign function, cleaning up resources', error)
-    if (context && m.gg18_cleanup_context) {
-      try {
-        await m.gg18_cleanup_context(context)
-      } catch (cleanupError) {
-        console.warn('Failed to cleanup signing context:', cleanupError)
-      }
-    }
-    
-    // Force garbage collection on error
-    if (global.gc) {
-      global.gc()
-    }
-    
-    throw error
-  }
 }
 
 function getAxiosErrorMessage(error: unknown): string {
@@ -1534,36 +1209,6 @@ function reconcileTxStatusWithLocalDB(
   }
 }
 
-async function DKG(party: KeyShare, chainId?: number): Promise<KeyShare> {
-  const partyIdx = party.idx
-
-  // If chainId is provided, use chain-specific keystore
-  if (chainId) {
-    try {
-      const chainKeystore = getKeystoreForChain(partyIdx, chainId)
-      return { idx: partyIdx, res: chainKeystore, chainId }
-    } catch (e) {
-      console.error(`Failed to get keystore for chain ${chainId}:`, e)
-      throw e
-    }
-  }
-
-  // Legacy behavior for backward compatibility
-  if (party.res) return party
-  if (!generateKeystore && keystoreExists(partyIdx)) {
-    party.res = loadKeystore(partyIdx)
-  } else {
-    let delay = SIGN_POLL_DELAY_MS
-    try {
-      party.res = await keygen(gg18, delay)
-      saveKeystore(partyIdx, party.res)
-    } catch (e) {
-      return {idx: partyIdx, res: null as any}
-    }
-  }
-  return party
-}
-
 function getBnbTssExpectedAddresses(): Record<number, string> {
   const expected: Record<number, string> = {}
   for (const chainId of getEffectiveChainIds()) {
@@ -1606,7 +1251,6 @@ function signDigestWithBnbTss(chainId: number, digest: string, channelId: string
 }
 
 async function signEthereumTransaction(
-  item: KeyShare | null,
   tx: any,
   digest: string,
   chainId: number,
@@ -1615,21 +1259,17 @@ async function signEthereumTransaction(
 ): Promise<string | null> {
   const startMemory = process.memoryUsage()
   let signature
-  if (useBnbTss) {
+  try {
     const signed = await signDigestWithBnbTss(chainId, digest, channelId, channelPassword)
     signature = {
       r: signed.r,
       s: signed.s,
       v: signed.v,
     }
-  } else {
-    const delay = SIGN_POLL_DELAY_MS
-    const res = JSON.parse(await sign(gg18, item!.res, delay, digest))
-    signature = {
-      r: '0x' + res[0],
-      s: '0x' + res[1],
-      v: res[2],
-    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(`Failed to sign Ethereum transaction: ${errorMessage}`)
+    return null
   }
   const address = ethersUtils.recoverAddress(digest, signature)
   const publicKey = ethersUtils.recoverPublicKey(digest, signature)
@@ -1656,7 +1296,6 @@ async function signEthereumTransaction(
 }
 
 async function signLiberdusTransaction(
-  item: KeyShare | null,
   tx: LiberdusTx,
   digest: string,
   chainId: number,
@@ -1665,21 +1304,17 @@ async function signLiberdusTransaction(
 ): Promise<SignedTx | null> {
   const startMemory = process.memoryUsage()
   let signature
-  if (useBnbTss) {
+  try {
     const signed = await signDigestWithBnbTss(chainId, digest, channelId, channelPassword)
     signature = {
       r: signed.r,
       s: signed.s,
       v: signed.v,
     }
-  } else {
-    const delay = SIGN_POLL_DELAY_MS
-    const res = JSON.parse(await sign(gg18, item!.res, delay, digest))
-    signature = {
-      r: '0x' + res[0],
-      s: '0x' + res[1],
-      v: Number(res[2]),
-    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(`Failed to sign Liberdus transaction: ${errorMessage}`)
+    return null
   }
   const serializedSignature = ethersUtils.joinSignature(signature)
   const signedTx: SignedTx = {
@@ -1830,8 +1465,7 @@ async function processCoinToToken(
   if (dbStatusCoinToToken != null) return dbStatusCoinToToken === 'completed' ? 'skipped_db_completed' : dbStatusCoinToToken === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
 
   // Use chain-specific keystore for signing
-  let keyShare = useBnbTss ? null : await DKG(ourParty, targetChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest, targetChainId, channelId, channelPassword)
+  const signedTx = await signEthereumTransaction(tx, digest, targetChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -1980,8 +1614,7 @@ async function processVaultBridge(
   if (dbStatusVaultBridge != null) return dbStatusVaultBridge === 'completed' ? 'skipped_db_completed' : dbStatusVaultBridge === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
 
   // Use destination chain's keystore for signing
-  let keyShare = useBnbTss ? null : await DKG(ourParty, destinationChainId)
-  const signedTx = await signEthereumTransaction(keyShare, tx, digest, destinationChainId, channelId, channelPassword)
+  const signedTx = await signEthereumTransaction(tx, digest, destinationChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2095,8 +1728,7 @@ async function processTokenToCoin(
   if (dbStatusTokenToCoin != null) return dbStatusTokenToCoin === 'completed' ? 'skipped_db_completed' : dbStatusTokenToCoin === 'reverted' ? 'skipped_db_reverted' : 'skipped_db_failed'
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
-  let keyShare = useBnbTss ? null : await DKG(ourParty, sourceChainId)
-  signedTx = await signLiberdusTransaction(keyShare, tx, digest, sourceChainId, channelId, channelPassword)
+  signedTx = await signLiberdusTransaction(tx, digest, sourceChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign liberdus transaction from ${sourceChainName}, skipping`, txId)
     const txData = processingTransactionIds.get(txId)
@@ -2470,151 +2102,31 @@ function calculateChatId(from: string, to: string): string {
 }
 
 async function main(): Promise<void> {
-  console.log(`Signing backend: ${useBnbTss ? 'BNB TSS' : 'WASM GG18'}`)
+  console.log('Signing backend: BNB TSS')
 
-  // Show help if no valid operation flag is provided
-  if (!generateKeystore && !verifyKeystores && !recoverFromBackup && !process.argv[3]) {
-    console.log('\nUsage: ts-node scripts/tss-party.ts <party_index> <operation> [options]')
-    console.log('\nOperations:')
-    console.log('  --keygen  : Generate new keystores for all supported chains (pure key generation)')
-    console.log('  --verify  : Verify and test existing keystores, display EOA addresses')
-    console.log('  --recover : Recover transaction queue from emergency backup [timestamp]')
-    console.log('  (none)    : Start normal TSS party operation (requires existing keystores)')
-    console.log('\nExamples:')
-    console.log('  ts-node scripts/tss-party.ts 1 --keygen       # Generate keystores for party 1')
-    console.log('  ts-node scripts/tss-party.ts 1 --verify       # Verify keystores for party 1')
-    console.log('  ts-node scripts/tss-party.ts 1 --recover      # Recover from latest emergency backup')
-    console.log('  ts-node scripts/tss-party.ts 1 --recover 1234 # Recover from specific backup timestamp')
-    console.log('  ts-node scripts/tss-party.ts 1                # Start party 1 for TSS operations')
+  if (!operationFlag) {
+    console.log('\nUsage: ts-node scripts/tss-party.ts <party_index>')
+    console.log('\nStart the party with existing native TSS state.')
     console.log('')
   }
 
-  if (generateKeystore) {
-    // Pure key generation for all supported chains
-    const partyIdx = ourParty.idx
-    console.log(`Generating keystores for party ${partyIdx} for all supported chains...`)
-
-    try {
-      // Ensure all chain keystores exist for this party
-      const keystores = await ensureChainKeystores(partyIdx)
-      console.log(`Successfully generated keystores for all ${keystores.size} chains`)
-      console.log('Use --verify flag to test and verify the generated keystores')
-      process.exit(0)
-    } catch (e) {
-      console.error('Error generating key shares:', e)
-      process.exit(1)
-    }
+  if (operationFlag) {
+    console.error(`Unsupported operation flag: ${operationFlag}`)
+    console.error('Use the native helpers instead:')
+    console.error('  npm run tss-init -- --party <idx> --chain-id <id>')
+    console.error('  npm run tss-keygen -- --party <idx> --chain-id <id>')
+    console.error('  npm run tss-verify -- --party <idx> --chain-id <id>')
+    console.error('Start the signer with no operation flag.')
+    process.exit(1)
   }
 
-  if (recoverFromBackup) {
-    // Recovery mode - restore from emergency backup
-    const partyIdx = ourParty.idx
-    const timestamp = recoveryTimestamp ? parseInt(recoveryTimestamp) : undefined
-    
-    console.log(`Recovering transaction queue for party ${partyIdx}...`)
-    
-    const success = recoverFromEmergencyBackup(partyIdx, timestamp)
-    if (success) {
-      console.log('✅ Emergency recovery completed successfully')
-      console.log('You can now start the TSS party normally')
-    } else {
-      console.log('❌ Emergency recovery failed')
-      console.log('Check if emergency backup files exist in the keystores directory')
-    }
-    process.exit(success ? 0 : 1)
-  }
-
-  if (verifyKeystores) {
-    // Verify and test keystores, display EOA addresses
-    const partyIdx = ourParty.idx
-    console.log(`Verifying keystores for party ${partyIdx} for all supported chains...`)
-
-    try {
-      // Load existing keystores
-      const keystores = new Map<number, string>()
-      
-      for (const chainId of getEffectiveChainIds()) {
-        try {
-          const keystore = getKeystoreForChain(partyIdx, chainId)
-          keystores.set(chainId, keystore)
-          console.log(`Loaded keystore for chain ${chainId}`)
-        } catch (e) {
-          console.error(`Failed to load keystore for chain ${chainId}:`, e)
-          continue
-        }
-      }
-
-      if (keystores.size === 0) {
-        console.error('No keystores found. Please run with --keygen first.')
-        process.exit(1)
-      }
-
-      // Display public keys and addresses for each keystore
-      console.log(`\n🔑 EOA Addresses Summary for Party ${partyIdx}:`)
-      console.log('=' .repeat(60))
-      
-      for (const [chainId, keystore] of keystores.entries()) {
-        const chainConfig = getChainConfigById(chainId)
-        const chainName = chainConfig?.name || `Chain ${chainId}`
-
-        console.log(`\n${chainName} (Chain ID: ${chainId}):`)
-        console.log(`  🗂️  Keystore: ✅ Found`)
-        
-        // Check if public key file exists, if not, generate it from keystore
-        const publicKeyFilePath = path.join(KEYSTORE_DIR, `public_key_party_${partyIdx}_chain_${chainId}.json`)
-        
-        try {
-          // Always try to extract and display the public key and address from keystore
-          const { publicKey, address } = extractPublicKeyFromKeystore(keystore)
-          console.log(`  📍 Address: ${address}`)
-          console.log(`  🔑 Public Key: ${publicKey}`)
-          
-          if (fs.existsSync(publicKeyFilePath)) {
-            console.log(`  📄 Public Key File: ✅ Found`)
-          } else {
-            // Generate the public key file from keystore
-            generatePublicKeyFile(partyIdx, chainId)
-            console.log(`  📄 Public Key File: ✅ Generated`)
-          }
-        } catch (e) {
-          console.log(`  📄 Public Key File: ❌ Error extracting from keystore`)
-          console.log(`  ⚠️  Error: ${e instanceof Error ? e.message : String(e)}`)
-        }
-        
-        console.log(`  🌐 RPC URL: ${chainConfig?.rpcUrl}`)
-        console.log(`  📋 Contract: ${chainConfig?.contractAddress}`)
-      }
-
-      console.log(`\n✅ Verification complete for all ${keystores.size} chains`)
-      console.log('📄 All public key files have been generated from keystores')
-      console.log('\nNote: This verification extracts addresses from keystores without TSS coordination.')
-      console.log('      For full TSS signing tests, you need to coordinate with other parties.')
-      process.exit(0)
-    } catch (e) {
-      console.error('Error verifying keystores:', e)
-      process.exit(1)
-    }
-  }
-
-  if (useBnbTss) {
-    try {
-      console.log(`Validating BNB TSS vaults for party ${ourParty.idx}...`)
-      await validateBnbTssSetup()
-      console.log('BNB TSS vaults are ready')
-    } catch (e) {
-      console.error('Failed to validate BNB TSS setup:', e)
-      process.exit(1)
-    }
-  } else {
-    // Ensure all chain keystores exist before starting normal operation
-    try {
-      console.log(`Ensuring all chain keystores exist for party ${ourParty.idx}...`)
-      await ensureChainKeystores(ourParty.idx)
-      console.log('All chain keystores are ready')
-    } catch (e) {
-      console.error('Failed to ensure chain keystores:', e)
-      process.exit(1)
-    }
+  try {
+    console.log(`Validating BNB TSS vaults for party ${ourParty.idx}...`)
+    await validateBnbTssSetup()
+    console.log('BNB TSS vaults are ready')
+  } catch (e) {
+    console.error('Failed to validate BNB TSS setup:', e)
+    process.exit(1)
   }
 
   // Initialize local DB (shared with the paired observer process)
@@ -2845,8 +2357,8 @@ async function main(): Promise<void> {
         global.gc()
       }
     } catch (error: any) {
-      if (error.message === enoughPartyError) {
-        // Handle the "enough party" error - this means other parties already completed the signing
+      if (error.message === 'signing-timeout') {
+        // Handle the "'signing-timeout'" error - [TODO] - this is a replacer placeholder for now
         // Keep this tx in local processing until local DB finalizes it (observer will mark it COMPLETED).
         console.log('Transaction already signed by enough parties, waiting for local DB final status:', validTx.txId)
 
@@ -2887,6 +2399,7 @@ async function main(): Promise<void> {
           global.gc()
         }
       } else if (error.message === 'Transaction processing timed out') {
+      if (error.message === 'Transaction processing timed out') {
         // Handle timeout errors more gracefully
         console.warn('⏱️ Transaction timed out, marking as failed and cleaning up:', validTx.txId)
         checkPostTransactionMemory(validTx.txId, 'timeout-error')
