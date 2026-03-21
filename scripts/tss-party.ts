@@ -314,13 +314,12 @@ async function refreshBridgeStateOnRevert(reason: string | undefined, chainId: n
   await fetchBridgeState(chainId)
 }
 
-// Fetch bridge state for all chains on startup (skip vault source chain — we only call bridgeIn on the destination)
-for (const [chainId] of chainStateByChainId.entries()) {
-  if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.vaultChain!.chainId) continue
-  console.log(`Fetching bridge state for chain ${chainId}`)
-  fetchBridgeState(chainId).catch((err) =>
-    console.warn(`Failed to fetch bridge state for chain ${chainId}:`, err)
-  )
+async function fetchStartupBridgeState(): Promise<void> {
+  for (const [chainId] of chainStateByChainId.entries()) {
+    if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.vaultChain!.chainId) continue
+    console.log(`Fetching bridge state for chain ${chainId}`)
+    await fetchBridgeState(chainId)
+  }
 }
 
 const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRYPTO_HASH_KEY
@@ -1951,6 +1950,8 @@ async function main(): Promise<void> {
     console.error('[tss-party] Failed to initialize local DB:', e)
     process.exit(1)
   }
+
+  await fetchStartupBridgeState()
 
   // Wait for the paired observer process to complete its initial sync
   console.log(`[tss-party] Waiting for observer at ${observerUrl} to become ready...`)
