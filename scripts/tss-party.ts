@@ -55,6 +55,8 @@ interface ChainState {
   bridgeInCooldown: number         // seconds
   maxBridgeInAmount: ethers.BigNumber
   lastBridgeInTime: number         // unix timestamp in seconds
+  // Precomputed BigNumber values of gasConfig.gasPriceTiers (avoids parseUnits per-tx)
+  gasPriceTiersBN: ethers.BigNumber[]
 }
 
 interface TransactionQueueItem {
@@ -176,6 +178,9 @@ const chainStateByChainId: Map<number, ChainState> = new Map(
       bridgeInCooldown: 0,
       maxBridgeInAmount: ethers.BigNumber.from(0),
       lastBridgeInTime: 0,
+      gasPriceTiersBN: (config.gasConfig?.gasPriceTiers ?? []).map((t) =>
+        ethersUtils.parseUnits(t.toString(), 'gwei'),
+      ),
     },
   ]),
 )
@@ -875,9 +880,7 @@ async function processCoinToToken(
   )
 
   // Apply gas price logic based on chain configuration
-  const gasTiers = chainState.config.gasConfig.gasPriceTiers
-  for (let i = 0; i < gasTiers.length; i++) {
-    const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
+  for (const tierGwei of chainState.gasPriceTiersBN) {
     if (currentGasPrice.lt(tierGwei)) {
       currentGasPrice = tierGwei
       break
@@ -1038,9 +1041,7 @@ async function processVaultBridge(
   )
 
   // Apply gas price logic based on destination chain configuration
-  const gasTiers = destChainState.config.gasConfig.gasPriceTiers
-  for (let i = 0; i < gasTiers.length; i++) {
-    const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
+  for (const tierGwei of destChainState.gasPriceTiersBN) {
     if (currentGasPrice.lt(tierGwei)) {
       currentGasPrice = tierGwei
       break
