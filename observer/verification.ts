@@ -125,6 +125,7 @@ export async function verifyTxOnChain(
           const contractAddress = chainConfig.contractAddress.toLowerCase();
           const normalizedExpectedTxId = normalizeTxId(expectedTxId);
 
+          if (!Array.isArray(receipt.logs)) return false;
           for (const log of receipt.logs) {
             if (log.address.toLowerCase() !== contractAddress) continue;
             try {
