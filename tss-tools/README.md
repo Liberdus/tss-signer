@@ -18,7 +18,7 @@ Structure:
   - deterministic signing `channelPassword` helper derived from `channelId` and `SHARDUS_CRYPTO_HASH_KEY`
 - `init.ts`, `keygen.ts`, `regroup.ts`, `verify.ts`, `sign-ethereum-tx.ts`
   - TypeScript entrypoints for native TSS flows
-  - compiled into `dist/tss-tools/*.js` by `npm run compile-tss`
+  - compiled into `dist/tss-tools/*.js` by `npm run compile`
 - `derive-pubkey/main.go`
   - Go helper source that is staged into `../tss/.tooling` and run inside the patched `tss` module to derive Ethereum pubkey/address
 - `test-sign-rounds.sh`

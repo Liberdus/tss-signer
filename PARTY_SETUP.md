@@ -1,21 +1,20 @@
 # TSS Party Setup Guide
 
-This guide walks all 5 party operators and the coordinator operator through the one-time setup required before the TSS bridge can operate. Each step must be completed in coordination across the team.
+This guide walks all 5 party operators through the one-time setup required before the TSS bridge can operate. Each step must be completed in coordination across the team.
 
 ---
 
 ## Roles
 
-- **Coordinator operator** — runs the coordinator server. Collects public keys from all party operators and deploys the whitelist. The coordinator must be running before keygen can start.
 - **Party operators (×5)** — each runs one TSS party node (party 1 through 5). Each operator is assigned a unique party index.
 
 ---
 
 ## Prerequisites
 
-> **Role: All operators (coordinator operator and all party operators)**
+> **Role: All party operators**
 
-All 5 party operators and the coordinator operator must have a working environment before starting (Node.js, Rust, wasm-pack, PM2, and the built repo). If not already set up, run:
+All 5 party operators must have a working environment before starting (Node.js, PM2, Go if needed, and the built repo). If not already set up, run:
 
 ```bash
 sudo bash scripts/setup-env.sh
@@ -28,10 +27,9 @@ su - customer
 cd ~/tss-signer
 ```
 
-Set the required environment variables before running any party commands. Confirm the correct values with the coordinator operator or your team before proceeding:
+Set the required environment variables before running any party commands. Confirm the correct values with your team before proceeding:
 
 ```bash
-export COORDINATOR_URL=http://<coordinator-ip>:8000
 export COLLECTOR_HOST=http://<collector-ip>:3035
 export PROXY_SERVER_HOST=http://<proxy-ip>:3030
 ```
@@ -40,106 +38,21 @@ These can also be set in `chain-config.json` if you prefer not to use environmen
 
 ---
 
-## Coordinator Setup
+## Step 1 — Run Native TSS Init
 
-> **Role: Coordinator operator (admin)**
+> **Role: All party operators**
 
-The coordinator operator must complete this before any party can run keygen.
-
-### Build
-
-> This is handled automatically by `setup-env.sh`. Run the step below only if you need to rebuild after a code update.
+Each operator initializes their party home for each chain they participate in:
 
 ```bash
-cd ~/tss-signer/coordinator
-npm run build
+npm run tss-init -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
 ```
 
-### Configure
-
-The coordinator reads `chain-config.json` and `params.json` from the repo root (one level up). Ensure these are filled in with the correct RPC endpoints, contract addresses, and chain IDs before starting.
-
-### Create the allowed-signers whitelist (after collecting keys from Step 1)
-
-Once all 5 party operators have sent you their public keys (see Step 1), create:
-
-**`coordinator/allowed-tss-signers.json`**
-```json
-{
-  "allowedTSSSigners": [
-    "<party-1-public-key>",
-    "<party-2-public-key>",
-    "<party-3-public-key>",
-    "<party-4-public-key>",
-    "<party-5-public-key>"
-  ]
-}
-```
-
-### Start the coordinator
+For example:
 
 ```bash
-# Production
-npm start
-
-# With pm2 (keep it running in the background with auto-restart)
-pm2 start npm --name "tss-coordinator" -- run tss-coordinator
-
-# Development (auto-restart on file changes)
-npm run dev
+npm run tss-init -- --party 2 --chain-id 97
 ```
-
-The coordinator listens on port `8000`. On startup it performs an initial on-chain sync (scanning all chains for existing bridge events) before it begins serving pending transactions to party nodes. Wait for the sync to complete before triggering keygen.
-
-> The coordinator must remain running continuously. Party nodes poll it every 10 seconds for pending transactions and route all signing round data through it.
-
----
-
-## Step 1 — Generate Your Signer Keypair and Share Your Public Key
-
-> **Role: Party operators**
-
-Each operator generates their own Ed25519 keypair independently. This keypair is used to authenticate HTTP requests from your party node to the coordinator.
-
-**Each operator runs on their own machine:**
-
-```bash
-npm run generate-signer-keypairs -- --party <YOUR_PARTY_INDEX>
-```
-
-Replace `<YOUR_PARTY_INDEX>` with your assigned party number (1 through 5). For example, operator 3 runs:
-
-```bash
-npm run generate-signer-keypairs -- --party 3
-```
-
-This writes `keystores/tss_signer_keypair_party_3.json` and prints your public key:
-
-```
-[party 3] Keypair written to keystores/tss_signer_keypair_party_3.json
-           publicKey: 48eec466b05aa39f8578e12ca64ebfc0cc80c1173c599aa2a0a4210684494c30
-```
-
-**Coordinate with your team:**
-
-1. Each operator shares their `publicKey` with whoever manages the coordinator.
-2. Once all 5 public keys are collected, the coordinator operator creates (or updates) `coordinator/allowed-tss-signers.json`:
-
-```json
-{
-  "allowedTSSSigners": [
-    "<party-1-public-key>",
-    "<party-2-public-key>",
-    "<party-3-public-key>",
-    "<party-4-public-key>",
-    "<party-5-public-key>"
-  ]
-}
-```
-
-3. The coordinator must be running and reachable at `COORDINATOR_URL` before proceeding to Step 2.
-
-> **Keep your `secretKey` private.** Never share it or commit it to version control.
 
 ---
 
@@ -147,26 +60,25 @@ This writes `keystores/tss_signer_keypair_party_3.json` and prints your public k
 
 > **Role: All party operators (simultaneously)**
 
-Keygen generates the distributed key shares. All 5 parties must run this step **at the same time** — they exchange data through the coordinator across 5 rounds.
+Keygen generates the distributed key shares. All 5 parties must run this step **at the same time**.
 
-**Coordinate a start time with all 5 operators.** Once the coordinator is running and all 5 are ready:
+**Coordinate a start time with all 5 operators.** Once all 5 are ready:
 
 **Each operator runs on their own machine:**
 
 ```bash
-node dist/tss-party.js <YOUR_PARTY_INDEX> --keygen
+npm run tss-keygen -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
 ```
 
 For example, operator 2 runs:
 
 ```bash
-node dist/tss-party.js 2 --keygen
+npm run tss-keygen -- --party 2 --chain-id 97
 ```
 
 What to expect:
-- The process connects to the coordinator and completes 5 cryptographic rounds.
-- On success it prints something like `Successfully generated keystores for all N chains` and exits.
-- Keystore files are written to `keystores/` for each supported chain, e.g. `keystore_party_2_chainId_80002.json`.
+- The process runs native TSS keygen for the requested chain and exits on success.
+- Native vault files are written under `keystores/bnbtss/party-<idx>/chain-<chainId>/default/`.
 
 > If any party fails or exits early, all parties must restart keygen together from scratch. Partial keystores are invalid.
 
@@ -176,16 +88,16 @@ What to expect:
 
 > **Role: Party operators**
 
-After keygen, each operator independently verifies their keystores are valid and displays the derived EOA addresses. This is a local operation — no coordination needed.
+After keygen, each operator independently verifies their native vaults are valid and displays the derived EOA addresses. This is a local operation — no coordination needed.
 
 ```bash
-node dist/tss-party.js <YOUR_PARTY_INDEX> --verify
+npm run tss-verify -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
 ```
 
 For example:
 
 ```bash
-node dist/tss-party.js 1 --verify
+npm run tss-verify -- --party 1 --chain-id 97
 ```
 
 What to check:
@@ -202,7 +114,7 @@ What to check:
 scp -r customer@<server-ip>:~/tss-signer/keystores/ ~/tss-keystore-backup/
 ```
 
-Each keystore file (e.g. `keystore_party_2_chainId_80002.json`) contains your unique key share. If it is lost, your party can no longer participate in signing and the full keygen process must be repeated with a new TSS address.
+Each native vault contains your unique key share. If it is lost, your party can no longer participate in signing and the full keygen process must be repeated with a new TSS address.
 
 ---
 
@@ -212,7 +124,7 @@ Each keystore file (e.g. `keystore_party_2_chainId_80002.json`) contains your un
 
 Before the parties can submit signed transactions, the shared EOA address derived during keygen must be registered as the authorized `bridgeInCaller` in each bridge contract. This is a contract admin operation — whoever deployed the bridge contracts must perform it.
 
-Provide the coordinator operator (or contract admin) with the verified EOA address from Step 3, and confirm it has been set on all supported chains before proceeding.
+Provide the contract admin with the verified EOA address from Step 3, and confirm it has been set on all supported chains before proceeding.
 
 > Until this is done, signed `bridgeIn` calls from the TSS parties will be rejected by the contract.
 
@@ -290,10 +202,9 @@ Individual party logs are at `logs/tss-party-N-out.log` and `logs/tss-party-N-er
 
 | Step | Who | Coordination needed |
 |---|---|---|
-| Coordinator setup | Coordinator operator | Must be running before keygen; update `allowed-tss-signers.json` after collecting keys from all 5 parties |
-| 1. Generate keypair | Each party operator independently | Share public keys with coordinator operator |
-| 2. Keygen (`--keygen`) | All 5 simultaneously | Agree on start time; coordinator must be running |
-| 3. Verify (`--verify`) | Each party operator independently | Share and cross-check EOA addresses across all operators |
+| 1. Init (`tss-init`) | Each party operator independently | No, but all required chains should be initialized before keygen |
+| 2. Keygen (`tss-keygen`) | All 5 simultaneously | Agree on start time |
+| 3. Verify (`tss-verify`) | Each party operator independently | Share and cross-check EOA addresses across all operators |
 | 4. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
-| 5. Fund TSS address | Contract admin / coordinator operator | Send native gas tokens to TSS address on every supported chain |
-| 6. Start party | Each party operator independently | Coordinator must be running; TSS address must be registered and funded |
+| 5. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
+| 6. Start party | Each party operator independently | TSS address must be registered and funded |

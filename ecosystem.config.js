@@ -8,7 +8,7 @@ const commonEnv = {
 
 const observerApps = PARTIES.map((n) => ({
   name: `observer-${n}`,
-  script: './observer/dist/index.js',
+  script: './dist/observer/src/index.js',
   instances: 1,
   autorestart: true,
   watch: false,

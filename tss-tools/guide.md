@@ -15,7 +15,7 @@ npm install
 
 
 # 2) Build the TypeScript party script
-npm run compile-tss
+npm run compile
 
 
 # 3) Ensure the upstream tss submodule is present
