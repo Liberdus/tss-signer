@@ -421,66 +421,7 @@ function removeFromPendingTxQueue(txId: string): void {
   if (idx !== -1) pendingTxQueue.splice(idx, 1)
 }
 
-const saveQueueToFile = (partyIdx: number): void => {
-  const party = partyIdx === undefined ? 'all' : String(partyIdx)
-  const filePath = path.join(KEYSTORE_DIR, `queue_party_${party}.json`)
-  const data = {
-    map: Array.from(txQueueMap.entries()),
-    pending: pendingTxQueue.map(tx => ({
-      ...tx,
-      value: tx.value.toString(),
-      receipt: undefined,
-    })),
-  }
-  fs.writeFileSync(filePath, JSON.stringify(data))
-  console.log(`Queue for party ${party} saved to ${filePath}`)
-}
 
-const loadQueueFromFile = (partyIdx: number): void => {
-  const party = partyIdx === undefined ? 'all' : String(partyIdx)
-  const filePath = path.join(KEYSTORE_DIR, `queue_party_${party}.json`)
-  if (!fs.existsSync(filePath)) return
-
-  try {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-
-    // Restore txQueueMap
-    if (Array.isArray(data.map)) {
-      for (const [txId, entry] of data.map as [string, TxQueueEntry][]) {
-        txQueueMap.set(txId, entry)
-      }
-    }
-
-    // Restore pendingTxQueue — parse BigNumber from string
-    if (Array.isArray(data.pending)) {
-      for (const tx of data.pending) {
-        pendingTxQueue.push({
-          ...tx,
-          value: ethers.BigNumber.from(tx.value),
-        })
-      }
-    }
-
-    // Legacy format support: old files used "queue" key
-    if (!data.pending && Array.isArray(data.queue)) {
-      for (const tx of data.queue) {
-        pendingTxQueue.push({ ...tx, value: ethers.BigNumber.from(tx.value?.hex ?? tx.value ?? '0') })
-      }
-      if (Array.isArray(data.map)) {
-        for (const [txId, oldEntry] of data.map) {
-          txQueueMap.set(txId, {
-            txTimestamp: oldEntry.txTimestamp ?? oldEntry.timestamp ?? Date.now(),
-            status: oldEntry.status ?? 'pending',
-          })
-        }
-      }
-    }
-
-    console.log(`Queue for party ${party} loaded from ${filePath}: ${txQueueMap.size} map entries, ${pendingTxQueue.length} pending`)
-  } catch (err) {
-    console.error(`Failed to load queue from ${filePath}:`, err)
-  }
-}
 
 function appendToTxDataStore(txData: TransactionQueueItem): void {
   try {
@@ -693,7 +634,6 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       pendingTxQueue.sort((a, b) => {
         return a.txTimestamp - b.txTimestamp
       })
-      saveQueueToFile(ourParty.idx)
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
@@ -1557,10 +1497,7 @@ function emergencyCleanup() {
   
   console.log('🚨 Running emergency cleanup due to large queue size')
   
-  // First, backup the current queue state to persistent storage
-  console.log('💾 Backing up queue state before emergency cleanup...')
-  saveQueueToFile(ourParty.idx)
-  
+
   // Create an additional emergency backup with timestamp
   const emergencyBackupPath = path.join(KEYSTORE_DIR, `emergency_backup_party_${ourParty.idx}_${now}.json`)
   const backupData = {
@@ -1608,9 +1545,6 @@ function emergencyCleanup() {
   
   console.log(`🚨 Emergency cleanup removed ${removedCount} old transactions`)
   console.log(`💾 Backed up ${backupCount} pending transactions to: ${emergencyBackupPath}`)
-  
-  // Update the regular queue file after cleanup
-  saveQueueToFile(ourParty.idx)
   
   // Force GC after emergency cleanup
   if (global.gc) {
@@ -1757,9 +1691,6 @@ async function main(): Promise<void> {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     }
   })()
-
-  // Load persisted queue state
-  loadQueueFromFile(ourParty.idx)
 
   // Startup recovery: verify pending/processing entries against local DB
   console.log('🔄 Running startup recovery check against local DB...')
@@ -1946,9 +1877,6 @@ async function main(): Promise<void> {
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
 
-      // Save the queue to file
-      saveQueueToFile(ourParty.idx)
-      
       // Check memory usage after successful transaction
       checkPostTransactionMemory(validTx.txId, 'transaction-success')
       
@@ -2020,7 +1948,6 @@ async function main(): Promise<void> {
           global.gc()
         }
       }
-      saveQueueToFile(ourParty.idx)
       console.error('Error processing transaction:', error)
       // console.log("Transaction re-added to queue:", validTx);
     } finally {
@@ -2044,7 +1971,6 @@ async function main(): Promise<void> {
         txTimestamp: validTx.txTimestamp!,
         status: 'processing',
       })
-      saveQueueToFile(ourParty.idx)
 
       // Store full txData in processingTransactionIds for crash recovery
       processingTransactionIds.set(validTx.txId, validTx)
