@@ -188,7 +188,8 @@ export function updateTransactionStatus(
     const current = stmtGetById.get(txId) as Transaction | undefined;
     if (!current) return "not_found";
 
-    if (current.status === status && current.receiptId === receiptId) return "duplicate";
+    // FAILED is exempt so a retry with a new reason always overwrites the previous failure message.
+    if (status !== TransactionStatus.FAILED && current.status === status && current.receiptId === receiptId) return "duplicate";
 
     if (
       current.status === TransactionStatus.COMPLETED &&
