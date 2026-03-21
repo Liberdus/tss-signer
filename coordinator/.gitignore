@@ -1,8 +1,0 @@
-dist
-logs
-node_modules
-transactions.sqlite*
-block_state.json
-allowed-tss-signers.json
-
-

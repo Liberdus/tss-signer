@@ -59,10 +59,8 @@ interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
   vaultChain?: ChainConfig      // Vault source chain config (used when enableLiberdusNetwork=false)
   secondaryChainConfig?: ChainConfig // Vault destination chain config (used when enableLiberdusNetwork=false)
-  enableShardusCryptoAuth?: boolean
   enableLiberdusNetwork: boolean
   liberdusNetworkId: string
-  coordinatorUrl?: string // Coordinator server URL (default: http://127.0.0.1:8000)
   collectorHost?: string // Collector server URL (default: http://127.0.0.1:3035)
   proxyServerHost?: string // Proxy server URL (default: http://127.0.0.1:3030)
 }
@@ -84,11 +82,11 @@ interface TransactionQueueItem {
   txId: string
   type: 'tokenToCoin' | 'coinToToken' | 'vaultBridge'
   chainId: number // Add chainId to track which chain this transaction belongs to
-  txTimestamp?: number // Optional: populated when sourced from coordinator, used for queue ordering
+  txTimestamp: number // Populated from source-chain timestamps and used for queue ordering
 }
 
 interface TxQueueEntry {
-  txTimestamp: number // milliseconds, from coordinator (blockchain time * 1000)
+  txTimestamp: number // milliseconds, from source-chain event/block time
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'reverted'
 }
 
@@ -169,7 +167,7 @@ const operationFlag = process.argv[3]
 
 const verboseLogs = true
 // When true, transactions older than TX_CLEANUP_MAX_AGE (24h) received from the
-// coordinator are archived to the data store and failed-tx log and skipped instead
+// observer/local DB are archived to the data store and failed-tx log and skipped instead
 // of being queued.  Matches the txQueue eviction logic.
 const rejectOldTransactions = true
 
@@ -240,7 +238,6 @@ function getChainConfigById(chainId: number): ChainConfig | undefined {
   return chainConfigs.supportedChains[chainId.toString()]
 }
 
-const coordinatorUrl = process.env.COORDINATOR_URL || chainConfigs.coordinatorUrl;
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigs.collectorHost;
 const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServerHost;
 
@@ -397,112 +394,6 @@ const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRY
 crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
-const enableShardusCryptoAuth =
-  process.env.ENABLE_SHARDUS_CRYPTO_AUTH != null
-    ? process.env.ENABLE_SHARDUS_CRYPTO_AUTH === 'true'
-    : chainConfigs.enableShardusCryptoAuth === true
-const signerKeyStoreDir = path.join(resolveRepoRoot(), 'keystores')
-const signerKeyPairFilePathFromEnv = (process.env.TSS_SIGNER_KEYPAIR_FILE || '').trim()
-
-type SignerKeyPair = {
-  publicKey: string
-  secretKey: string
-}
-
-function isHexWithLength(value: string, length: number): boolean {
-  return value.length === length && /^[0-9a-fA-F]+$/.test(value)
-}
-
-function loadSignerKeyPairFromFile(filePath: string): SignerKeyPair | null {
-  if (!fs.existsSync(filePath)) return null
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as SignerKeyPair
-    const publicKey = typeof parsed.publicKey === 'string' ? parsed.publicKey.trim() : ''
-    const secretKey = typeof parsed.secretKey === 'string' ? parsed.secretKey.trim() : ''
-    if (
-      isHexWithLength(publicKey, 64) &&
-      isHexWithLength(secretKey, 128)
-    ) {
-      return {
-        publicKey,
-        secretKey,
-      }
-    }
-    console.error(
-      `[auth] Invalid signer keyPair format in ${filePath}: expected publicKey=64 hex and secretKey=128 hex`
-    )
-  } catch (error) {
-    console.error(`[auth] Failed to read signer keyPair file ${filePath}:`, error)
-  }
-  return null
-}
-
-function resolveSignerKeyPairFilePath(partyIdx: number): string {
-  if (signerKeyPairFilePathFromEnv) return signerKeyPairFilePathFromEnv
-  return path.join(signerKeyStoreDir, `tss_signer_keypair_party_${partyIdx}.json`)
-}
-
-function ensureSignerKeyPairTemplate(filePath: string): void {
-  if (fs.existsSync(filePath)) return
-  fs.mkdirSync(path.dirname(filePath), {recursive: true})
-  fs.writeFileSync(
-    filePath,
-    JSON.stringify(
-      {
-        publicKey: '',
-        secretKey: '',
-      },
-      null,
-      2
-    ) + '\n'
-  )
-  console.warn(`[auth] Created missing signer keyPair template at ${filePath}`)
-}
-
-let signerPublicKey = ''
-let signerSecretKey = ''
-
-if (enableShardusCryptoAuth) {
-  const shardusCryptoHashKey = cryptoInitKey
-  if (!shardusCryptoHashKey) {
-    throw new Error(
-      '[auth] SHARDUS_CRYPTO_HASH_KEY is required when ENABLE_SHARDUS_CRYPTO_AUTH=true'
-    )
-  }
-
-  const signerKeyPairFilePath = resolveSignerKeyPairFilePath(ourParty.idx)
-  const fileKeyPair = loadSignerKeyPairFromFile(signerKeyPairFilePath)
-  signerPublicKey =
-    (process.env.TSS_SIGNER_PUB_KEY || '').trim() || fileKeyPair?.publicKey || ''
-  signerSecretKey =
-    (process.env.TSS_SIGNER_SEC_KEY || '').trim() || fileKeyPair?.secretKey || ''
-
-  if (!signerPublicKey || !signerSecretKey) {
-    if (!signerKeyPairFilePathFromEnv) {
-      ensureSignerKeyPairTemplate(signerKeyPairFilePath)
-    }
-    throw new Error(
-      `[auth] TSS signer keyPair is required when ENABLE_SHARDUS_CRYPTO_AUTH=true (set TSS_SIGNER_PUB_KEY/TSS_SIGNER_SEC_KEY or fill ${signerKeyPairFilePath})`
-    )
-  }
-  if (!isHexWithLength(signerPublicKey, 64) || !isHexWithLength(signerSecretKey, 128)) {
-    throw new Error(
-      '[auth] Invalid TSS signer keyPair format: expected TSS_SIGNER_PUB_KEY=64 hex and TSS_SIGNER_SEC_KEY=128 hex'
-    )
-  }
-
-  console.log('[auth] Shardus Crypto request signing enabled for coordinator calls')
-} else {
-  console.log('[auth] Shardus Crypto request signing disabled (local development mode)')
-}
-
-function buildSignedCoordinatorRequest(payload: unknown): unknown {
-  if (!enableShardusCryptoAuth) return payload
-  const obj: any = { payload, ts: Date.now() }
-  crypto.signObj(obj, signerSecretKey, signerPublicKey)
-  return obj
-}
-
 const KEYSTORE_DIR = path.join(resolveRepoRoot(), 'keystores')
 
 if (!fs.existsSync(KEYSTORE_DIR)) {
@@ -512,9 +403,9 @@ if (!fs.existsSync(KEYSTORE_DIR)) {
 const pendingTxQueue: TransactionQueueItem[] = []
 const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const txQueueProcessingInterval = 10000
-const COORDINATOR_POLL_INTERVAL = 10 * 1000 // 10s
-const COORDINATOR_FINAL_STATUS_POLL_INTERVAL = 3 * 1000 // 3s
-const COORDINATOR_FINAL_STATUS_TIMEOUT_MS = 20 * 1000 // 20s
+const TX_POLL_INTERVAL = 10 * 1000 // 10s
+const FINAL_STATUS_POLL_INTERVAL = 3 * 1000 // 3s
+const FINAL_STATUS_TIMEOUT_MS = 20 * 1000 // 20s
 const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the bridgeInCooldown 1-minute)
 
 const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
@@ -536,11 +427,10 @@ const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTime
 
 // Global HTTP agents with keep-alive enabled.
 // keepAlive:      reuse sockets across requests and lets the OS send TCP probes
-//                 on idle connections — detects a dead coordinator faster than
-//                 waiting for the axios timeout (critical for network partitions).
+//                 on idle connections to avoid reconnect churn under steady polling.
 // keepAliveMsecs: initial delay before the OS starts probing (30 s is standard).
-// maxSockets:     cap concurrent connections per host; TSS party traffic is low
-//                 (periodic coordinator polls + occasional status POSTs) so 10 is ample.
+// maxSockets:     cap concurrent connections per host; TSS party traffic is low,
+//                 so 10 is ample.
 // maxFreeSockets: idle socket pool size per host — small pool is enough here.
 const httpAgent  = new http.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 10, maxFreeSockets: 5 })
 const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 10, maxFreeSockets: 5 })
@@ -945,9 +835,9 @@ async function validateTokenToCoin(tx: Transaction): Promise<boolean> {
 
 /**
  * Verifies a BRIDGE_IN transaction against the Liberdus receipt from the
- * collector API.  Checks that the tx succeeded, is a transfer, targets the
+ * collector API. Checks that the tx succeeded, is a transfer, targets the
  * correct bridge address for the destination chain, and that amount / sender
- * match what the coordinator recorded.
+ * match what the observer stored locally.
  */
 async function validateCoinToToken(tx: Transaction): Promise<boolean> {
   let receiptData: any
@@ -1122,9 +1012,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
 
     if (txAddedToQueue) {
       pendingTxQueue.sort((a, b) => {
-        const ta = a.txTimestamp ?? Infinity
-        const tb = b.txTimestamp ?? Infinity
-        return ta - tb
+        return a.txTimestamp - b.txTimestamp
       })
       saveQueueToFile(ourParty.idx)
     }
@@ -1169,7 +1057,7 @@ async function waitForLocalDBFinalStatus(
       const errorMessage = error instanceof Error ? error.message : String(error)
       console.warn(`[wait-final] Local DB status check failed for ${txId}, retrying... ${errorMessage}`)
     }
-    await delay_ms(COORDINATOR_FINAL_STATUS_POLL_INTERVAL)
+    await delay_ms(FINAL_STATUS_POLL_INTERVAL)
   }
 }
 
@@ -1708,11 +1596,7 @@ async function processTokenToCoin(
   }
   tx.chatId = calculateChatId(tx.from, tx.to)
   const currentCycleRecord = await getLatestCycleRecord()
-  let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
-  while (futureTimestamp < Date.now() + 1000 * 30) {
-    futureTimestamp += 10 * 1000
-  }
-  tx.timestamp = await confirmFutureTimestamp(txId, futureTimestamp)
+  tx.timestamp = deriveLocalFutureTimestamp(txId, txTimestampMs, currentCycleRecord)
   if (verboseLogs) {
     console.log('Current timestamp:', new Date(Date.now()))
     console.log('Future timestamp confirmed:', new Date(tx.timestamp))
@@ -2031,15 +1915,19 @@ function cleanupStuckTransactions() {
   }
 }
 
-async function confirmFutureTimestamp(operationId: string, timestamp: number): Promise<number> {
-  const res = await axios.post(
-    coordinatorUrl + '/future-timestamp',
-    buildSignedCoordinatorRequest({ key: operationId, value: timestamp }),
-  )
-  if (res.status !== 200) {
-    throw new Error('Failed to confirm future timestamp')
+function deriveLocalFutureTimestamp(
+  txId: string,
+  txTimestampMs: number,
+  currentCycleRecord: {start: number; duration: number},
+): number {
+  const stepMs = Math.max((currentCycleRecord.duration || 10) * 1000, 10_000)
+  let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
+  const minFuture = Math.max(txTimestampMs + 60_000, Date.now() + 30_000)
+  while (futureTimestamp < minFuture) {
+    futureTimestamp += stepMs
   }
-  return res.data.timestamp
+  const deterministicOffsetSteps = parseInt(normalizeTxId(txId).slice(-2), 16) % 3
+  return futureTimestamp + deterministicOffsetSteps * stepMs
 }
 
 async function getLiberdusReceipt(txId: string, maxRetries = 30): Promise<any> {
@@ -2257,7 +2145,7 @@ async function main(): Promise<void> {
       return
     }
 
-    // Verify with coordinator that this tx hasn't already been completed/is being processed
+    // Verify with the local DB that this tx hasn't already been completed/is being processed
     const preProcessStatus = reconcileTxStatusWithLocalDB(txId, 'pre-process')
     if (preProcessStatus != null) {
       removeFromPendingTxQueue(txId)
@@ -2265,10 +2153,10 @@ async function main(): Promise<void> {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       } else if (preProcessStatus === 'reverted') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
-        appendToFailedTxsLogs(validTx, 'already reverted on coordinator at pre-process')
+        appendToFailedTxsLogs(validTx, 'already reverted in local DB at pre-process')
       } else if (preProcessStatus === 'failed') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        appendToFailedTxsLogs(validTx, 'already failed on coordinator at pre-process')
+        appendToFailedTxsLogs(validTx, 'already failed in local DB at pre-process')
       }
       await refreshLastBridgeInTime(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       processingTransactionIds.delete(txId)
@@ -2364,7 +2252,7 @@ async function main(): Promise<void> {
 
         let finalStatus: TransactionStatus.COMPLETED | TransactionStatus.FAILED | TransactionStatus.REVERTED
         try {
-          finalStatus = await waitForLocalDBFinalStatus(validTx.txId, COORDINATOR_FINAL_STATUS_TIMEOUT_MS)
+          finalStatus = await waitForLocalDBFinalStatus(validTx.txId, FINAL_STATUS_TIMEOUT_MS)
         } catch (waitError) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
           appendToFailedTxsLogs(validTx, 'timeout waiting for local DB final status after enough-party')
@@ -2399,7 +2287,6 @@ async function main(): Promise<void> {
           global.gc()
         }
       } else if (error.message === 'Transaction processing timed out') {
-      if (error.message === 'Transaction processing timed out') {
         // Handle timeout errors more gracefully
         console.warn('⏱️ Transaction timed out, marking as failed and cleaning up:', validTx.txId)
         checkPostTransactionMemory(validTx.txId, 'timeout-error')
@@ -2450,7 +2337,7 @@ async function main(): Promise<void> {
       // Store full txData in processingTransactionIds for crash recovery
       processingTransactionIds.set(validTx.txId, validTx)
 
-      // // Report PROCESSING to coordinator for DB accuracy and crash recovery visibility.
+      // PROCESSING is tracked locally in txQueueMap / local DB for crash recovery visibility.
       // sendTxStatusToCoordinator(validTx.txId, TransactionStatus.PROCESSING, '')
 
       // Start processing the transaction (fire and forget)
@@ -2526,7 +2413,7 @@ async function main(): Promise<void> {
   startDriftResistantScheduler(cleanupStuckTransactions, 2 * 60 * 1000) // Every 2 minutes
 
   // Poll local DB for new pending transactions
-  startDriftResistantScheduler(pollPendingTransactionsFromLocalDB, COORDINATOR_POLL_INTERVAL)
+  startDriftResistantScheduler(pollPendingTransactionsFromLocalDB, TX_POLL_INTERVAL)
 }
 
 main()

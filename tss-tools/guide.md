@@ -12,9 +12,6 @@ cd /Users/user/Documents/MyProject/Shardus/Liberdus/tss-research/tss-signer
 
 # 1) Install Node dependencies
 npm install
-cd coordinator
-npm install
-cd ..
 
 
 # 2) Build the TypeScript party script
@@ -47,7 +44,7 @@ export BNB_TSS_CHANNEL_ID=<replace_with_channel_id>
 export BNB_TSS_CHANNEL_PASSWORD=1234567890
 
 # The long-lived tss-party signer derives a deterministic signing channel id from
-# each coordinator txId + txTimestamp. Keep BNB_TSS_CHANNEL_ID for manual native
+# each txId + txTimestamp. Keep BNB_TSS_CHANNEL_ID for manual native
 # keygen/regroup flows and ad-hoc direct tss signing.
 # The long-lived tss-party signer also derives a deterministic signing channel
 # password from channelId + SHARDUS_CRYPTO_HASH_KEY.
@@ -293,7 +290,7 @@ npm run tss-party -- 1
 # - BNB_TSS_CHANNEL_ID and BNB_TSS_CHANNEL_PASSWORD are still required for manual
 #   native keygen/regroup flows.
 # - The long-lived tss-party signer derives a deterministic signing channel id
-#   from each coordinator txId + txTimestamp, and a deterministic signing channel
+#   from each txId + txTimestamp, and a deterministic signing channel
 #   password from channelId + SHARDUS_CRYPTO_HASH_KEY.
 # - sign-ethereum-tx.ts can fall back to a derived channel id from the unsigned
 #   tx hash plus the current 30-minute time bucket, and a derived channel
