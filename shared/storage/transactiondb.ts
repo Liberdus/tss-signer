@@ -161,7 +161,10 @@ export function updateTransactionSource(
   }
   sql += " WHERE txId = @txId";
 
-  db.prepare(sql).run(params);
+  const result = db.prepare(sql).run(params);
+  if (result.changes === 0) {
+    console.warn(`[db] updateTransactionSource: txId ${txId} not found — no rows updated`);
+  }
 }
 
 /**
