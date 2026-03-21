@@ -1727,9 +1727,6 @@ async function main(): Promise<void> {
     const {txId} = validTx
     const startTime = Date.now()
 
-    // const getRemainingProcessingTimeMs = (): number =>
-    //   Math.max(0, TX_PROCESSING_TIMEOUT_MS - (Date.now() - startTime))
-    
     // Check if this transaction was already completed to avoid duplicate processing
     if (txQueueMap.get(txId)?.status === 'completed') {
       console.log(`⏩ Transaction ${txId} was recently completed, skipping duplicate processing`)
@@ -1900,7 +1897,6 @@ async function main(): Promise<void> {
         }
       }
       console.error('Error processing transaction:', error)
-      // console.log("Transaction re-added to queue:", validTx);
     } finally {
       // Remove from processing set when done (success or failure)
       const endTime = Date.now()
