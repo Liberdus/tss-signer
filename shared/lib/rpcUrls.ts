@@ -98,6 +98,15 @@ export function markUrlFailed(url: string, ttlMs?: number, reason?: string): voi
   console.warn(
     `[observer/rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}`
   );
+  // Prune expired entries to prevent unbounded growth. URLs removed from the
+  // active chainlist are never accessed again via pickAvailableUrlFromList, so
+  // their entries would otherwise accumulate across hourly refreshes.
+  if (urlBlacklistExpiry.size > 100) {
+    const now = Date.now();
+    for (const [u, exp] of urlBlacklistExpiry) {
+      if (now > exp) urlBlacklistExpiry.delete(u);
+    }
+  }
 }
 
 export function pickAvailableUrlFromList(urls: string[]): string {
