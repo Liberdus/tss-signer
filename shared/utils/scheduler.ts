@@ -30,7 +30,9 @@ export function startDriftResistantScheduler(
     const delay = targetTime.getTime() - now.getTime();
 
     setTimeout(() => {
-      fn();
+      Promise.resolve(fn()).catch((err) => {
+        console.error(`[scheduler] Unhandled error in ${fn.name}:`, err);
+      });
       scheduleNext();
     }, delay);
   }

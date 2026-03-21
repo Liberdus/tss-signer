@@ -42,7 +42,6 @@ export function buildChainProviderMap<T>(
 
 export function initializeChainRpcConfig(
   chains: ChainConfig[],
-  options: {} = {},
 ): InitializedRpcConfig {
   const chainIds = chains.map((config) => config.chainId)
   const rpcConfigByChainId: Record<string, {rpcUrl: string}> = {}
