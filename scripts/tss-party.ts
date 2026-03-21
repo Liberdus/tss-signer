@@ -1528,7 +1528,7 @@ async function getLiberdusReceipt(txId: string, maxRetries = 30): Promise<any> {
     await sleep(1000)
   }
   if (!response) return null
-  return response.data.transaction
+  return response.data?.transaction ?? null
 }
 
 async function getLiberdusAccountBalance(address: string): Promise<string | null> {
@@ -1540,7 +1540,9 @@ async function getLiberdusAccountBalance(address: string): Promise<string | null
     try {
       response = await axios.get(url)
       if (response && response.status === 200) {
-        balance = ethersUtils.formatEther('0x' + response.data.account?.data?.balance?.value)
+        const rawValue = response.data.account?.data?.balance?.value
+        if (rawValue == null) break
+        balance = ethersUtils.formatEther('0x' + rawValue)
         break
       }
     } catch (e) {
@@ -1557,7 +1559,7 @@ async function getLatestCycleRecord(): Promise<any> {
   const url = collectorHost + '/api/cycleinfo?count=1'
   const response = await axios.get(url)
   const {success, cycles} = response.data
-  if (success && Array.isArray(cycles) && cycles.length > 0) return cycles[0].cycleRecord
+  if (success && Array.isArray(cycles) && cycles.length > 0) return cycles[0].cycleRecord ?? null
   return null
 }
 
