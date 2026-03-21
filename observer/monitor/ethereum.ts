@@ -12,6 +12,9 @@ const BRIDGE_OUT_EVENT_ABI =
 const BRIDGE_IN_EVENT_ABI =
   "event BridgedIn(address indexed to, uint256 amount, uint256 indexed chainId, bytes32 indexed txId, uint256 timestamp)";
 
+const BRIDGE_OUT_IFACE = new ethers.utils.Interface([BRIDGE_OUT_EVENT_ABI]);
+const BRIDGE_IN_IFACE = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
+
 const INITIAL_BATCH_SIZE = 2000;
 const MIN_BATCH_SIZE = 100;
 const MAX_BATCH_SIZE = 5000;
@@ -85,7 +88,6 @@ export async function monitorEthereumBridgeOutQueryFilter(
       );
       console.log(`[observer/bridgeOut] Scanning ${chainName} blocks ${fromBlock}–${toBlock}`);
 
-      const bridgeInterface = new ethers.utils.Interface([BRIDGE_OUT_EVENT_ABI]);
       let batchSize = bridgeOutBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE;
       let cursor = fromBlock;
       let retryCount = 0;
@@ -101,7 +103,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
             async (provider) => {
               const contract = new ethers.Contract(
                 chainConfig.contractAddress,
-                bridgeInterface,
+                BRIDGE_OUT_IFACE,
                 provider
               );
               return contract.queryFilter(contract.filters.BridgedOut(), cursor, batchEnd);
@@ -280,7 +282,6 @@ export async function monitorEthereumBridgeInQueryFilter(
       );
       console.log(`[observer/bridgeIn] Scanning ${chainName} blocks ${fromBlock}–${toBlock}`);
 
-      const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
       let batchSize = bridgeInBatchSizes.get(chainId) ?? INITIAL_BATCH_SIZE;
       let cursor = fromBlock;
       let retryCount = 0;
@@ -296,7 +297,7 @@ export async function monitorEthereumBridgeInQueryFilter(
             async (provider) => {
               const contract = new ethers.Contract(
                 chainConfig.contractAddress,
-                bridgeInterface,
+                BRIDGE_IN_IFACE,
                 provider
               );
               return contract.queryFilter(contract.filters.BridgedIn(), cursor, batchEnd);
