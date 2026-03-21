@@ -333,13 +333,6 @@ const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the brid
 
 const TX_CLEANUP_MAX_AGE = 60 * 60 * 1000 // 1 hour for all statuses
 
-const TX_DATA_STORE_MAX_ENTRIES = 500
-const TX_DATA_STORE_MAX_FILES = 5
-// Compiled once at startup; ourParty.idx is known at module-init time
-const TX_DATA_STORE_FILE_PATTERN = new RegExp(`^tx_data_store_${ourParty.idx}_\\d+\\.ndjson$`)
-// Tracks the active tx_data_store file path in memory to avoid readdirSync on every append
-let txDataStoreCurrentFile: string | null = null
-let txDataStoreCurrentEntries = 0
 
 // Define maximum concurrent transactions
 const MAX_CONCURRENT_TXS = 1
@@ -423,47 +416,6 @@ function removeFromPendingTxQueue(txId: string): void {
 
 
 
-function appendToTxDataStore(txData: TransactionQueueItem): void {
-  try {
-    // On first call after startup, do a one-time scan to find the current file
-    if (txDataStoreCurrentFile === null) {
-      const existing = fs.readdirSync(KEYSTORE_DIR)
-        .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
-        .sort()
-      if (existing.length > 0) {
-        txDataStoreCurrentFile = path.join(KEYSTORE_DIR, existing[existing.length - 1])
-        const content = fs.readFileSync(txDataStoreCurrentFile, 'utf8')
-        txDataStoreCurrentEntries = content.split('\n').filter(Boolean).length
-      }
-    }
-
-    if (!txDataStoreCurrentFile || txDataStoreCurrentEntries >= TX_DATA_STORE_MAX_ENTRIES) {
-      // Roll to a new file; scan once here to prune oldest if over the limit
-      const allFiles = fs.readdirSync(KEYSTORE_DIR)
-        .filter(f => TX_DATA_STORE_FILE_PATTERN.test(f))
-        .sort()
-      while (allFiles.length >= TX_DATA_STORE_MAX_FILES) {
-        fs.unlinkSync(path.join(KEYSTORE_DIR, allFiles.shift()!))
-      }
-      txDataStoreCurrentFile = path.join(KEYSTORE_DIR, `tx_data_store_${ourParty.idx}_${Date.now()}.ndjson`)
-      txDataStoreCurrentEntries = 0
-    }
-
-    const line = JSON.stringify({
-      txId: txData.txId,
-      from: txData.from,
-      value: txData.value.toString(),
-      type: txData.type,
-      chainId: txData.chainId,
-      txTimestamp: txData.txTimestamp,
-      addedAt: Date.now(),
-    }) + '\n'
-    fs.appendFileSync(txDataStoreCurrentFile, line)
-    txDataStoreCurrentEntries += 1
-  } catch (err) {
-    console.error('[txDataStore] Failed to append tx data:', err)
-  }
-}
 
 function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): void {
   try {
@@ -621,8 +573,6 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       } else {
         txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'pending' })
       }
-      appendToTxDataStore(txData)
-
       if (verboseLogs) {
         const chainName = getChainConfigById(chainConfigs, tx.chainId)?.name || 'Unknown'
         console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from local DB (${chainName})`)
