@@ -1304,10 +1304,6 @@ async function retryOperation<T>(
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const result = await operation()
-      
-      // Clear any error references for garbage collection
-      lastError = null as any
-      
       return result
     } catch (error) {
       lastError = error as Error
