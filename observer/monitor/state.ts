@@ -1,5 +1,4 @@
 import fs from "fs";
-import fsPromises from "fs/promises";
 
 // ---------------------------------------------------------------------------
 // Monitor state — persisted to a per-party block_state file
@@ -45,13 +44,15 @@ export function initMonitorState(statePath: string): void {
   }
 }
 
-export async function saveMonitorState(): Promise<void> {
+// Synchronous write so concurrent calls from the BridgeOut/BridgeIn and Liberdus
+// schedulers never produce interleaved or stale snapshots on disk.
+export function saveMonitorState(): void {
   if (!monitorStatePath) {
     console.warn("[observer/monitor] saveMonitorState called before initMonitorState");
     return;
   }
   try {
-    await fsPromises.writeFile(monitorStatePath, JSON.stringify(monitorState), "utf8");
+    fs.writeFileSync(monitorStatePath, JSON.stringify(monitorState), "utf8");
   } catch (e) {
     console.error("[observer/monitor] Failed to save monitor state:", e);
   }

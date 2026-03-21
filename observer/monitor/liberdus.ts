@@ -115,7 +115,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
 
     if (maxTimestamp > monitorState.lastLiberdusTimestamp) {
       monitorState.lastLiberdusTimestamp = maxTimestamp;
-      await saveMonitorState();
+      saveMonitorState();
     }
   } catch (e) {
     console.error("[observer/liberdus] Error monitoring Liberdus:", e);

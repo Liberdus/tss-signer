@@ -212,7 +212,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
 
         cursor = batchEnd + 1;
         blockMap[chainKey] = batchEnd;
-        await saveMonitorState();
+        saveMonitorState();
 
         if (batchSize < MAX_BATCH_SIZE) {
           batchSize = Math.min(batchSize * 2, MAX_BATCH_SIZE);
@@ -398,7 +398,7 @@ export async function monitorEthereumBridgeInQueryFilter(
 
         cursor = batchEnd + 1;
         monitorState.bridgeInBlocks[chainId.toString()] = batchEnd;
-        await saveMonitorState();
+        saveMonitorState();
 
         if (batchSize < MAX_BATCH_SIZE) {
           batchSize = Math.min(batchSize * 2, MAX_BATCH_SIZE);
