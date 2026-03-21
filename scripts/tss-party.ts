@@ -331,7 +331,7 @@ const FINAL_STATUS_POLL_INTERVAL = 3 * 1000 // 3s
 const FINAL_STATUS_TIMEOUT_MS = 20 * 1000 // 20s
 const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the bridgeInCooldown 1-minute)
 
-const TX_CLEANUP_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours for all statuses
+const TX_CLEANUP_MAX_AGE = 60 * 60 * 1000 // 1 hour for all statuses
 
 const TX_DATA_STORE_MAX_ENTRIES = 500
 const TX_DATA_STORE_MAX_FILES = 5
@@ -1583,7 +1583,7 @@ function emergencyCleanup() {
   
   backupCount = pendingTxQueue.length
 
-  // Aggressive cleanup — remove anything older than 24h
+  // Aggressive cleanup — remove anything older than 1h
   for (const [txId, entry] of txQueueMap.entries()) {
     const txAge = entry.txTimestamp > 0 ? now - entry.txTimestamp : now - serverStartTime
     if (txAge > TX_CLEANUP_MAX_AGE) {
