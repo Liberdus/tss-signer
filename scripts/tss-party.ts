@@ -25,7 +25,6 @@ import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAUL
 import {initializeChainRpcConfig} from '../shared/chainRpc'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import * as TransactionDB from '../shared/storage/transactiondb'
-import {verifyTxOnChain} from '../observer/verification'
 
 const {BigNumber, utils: ethersUtils} = ethers
 
@@ -585,43 +584,15 @@ function getAxiosErrorMessage(error: unknown): string {
     : (error instanceof Error ? error.message : String(error))
 }
 
-async function updateTxStatusInLocalDB(
+function updateTxStatusInLocalDB(
   txId: string,
   status: TransactionStatus,
   receiptId: string,
   failedReason = '',
-): Promise<void> {
+): void {
   try {
     const normalizedTxId = normalizeTxId(txId)
     const normalizedReceiptId = receiptId ? normalizeTxId(receiptId) : receiptId
-
-    // For COMPLETED and REVERTED, verify on-chain before writing to DB.
-    // FAILED has no delivery tx to verify, so skip verification.
-    if (
-      status === TransactionStatus.COMPLETED ||
-      status === TransactionStatus.REVERTED
-    ) {
-      const tx = TransactionDB.getTransactionById(normalizedTxId)
-      if (!tx) {
-        console.error(`[updateTxStatus] Transaction ${normalizedTxId} not found in local DB`)
-        return
-      }
-      const isReverted = status === TransactionStatus.REVERTED
-      const verified = await verifyTxOnChain(
-        tx.type as unknown as TransactionDB.TransactionType,
-        tx.chainId,
-        normalizedReceiptId,
-        normalizedTxId,
-        isReverted,
-      )
-      if (!verified) {
-        console.error(
-          `[updateTxStatus] On-chain verification failed for ${normalizedTxId} (receiptId: ${normalizedReceiptId})`
-        )
-        return
-      }
-      console.log(`[updateTxStatus] On-chain verification passed for ${normalizedTxId}`)
-    }
 
     const result = TransactionDB.updateTransactionStatus(
       normalizedTxId,
