@@ -2,10 +2,18 @@ import { ethers } from "ethers";
 import { markUrlFailed, pickAvailableUrlFromList, shouldBlacklistForError } from "./rpcUrls";
 
 const { providers } = ethers;
-
 export interface GetProviderOptions {
   fallbackRpcUrl?: string;
   chainId?: number;
+}
+
+export interface WithRetryOptions extends GetProviderOptions {
+  maxRetries?: number;
+  logUrl?: boolean;
+}
+
+export interface WithCachedRetryOptions extends WithRetryOptions {
+  logCache?: boolean;
 }
 
 function normalizeProviderChainId(chainId: number): number {
@@ -16,7 +24,7 @@ function normalizeProviderChainId(chainId: number): number {
 
 export function getHttpProviderForChain(
   httpUrls: string[],
-  options: GetProviderOptions = {}
+  options: GetProviderOptions = {},
 ): ethers.providers.JsonRpcProvider {
   const url =
     httpUrls.length > 0 ? pickAvailableUrlFromList(httpUrls) : options.fallbackRpcUrl;
@@ -29,15 +37,11 @@ export function getHttpProviderForChain(
   return new providers.JsonRpcProvider(url, network);
 }
 
-export interface WithRetryOptions extends GetProviderOptions {
-  maxRetries?: number;
-  logUrl?: boolean;
-}
 
 export async function withHttpProviderRetry<T>(
   httpUrls: string[],
   fn: (provider: ethers.providers.JsonRpcProvider) => Promise<T>,
-  options: WithRetryOptions = {}
+  options: WithRetryOptions = {},
 ): Promise<T> {
   const maxRetries = Math.max(1, options.maxRetries ?? 3);
   const fallback = options.fallbackRpcUrl;
@@ -75,10 +79,6 @@ export function invalidateCachedProvider(chainId: number): void {
   providerCache.delete(chainId);
 }
 
-export interface WithCachedRetryOptions extends WithRetryOptions {
-  logCache?: boolean;
-}
-
 export async function withCachedHttpProvider<T>(
   chainId: number,
   httpUrls: string[],
@@ -98,8 +98,11 @@ export async function withCachedHttpProvider<T>(
       const provider = getHttpProviderForChain([url], { fallbackRpcUrl: fallback, chainId });
       entry = { provider, url };
       providerCache.set(chainId, entry);
-      if (options.logCache) console.log(`[httpProvider] New cached provider chain=${chainId} url=${url}`);
+      if (options.logCache) {
+        console.log(`[httpProvider] New cached provider chain=${chainId} url=${url}`);
+      }
     }
+
     if (options.logUrl && !options.logCache) {
       console.log(`[httpProvider] URL: ${entry.url}`);
     }
@@ -116,7 +119,7 @@ export async function withCachedHttpProvider<T>(
       if (options.logCache) {
         console.warn(
           `[httpProvider] Invalidated cached provider chain=${chainId}:`,
-          (error as Error)?.message ?? error
+          (error as Error)?.message ?? error,
         );
       }
       if (attempt < maxRetries - 1) continue;

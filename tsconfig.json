@@ -21,6 +21,6 @@
     "allowJs": false,
     "noEmitOnError": false
   },
-  "include": ["scripts/**/*.ts", "tss-tools/**/*.ts", "observer/src/**/*.ts"],
+  "include": ["scripts/**/*.ts", "tss-tools/**/*.ts", "observer/**/*.ts", "shared/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

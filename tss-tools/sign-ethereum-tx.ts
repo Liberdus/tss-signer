@@ -7,7 +7,7 @@ import {
   deriveDeterministicChannelId,
   deriveDeterministicChannelPassword,
 } from './lib/channelId'
-import {normalizeTxId} from '../scripts/transformTxId'
+import {normalizeTxId} from '../shared/utils/transformTxId'
 
 const SIGN_CHANNEL_TIME_BUCKET_MS = 30 * 60 * 1000
 

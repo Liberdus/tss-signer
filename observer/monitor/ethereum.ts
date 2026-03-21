@@ -1,14 +1,9 @@
 import { ethers } from "ethers";
-import * as TransactionDB from "../storage/transactiondb";
-import { toEthereumAddress } from "../utils/transformAddress";
-import { normalizeTxId } from "../utils/transformTxId";
-import {
-  chainConfigsRaw,
-  getChainConfigById,
-  invalidateChainHttpProvider,
-  monitoredChainIds,
-  withChainHttpProvider,
-} from "../config";
+import * as TransactionDB from "../../shared/storage/transactiondb";
+import { chainConfigsRaw, getChainConfigById } from "../../shared/config";
+import { toEthereumAddress } from "../../shared/utils/transformAddress";
+import { normalizeTxId } from "../../shared/utils/transformTxId";
+import { observerChainRpc } from "../chainRpc";
 import { monitorState, saveMonitorState } from "./state";
 
 const BRIDGE_OUT_EVENT_ABI =
@@ -44,7 +39,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
   requireFullSync = false
 ): Promise<boolean> {
   let allChainsFullyScanned = true;
-  for (const chainId of monitoredChainIds) {
+  for (const chainId of observerChainRpc.chainIds) {
     let chainFullyScanned = true;
     if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
@@ -61,7 +56,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
     isBridgeOutChainRunning.set(chainId, true);
     console.log(`[observer/bridgeOut] Starting scan for chain ${chainId}`);
 
-    const chainConfig = getChainConfigById(chainId);
+    const chainConfig = getChainConfigById(chainConfigsRaw, chainId);
     if (!chainConfig) { isBridgeOutChainRunning.set(chainId, false); continue; }
     const chainName = chainConfig.name;
 
@@ -71,7 +66,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
     const chainKey = chainId.toString();
 
     try {
-      const newestBlock = await withChainHttpProvider(
+      const newestBlock = await observerChainRpc.withChainHttpProvider(
         chainId,
         (provider) => provider.getBlockNumber(),
         { maxRetries: 3 }
@@ -101,7 +96,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
         let events: ethers.Event[];
 
         try {
-          events = await withChainHttpProvider(
+          events = await observerChainRpc.withChainHttpProvider(
             chainId,
             async (provider) => {
               const contract = new ethers.Contract(
@@ -144,7 +139,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
             console.error(
               `[observer/bridgeOut] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
             );
-            invalidateChainHttpProvider(chainId);
+            observerChainRpc.invalidateChainHttpProvider(chainId);
             if (requireFullSync) chainFullyScanned = false;
             break;
           }
@@ -245,7 +240,7 @@ export async function monitorEthereumBridgeInQueryFilter(
   requireFullSync = false
 ): Promise<boolean> {
   let allChainsFullyScanned = true;
-  for (const chainId of monitoredChainIds) {
+  for (const chainId of observerChainRpc.chainIds) {
     let chainFullyScanned = true;
     if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
@@ -260,12 +255,12 @@ export async function monitorEthereumBridgeInQueryFilter(
     isBridgeInChainRunning.set(chainId, true);
     console.log(`[observer/bridgeIn] Starting scan for chain ${chainId}`);
 
-    const chainConfig = getChainConfigById(chainId);
+    const chainConfig = getChainConfigById(chainConfigsRaw, chainId);
     if (!chainConfig) { isBridgeInChainRunning.set(chainId, false); continue; }
     const chainName = chainConfig.name;
 
     try {
-      const newestBlock = await withChainHttpProvider(
+      const newestBlock = await observerChainRpc.withChainHttpProvider(
         chainId,
         (provider) => provider.getBlockNumber(),
         { maxRetries: 3 }
@@ -296,7 +291,7 @@ export async function monitorEthereumBridgeInQueryFilter(
         let events: ethers.Event[];
 
         try {
-          events = await withChainHttpProvider(
+          events = await observerChainRpc.withChainHttpProvider(
             chainId,
             async (provider) => {
               const contract = new ethers.Contract(
@@ -339,7 +334,7 @@ export async function monitorEthereumBridgeInQueryFilter(
             console.error(
               `[observer/bridgeIn] Rate limit retries exhausted for ${chainName} at block ${cursor}, resuming next interval`
             );
-            invalidateChainHttpProvider(chainId);
+            observerChainRpc.invalidateChainHttpProvider(chainId);
             if (requireFullSync) chainFullyScanned = false;
             break;
           }

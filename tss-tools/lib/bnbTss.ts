@@ -3,6 +3,8 @@ import Module from 'node:module'
 import * as path from 'node:path'
 import {spawn, spawnSync} from 'node:child_process'
 import {ethers} from 'ethers'
+import {loadParamsConfig, ParamsConfig} from '../../shared/config'
+import {resolveProjectRoot} from '../../shared/utils/paths'
 
 export {}
 
@@ -30,11 +32,6 @@ type InitializedParty = {
   vaultName: string
   binary: string
   tssRoot: string
-}
-
-export type ParamsConfig = {
-  parties: number
-  threshold: number
 }
 
 type DerivedPubkeyAll = {
@@ -167,28 +164,11 @@ type LocalRegroupPeerAddrsOptions = {
   isNewMember?: boolean
 }
 
-export function resolveSignerRoot(startDir = __dirname): string {
-  let current = path.resolve(startDir);
-  while (true) {
-    if (
-      fs.existsSync(path.join(current, 'package.json')) &&
-      fs.existsSync(path.join(current, 'chain-config.json'))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      throw new Error('Unable to resolve tss-signer root');
-    }
-    current = parent;
-  }
-}
-
-export function resolveOverlayRoot(signerRoot = resolveSignerRoot()): string {
+export function resolveOverlayRoot(signerRoot = resolveProjectRoot()): string {
   return path.join(signerRoot, 'tss-tools');
 }
 
-export function resolveToolingRoot(signerRoot = resolveSignerRoot()): string {
+export function resolveToolingRoot(signerRoot = resolveProjectRoot()): string {
   return path.join(signerRoot, '.tooling');
 }
 
@@ -204,7 +184,7 @@ function hasDirectoryEntries(dirPath: string): boolean {
   }
 }
 
-export function resolveTssRoot(signerRoot = resolveSignerRoot()): string {
+export function resolveTssRoot(signerRoot = resolveProjectRoot()): string {
   const candidates = [];
   if (process.env.BNB_TSS_ROOT) {
     candidates.push(path.resolve(process.env.BNB_TSS_ROOT));
@@ -220,7 +200,7 @@ export function resolveTssRoot(signerRoot = resolveSignerRoot()): string {
   );
 }
 
-function resolvePatchPath(signerRoot = resolveSignerRoot()): string {
+function resolvePatchPath(signerRoot = resolveProjectRoot()): string {
   return path.join(resolveOverlayRoot(signerRoot), 'patches', 'tss-source.patch');
 }
 
@@ -387,7 +367,7 @@ function checkCommand(command: string, args: any[], options: ExecOptions = {}) {
   });
 }
 
-function ensurePatchApplied(signerRoot = resolveSignerRoot()): 'applied' | 'already_applied' {
+function ensurePatchApplied(signerRoot = resolveProjectRoot()): 'applied' | 'already_applied' {
   const tssRoot = resolveTssRoot(signerRoot);
   const patchPath = resolvePatchPath(signerRoot);
   if (!fs.existsSync(patchPath)) {
@@ -407,7 +387,7 @@ function ensurePatchApplied(signerRoot = resolveSignerRoot()): 'applied' | 'alre
 }
 
 export function buildTssBinary(options: any = {}): string {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const toolingRoot = resolveTssToolingRoot(tssRoot);
   const binaryPath = path.join(toolingRoot, 'bin', DEFAULT_BINARY_NAME);
@@ -450,7 +430,7 @@ export function buildTssBinary(options: any = {}): string {
 }
 
 export function ensureTssPrepared(options: any = {}): string {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binaryPath =
     options.binary ||
@@ -464,7 +444,7 @@ export function ensureTssPrepared(options: any = {}): string {
 }
 
 export function resolveBnbTssBinary(options: any = {}): string {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const toolingRoot = resolveTssToolingRoot(tssRoot);
   const candidates = [];
@@ -481,7 +461,7 @@ function getVaultName(explicitVaultName?: string): string {
   return explicitVaultName || process.env.BNB_TSS_VAULT_NAME || DEFAULT_VAULT_NAME;
 }
 
-function getHomeRoot(signerRoot = resolveSignerRoot(), explicitHomeRoot?: string): string {
+function getHomeRoot(signerRoot = resolveProjectRoot(), explicitHomeRoot?: string): string {
   return path.resolve(explicitHomeRoot || process.env.BNB_TSS_HOME_ROOT || path.join(signerRoot, 'keystores', 'bnbtss'));
 }
 
@@ -489,7 +469,7 @@ export function getPartyHome(options: any): string {
   if (options.homePath) {
     return path.resolve(options.homePath);
   }
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const homeRoot = getHomeRoot(signerRoot, options.homeRoot);
   return path.join(homeRoot, `party-${options.partyIdx}`, `chain-${options.chainId}`);
 }
@@ -631,8 +611,8 @@ export function deriveLocalRegroupPeerAddrs(options: LocalRegroupPeerAddrsOption
   return peerAddrs;
 }
 
-export function readParams(signerRoot = resolveSignerRoot()): ParamsConfig {
-  return JSON.parse(fs.readFileSync(path.join(signerRoot, 'params.json'), 'utf8')) as ParamsConfig;
+export function readParams(signerRoot = resolveProjectRoot()): ParamsConfig {
+  return loadParamsConfig(signerRoot)
 }
 
 function requireTypeScriptModule(filePath: string): any {
@@ -661,7 +641,7 @@ function requireTypeScriptModule(filePath: string): any {
 
 let committeeTopologyModule = null;
 
-function getCommitteeTopologyModule(signerRoot = resolveSignerRoot()): any {
+function getCommitteeTopologyModule(signerRoot = resolveProjectRoot()): any {
   if (committeeTopologyModule) {
     return committeeTopologyModule;
   }
@@ -794,7 +774,7 @@ export function buildSignArgs({
 }
 
 export function initParty(options: InitPartyOptions = {} as InitPartyOptions): InitializedParty {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const home = getPartyHome({...options, signerRoot});
@@ -831,7 +811,7 @@ export function initParty(options: InitPartyOptions = {} as InitPartyOptions): I
 }
 
 export function requireInitialized(options: BasePartyOptions = {} as BasePartyOptions): InitializedParty {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const home = getPartyHome({...options, signerRoot});
@@ -846,7 +826,7 @@ export function requireInitialized(options: BasePartyOptions = {} as BasePartyOp
 }
 
 export function derivePubkey(options: VerifyOptions = {} as VerifyOptions): DerivedPubkeyAll | string {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   ensureTssPrepared({signerRoot, tssRoot});
   const vaultPassword = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
@@ -879,13 +859,13 @@ export function derivePubkey(options: VerifyOptions = {} as VerifyOptions): Deri
 }
 
 export function deriveLocalPeerAddrs(options: KeygenOptions = {} as KeygenOptions): string[] {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const helper = getCommitteeTopologyModule(signerRoot);
   return helper.deriveLocalPeerAddrs(options);
 }
 
 export function describeVault(options: (BasePartyOptions & {initialized?: InitializedParty}) = {} as BasePartyOptions & {initialized?: InitializedParty}): string {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const {home, vaultName} =
@@ -909,7 +889,7 @@ export function describeVault(options: (BasePartyOptions & {initialized?: Initia
 }
 
 export function getCommitteeTopology(options: BasePartyOptions & {describeOutput?: string} = {} as BasePartyOptions & {describeOutput?: string}): CommitteeTopologySnapshot {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const helper = getCommitteeTopologyModule(signerRoot);
   return helper.extractCommitteeTopologyFromDescribeOutput(
     options.describeOutput || describeVault({...options, signerRoot}),
@@ -966,7 +946,7 @@ function deriveRecoveryId(digestHex: string, signature: {r: string; s: string}, 
 }
 
 export async function signDigest(options: SignEthereumTxOptions & {digest: string} = {} as SignEthereumTxOptions & {digest: string}): Promise<SignDigestResult> {
-  const signerRoot = options.signerRoot || resolveSignerRoot();
+  const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const {home, vaultName} = requireInitialized({...options, signerRoot, tssRoot, binary});

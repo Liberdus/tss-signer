@@ -166,7 +166,7 @@ Each party process runs with `--expose-gc` and a 2 GB memory limit. GC is forced
 | Path | Description |
 |---|---|
 | `scripts/tss-party.ts` | Main party orchestration (~3000 lines) |
-| `observer/src/index.ts` | Observer entry point |
+| `observer/index.ts` | Observer entry point |
 | `tss-tools/lib/bnbTss.ts` | Native BNB TSS runtime helper |
 | `chain-config.json` | Multi-chain RPC and contract configuration |
 | `params.json` | TSS parameters (parties, threshold) |

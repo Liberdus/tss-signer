@@ -1,9 +1,9 @@
 import { ethers } from "ethers";
 import axios from "axios";
-import * as TransactionDB from "../storage/transactiondb";
-import { toEthereumAddress } from "../utils/transformAddress";
-import { normalizeTxId } from "../utils/transformTxId";
-import { chainConfigsRaw } from "../config";
+import * as TransactionDB from "../../shared/storage/transactiondb";
+import { chainConfigsRaw } from "../../shared/config";
+import { toEthereumAddress } from "../../shared/utils/transformAddress";
+import { normalizeTxId } from "../../shared/utils/transformTxId";
 import { monitorState, saveMonitorState } from "./state";
 
 type ParsedBridgeInTx = {

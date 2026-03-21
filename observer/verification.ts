@@ -1,13 +1,9 @@
 import axios from "axios";
 import { ethers } from "ethers";
-import * as TransactionDB from "./storage/transactiondb";
-import {
-  chainConfigsRaw,
-  getChainConfigById,
-  hasChainHttpProviderConfig,
-  withChainHttpProvider,
-} from "./config";
-import { normalizeTxId } from "./utils/transformTxId";
+import * as TransactionDB from "../shared/storage/transactiondb";
+import { chainConfigsRaw, getChainConfigById } from "../shared/config";
+import { observerChainRpc } from "./chainRpc";
+import { normalizeTxId } from "../shared/utils/transformTxId";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000;
@@ -84,7 +80,7 @@ export async function verifyTxOnChain(
           ? chainConfigsRaw.secondaryChainConfig!.chainId
           : chainId;
 
-      if (!hasChainHttpProviderConfig(targetChainId)) {
+      if (!observerChainRpc.hasChainHttpProviderConfig(targetChainId)) {
         console.error(
           `[verifyTxOnChain] No HTTP provider configured for chainId ${targetChainId}`
         );
@@ -93,7 +89,7 @@ export async function verifyTxOnChain(
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         try {
-          const receipt = await withChainHttpProvider(
+          const receipt = await observerChainRpc.withChainHttpProvider(
             targetChainId,
             (provider) => provider.getTransactionReceipt("0x" + receiptId),
             { maxRetries: 1 }
@@ -123,7 +119,7 @@ export async function verifyTxOnChain(
             return false;
           }
 
-          const chainConfig = getChainConfigById(targetChainId);
+          const chainConfig = getChainConfigById(chainConfigsRaw, targetChainId);
           if (!chainConfig) return false;
 
           const contractAddress = chainConfig.contractAddress.toLowerCase();

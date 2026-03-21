@@ -7,14 +7,25 @@ import http from 'http'
 import https from 'https'
 import * as crypto from '@shardus/crypto-utils'
 import * as readline from 'readline-sync'
-import {toEthereumAddress, toShardusAddress} from './transformAddress'
-import {isNormalizedTxId, normalizeTxId} from './transformTxId'
+import {
+  ChainConfig,
+  ChainConfigs,
+  chainConfigsRaw,
+  getConfiguredChains,
+  getEffectiveChainIds,
+  getChainConfigById,
+  ParamsConfig,
+  paramsConfigRaw,
+} from '../shared/config'
+import {resolveProjectRoot} from '../shared/utils/paths'
+import {startDriftResistantScheduler} from '../shared/utils/scheduler'
+import {toEthereumAddress, toShardusAddress} from '../shared/utils/transformAddress'
+import {isNormalizedTxId, normalizeTxId} from '../shared/utils/transformTxId'
 import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
-import * as rpcUrls from './lib/rpcUrls'
-import {getHttpProviderForChain} from './lib/httpProviderHelper'
+import {initializeChainRpcConfig} from '../shared/chainRpc'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
-import * as TransactionDB from '../observer/src/storage/transactiondb'
-import {verifyTxOnChain} from '../observer/src/verification'
+import * as TransactionDB from '../shared/storage/transactiondb'
+import {verifyTxOnChain} from '../observer/verification'
 
 const {BigNumber, utils: ethersUtils} = ethers
 
@@ -36,37 +47,7 @@ const {BigNumber, utils: ethersUtils} = ethers
 
 const {stringify, parse} = require(path.join(process.cwd(), 'external/stringify-shardus'))
 
-interface Params {
-  threshold: number
-  parties: number
-}
-
-interface ChainConfig {
-  name: string
-  chainId: number
-  rpcUrl: string
-  contractAddress: string
-  tssSenderAddress?: string
-  bridgeAddress?: string
-  gasConfig?: {
-    gasLimit: number
-    gasPriceTiers: number[]
-  }
-  deploymentBlock: number // Block number when the contract was deployed (used as starting point for historical scan)
-}
-
-interface ChainConfigs {
-  supportedChains: Record<string, ChainConfig>
-  vaultChain?: ChainConfig      // Vault source chain config (used when enableLiberdusNetwork=false)
-  secondaryChainConfig?: ChainConfig // Vault destination chain config (used when enableLiberdusNetwork=false)
-  enableLiberdusNetwork: boolean
-  liberdusNetworkId: string
-  collectorHost?: string // Collector server URL (default: http://127.0.0.1:3035)
-  proxyServerHost?: string // Proxy server URL (default: http://127.0.0.1:3030)
-}
-
-interface ChainProviders {
-  provider: ethers.providers.JsonRpcProvider
+interface ChainState {
   config: ChainConfig
   contract?: ethers.Contract
   // Bridge contract state (cooldown, max amount, last bridge-in time)
@@ -173,35 +154,8 @@ const rejectOldTransactions = true
 
 const serverStartTime = Date.now()
 
-let params: Params = loadParams()
-let chainConfigs: ChainConfigs = loadChainConfigs()
-
-// Vault mode: require vaultChain and secondaryChainConfig with distinct chainIds
-if (!chainConfigs.enableLiberdusNetwork) {
-  if (!chainConfigs.vaultChain || !chainConfigs.secondaryChainConfig) {
-    console.error('vaultChain and secondaryChainConfig are required when enableLiberdusNetwork is false')
-    process.exit(1)
-  }
-  if (chainConfigs.vaultChain.chainId === chainConfigs.secondaryChainConfig.chainId) {
-    console.error('vaultChain and secondaryChainConfig must have different chainIds')
-    process.exit(1)
-  }
-}
-
-// All chains except vaultChain must have tssSenderAddress, bridgeAddress, and gasConfig
-function requireFullChainConfig(config: ChainConfig, label: string): void {
-  if (!config.tssSenderAddress || !config.bridgeAddress || !config.gasConfig) {
-    console.error(`${label} (chainId ${config.chainId}) is missing tssSenderAddress, bridgeAddress, or gasConfig`)
-    process.exit(1)
-  }
-}
-if (chainConfigs.enableLiberdusNetwork) {
-  for (const [chainId, config] of Object.entries(chainConfigs.supportedChains)) {
-    requireFullChainConfig(config, `supportedChains[${chainId}]`)
-  }
-} else {
-  requireFullChainConfig(chainConfigs.secondaryChainConfig!, 'secondaryChainConfig')
-}
+const params: ParamsConfig = paramsConfigRaw
+const chainConfigs: ChainConfigs = chainConfigsRaw
 
 let t = params.threshold
 let n = params.parties
@@ -223,21 +177,6 @@ const BRIDGE_OUT_EVENT_ABI =
   'event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)'
 const BRIDGE_OUT_IFACE = new ethersUtils.Interface([BRIDGE_OUT_EVENT_ABI])
 
-/** Returns chain IDs active in the current mode (vault mode or Liberdus mode) */
-function getEffectiveChainIds(): number[] {
-  if (chainConfigs.enableLiberdusNetwork) {
-    return Object.keys(chainConfigs.supportedChains).map(Number)
-  }
-  return [chainConfigs.secondaryChainConfig!.chainId]
-}
-
-/** Looks up a ChainConfig by chainId across vaultChain, secondaryChainConfig, and supportedChains */
-function getChainConfigById(chainId: number): ChainConfig | undefined {
-  if (chainConfigs.vaultChain?.chainId === chainId) return chainConfigs.vaultChain
-  if (chainConfigs.secondaryChainConfig?.chainId === chainId) return chainConfigs.secondaryChainConfig
-  return chainConfigs.supportedChains[chainId.toString()]
-}
-
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigs.collectorHost;
 const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServerHost;
 
@@ -251,107 +190,101 @@ const observerUrl = `http://127.0.0.1:${8100 + ourParty.idx}`
 const dbPath = path.resolve(process.cwd(), 'db', `transactions-${ourParty.idx}.sqlite`)
 
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
-const chainsToInit: ChainConfig[] = chainConfigs.enableLiberdusNetwork
-  ? Object.values(chainConfigs.supportedChains)
-  : [chainConfigs.vaultChain!, chainConfigs.secondaryChainConfig!]
+const chainsToInit: ChainConfig[] = getConfiguredChains(chainConfigs)
+const chainRpcConfig = initializeChainRpcConfig(chainsToInit)
 
-const rpcConfigByChainId: Record<string, {rpcUrl: string}> = {}
-for (const config of chainsToInit) {
-  rpcConfigByChainId[config.chainId.toString()] = {
-    rpcUrl: config.rpcUrl,
-  }
-}
-rpcUrls.initFromConfig(rpcConfigByChainId)
-rpcUrls.startHourlyChainlistFetch(chainsToInit.map((c) => c.chainId))
-
-// Initialize providers for all supported chains
-const chainProviders: Map<number, ChainProviders> = new Map()
-
-for (const config of chainsToInit) {
-  const chainId = config.chainId
-  const fallbackRpcUrl = config.rpcUrl
-
-  const provider = getHttpProviderForChain(rpcUrls.getHttpUrls(chainId), {
-    fallbackRpcUrl,
-    chainId,
-  })
-
-  chainProviders.set(chainId, {
-    provider,
-    config,
-    bridgeInCooldown: 0,
-    maxBridgeInAmount: ethers.BigNumber.from(0),
-    lastBridgeInTime: 0,
-  })
-
-  console.log(`HTTP provider initialized for ${config.name} (Chain ID: ${chainId})`)
-}
+const chainStateByChainId: Map<number, ChainState> = new Map(
+  chainsToInit.map((config) => [
+    config.chainId,
+    {
+      config,
+      bridgeInCooldown: 0,
+      maxBridgeInAmount: ethers.BigNumber.from(0),
+      lastBridgeInTime: 0,
+    },
+  ]),
+)
 
 type FetchBridgeStateFields = 'all' | 'bridgeInCooldown' | 'maxBridgeInAmount' | 'lastBridgeInTime'
 
 // Fetch bridge contract state for a chain. Pass fields to limit which values are fetched.
 async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields = 'all'): Promise<void> {
-  const chainProvider = chainProviders.get(chainId)
-  if (!chainProvider) return
+  const chainState = chainStateByChainId.get(chainId)
+  if (!chainState) return
 
-  const contractAddr = chainProvider.config.contractAddress
+  const contractAddr = chainState.config.contractAddress
   try {
     if (fields === 'all') {
       const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
-        chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown') }),
-        chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount') }),
-        chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime') }),
+        chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
+          provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown')}),
+        ),
+        chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
+          provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount')}),
+        ),
+        chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
+          provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime')}),
+        ),
       ])
-      chainProvider.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
-      chainProvider.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
-      chainProvider.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
-      const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
-        ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
+      chainState.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+      chainState.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
+      chainState.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+      const lastBridgeInStr = chainState.lastBridgeInTime > 0
+        ? new Date(chainState.lastBridgeInTime * 1000).toISOString()
         : 'never'
-      const maxAmountStr = chainProvider.maxBridgeInAmount.isZero()
+      const maxAmountStr = chainState.maxBridgeInAmount.isZero()
         ? 'unlimited'
-        : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
+        : `${ethersUtils.formatEther(chainState.maxBridgeInAmount)} ETH`
       console.log(
-        `Bridge state fetched for ${chainProvider.config.name}: ` +
-        `cooldown=${chainProvider.bridgeInCooldown}s, ` +
+        `Bridge state fetched for ${chainState.config.name}: ` +
+        `cooldown=${chainState.bridgeInCooldown}s, ` +
         `maxBridgeInAmount=${maxAmountStr}, ` +
         `lastBridgeInTime=${lastBridgeInStr}`
       )
     } else if (fields === 'lastBridgeInTime') {
-      const lastTimeRaw = await chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime') })
-      chainProvider.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
-      const lastBridgeInStr = chainProvider.lastBridgeInTime > 0
-        ? new Date(chainProvider.lastBridgeInTime * 1000).toISOString()
+      const lastTimeRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
+        provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime')}),
+      )
+      chainState.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+      const lastBridgeInStr = chainState.lastBridgeInTime > 0
+        ? new Date(chainState.lastBridgeInTime * 1000).toISOString()
         : 'never'
-      console.log(`Bridge lastBridgeInTime fetched for ${chainProvider.config.name}: ${lastBridgeInStr}`)
+      console.log(`Bridge lastBridgeInTime fetched for ${chainState.config.name}: ${lastBridgeInStr}`)
     } else if (fields === 'bridgeInCooldown') {
-      const cooldownRaw = await chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown') })
-      chainProvider.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
-      console.log(`Bridge bridgeInCooldown fetched for ${chainProvider.config.name}: ${chainProvider.bridgeInCooldown}s`)
+      const cooldownRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
+        provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown')}),
+      )
+      chainState.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+      console.log(`Bridge bridgeInCooldown fetched for ${chainState.config.name}: ${chainState.bridgeInCooldown}s`)
     } else if (fields === 'maxBridgeInAmount') {
-      const maxAmountRaw = await chainProvider.provider.call({ to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount') })
-      chainProvider.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
-      const maxAmountStr = chainProvider.maxBridgeInAmount.isZero()
+      const maxAmountRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
+        provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount')}),
+      )
+      chainState.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
+      const maxAmountStr = chainState.maxBridgeInAmount.isZero()
         ? 'unlimited'
-        : `${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} ETH`
-      console.log(`Bridge maxBridgeInAmount fetched for ${chainProvider.config.name}: ${maxAmountStr}`)
+        : `${ethersUtils.formatEther(chainState.maxBridgeInAmount)} ETH`
+      console.log(`Bridge maxBridgeInAmount fetched for ${chainState.config.name}: ${maxAmountStr}`)
     }
   } catch (error) {
     console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
   }
 }
 
-async function waitForBridgeCooldown(chainProvider: ChainProviders, chainName: string): Promise<void> {
-  if (chainProvider.bridgeInCooldown <= 0 || chainProvider.lastBridgeInTime <= 0) return
-  const latestBlock = await chainProvider.provider.getBlock('latest')
+async function waitForBridgeCooldown(chainState: ChainState, chainName: string): Promise<void> {
+  if (chainState.bridgeInCooldown <= 0 || chainState.lastBridgeInTime <= 0) return
+  const latestBlock = await chainRpcConfig.withChainHttpProvider(
+    chainState.config.chainId,
+    (provider) => provider.getBlock('latest'),
+  )
   const now = latestBlock.timestamp
-  const cooldownEnd = chainProvider.lastBridgeInTime + chainProvider.bridgeInCooldown
+  const cooldownEnd = chainState.lastBridgeInTime + chainState.bridgeInCooldown
   if (now < cooldownEnd) {
     const waitSec = cooldownEnd - now
     console.log(
       `Waiting ${waitSec}s for bridge-in cooldown on ${chainName}: ` +
-      `lastBridgeInTime=${new Date(chainProvider.lastBridgeInTime * 1000).toISOString()}, ` +
-      `cooldown=${chainProvider.bridgeInCooldown}s, ` +
+      `lastBridgeInTime=${new Date(chainState.lastBridgeInTime * 1000).toISOString()}, ` +
+      `cooldown=${chainState.bridgeInCooldown}s, ` +
       `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
       `chainNow=${new Date(now * 1000).toISOString()}`
     )
@@ -360,14 +293,14 @@ async function waitForBridgeCooldown(chainProvider: ChainProviders, chainName: s
 }
 
 function checkMaxBridgeAmount(
-  chainProvider: ChainProviders,
+  chainState: ChainState,
   value: ethers.BigNumber,
   txId: string,
   chainName: string,
 ): boolean {
-  if (chainProvider.maxBridgeInAmount.isZero()) return true
-  if (value.lte(chainProvider.maxBridgeInAmount)) return true
-  const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainProvider.maxBridgeInAmount)} on ${chainName}`
+  if (chainState.maxBridgeInAmount.isZero()) return true
+  if (value.lte(chainState.maxBridgeInAmount)) return true
+  const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${chainName}`
   console.error(reason)
   updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', reason)
   // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
@@ -382,7 +315,7 @@ async function refreshBridgeStateOnRevert(reason: string | undefined, chainId: n
 }
 
 // Fetch bridge state for all chains on startup (skip vault source chain — we only call bridgeIn on the destination)
-for (const [chainId] of chainProviders.entries()) {
+for (const [chainId] of chainStateByChainId.entries()) {
   if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.vaultChain!.chainId) continue
   console.log(`Fetching bridge state for chain ${chainId}`)
   fetchBridgeState(chainId).catch((err) =>
@@ -394,7 +327,7 @@ const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRY
 crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
-const KEYSTORE_DIR = path.join(resolveRepoRoot(), 'keystores')
+const KEYSTORE_DIR = path.join(resolveProjectRoot(), 'keystores')
 
 if (!fs.existsSync(KEYSTORE_DIR)) {
   fs.mkdirSync(KEYSTORE_DIR, {recursive: true})
@@ -496,49 +429,6 @@ function cleanupOldTransactions() {
 function removeFromPendingTxQueue(txId: string): void {
   const idx = pendingTxQueue.findIndex(t => t.txId === txId)
   if (idx !== -1) pendingTxQueue.splice(idx, 1)
-}
-
-function resolveRepoRoot(): string {
-  const candidates = [
-    path.resolve(__dirname, '..'),
-    path.resolve(__dirname, '../..'),
-  ]
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'keystores'))) {
-      return candidate
-    }
-  }
-
-  for (const candidate of candidates) {
-    if (
-      fs.existsSync(path.join(candidate, 'params.json')) ||
-      fs.existsSync(path.join(candidate, 'chain-config.json'))
-    ) {
-      return candidate
-    }
-  }
-
-  throw new Error(`Could not resolve repo root. Tried: ${candidates.join(', ')}`)
-}
-
-function resolveRepoFile(fileName: string): string {
-  const filePath = path.join(resolveRepoRoot(), fileName)
-  if (fs.existsSync(filePath)) {
-    return filePath
-  }
-
-  throw new Error(`Could not find ${fileName} at ${filePath}`)
-}
-
-function loadParams(): Params {
-  const data = fs.readFileSync(resolveRepoFile('params.json'), 'utf8')
-  return JSON.parse(data)
-}
-
-function loadChainConfigs(): ChainConfigs {
-  const data = fs.readFileSync(resolveRepoFile('chain-config.json'), 'utf8')
-  return JSON.parse(data)
 }
 
 const saveQueueToFile = (partyIdx: number): void => {
@@ -764,8 +654,8 @@ async function updateTxStatusInLocalDB(
  * event fields (chainId, amount, targetAddress).
  */
 async function validateTokenToCoin(tx: Transaction): Promise<boolean> {
-  const chainProvider = chainProviders.get(tx.chainId)
-  if (!chainProvider) {
+  const chainState = chainStateByChainId.get(tx.chainId)
+  if (!chainState) {
     console.warn(`[validateTokenToCoin] No chain provider for chainId ${tx.chainId}, skipping tx ${tx.txId}`)
     return false
   }
@@ -773,7 +663,11 @@ async function validateTokenToCoin(tx: Transaction): Promise<boolean> {
   let receipt: ethers.providers.TransactionReceipt | null
   try {
     const txHash = tx.txId.startsWith('0x') ? tx.txId : '0x' + tx.txId
-    receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+    receipt = await chainRpcConfig.withChainHttpProvider(
+      tx.chainId,
+      (provider) => provider.getTransactionReceipt(txHash),
+      {maxRetries: 1},
+    )
   } catch (err) {
     console.warn(`[validateTokenToCoin] Failed to fetch receipt for ${tx.txId}:`, err)
     return false
@@ -788,7 +682,7 @@ async function validateTokenToCoin(tx: Transaction): Promise<boolean> {
     return false
   }
 
-  const expectedContract = chainProvider.config.contractAddress.toLowerCase()
+  const expectedContract = chainState.config.contractAddress.toLowerCase()
   if (receipt.to?.toLowerCase() !== expectedContract) {
     console.warn(`[validateTokenToCoin] tx ${tx.txId} recipient ${receipt.to} does not match bridge contract ${expectedContract}`)
     return false
@@ -922,7 +816,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
         console.warn(`[poll] Skipping tx ${tx.txId} — missing required fields (txTimestamp/sender/value/chainId)`, tx)
         continue
       }
-      if (!getChainConfigById(tx.chainId)) {
+      if (!getChainConfigById(chainConfigs, tx.chainId)) {
         console.warn(`[poll] Skipping tx ${tx.txId} — unknown chainId ${tx.chainId}`)
         continue
       }
@@ -1004,7 +898,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       appendToTxDataStore(txData)
 
       if (verboseLogs) {
-        const chainName = getChainConfigById(tx.chainId)?.name || 'Unknown'
+        const chainName = getChainConfigById(chainConfigs, tx.chainId)?.name || 'Unknown'
         console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from local DB (${chainName})`)
       }
       txAddedToQueue = true
@@ -1100,7 +994,7 @@ function reconcileTxStatusWithLocalDB(
 function getBnbTssExpectedAddresses(): Record<number, string> {
   const expected: Record<number, string> = {}
   for (const chainId of getEffectiveChainIds()) {
-    const config = getChainConfigById(chainId)
+    const config = getChainConfigById(chainConfigs, chainId)
     if (config?.tssSenderAddress) {
       expected[chainId] = config.tssSenderAddress
     }
@@ -1231,13 +1125,16 @@ async function signLiberdusTransaction(
 }
 
 async function injectEthereumTx(
+  chainId: number,
   txHash: string,
   signedTx: string,
-  targetProvider: ethers.providers.JsonRpcProvider,
 ): Promise<{ success: boolean; reason?: string }> {
-  const providerToUse = targetProvider
   try {
-    const txResponse = await providerToUse.sendTransaction(signedTx)
+    const txResponse = await chainRpcConfig.withChainHttpProvider(
+      chainId,
+      (provider) => provider.sendTransaction(signedTx),
+      {maxRetries: 1},
+    )
     const receipt = await txResponse.wait()
     console.log('Receipt', txHash, receipt)
     if (receipt.status !== 1) throw new Error('Transaction failed')
@@ -1293,31 +1190,35 @@ async function processCoinToToken(
     targetChainId,
   })
 
-  const chainProvider = chainProviders.get(targetChainId)
-  if (!chainProvider) {
+  const chainState = chainStateByChainId.get(targetChainId)
+  if (!chainState) {
     console.error(`[ProcessCoinToToken] Chain provider not found for chainId ${targetChainId}`)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `chain provider not found for chainId ${targetChainId}`)
     return 'failed'
   }
 
-  const targetChainName = chainProvider.config.name
+  const targetChainName = chainState.config.name
   console.log(`Processing transaction on ${targetChainName}`)
 
-  await waitForBridgeCooldown(chainProvider, targetChainName)
-  if (!checkMaxBridgeAmount(chainProvider, value, txId, targetChainName)) {
+  await waitForBridgeCooldown(chainState, targetChainName)
+  if (!checkMaxBridgeAmount(chainState, value, txId, targetChainName)) {
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
     return 'failed'
   }
 
-  const senderNonce = await chainProvider.provider.getTransactionCount(
-    chainProvider.config.tssSenderAddress,
+  const senderNonce = await chainRpcConfig.withChainHttpProvider(
+    targetChainId,
+    (provider) => provider.getTransactionCount(chainState.config.tssSenderAddress),
   )
-  let currentGasPrice = await chainProvider.provider.getGasPrice()
+  let currentGasPrice = await chainRpcConfig.withChainHttpProvider(
+    targetChainId,
+    (provider) => provider.getGasPrice(),
+  )
 
   // Apply gas price logic based on chain configuration
-  const gasTiers = chainProvider.config.gasConfig.gasPriceTiers
+  const gasTiers = chainState.config.gasConfig.gasPriceTiers
   for (let i = 0; i < gasTiers.length; i++) {
     const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
     if (currentGasPrice.lt(tierGwei)) {
@@ -1333,13 +1234,13 @@ async function processCoinToToken(
     targetChainId,
     txIdBytes32,
   ])
-  const bridgeInContractAddress = chainProvider.config.contractAddress
+  const bridgeInContractAddress = chainState.config.contractAddress
   const tx = {
     to: bridgeInContractAddress,
     value: 0,
     data,
     nonce: senderNonce,
-    gasLimit: chainProvider.config.gasConfig.gasLimit,
+    gasLimit: chainState.config.gasConfig.gasLimit,
     gasPrice: currentGasPrice,
     chainId: targetChainId === 31338 ? 31337 : targetChainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
   }
@@ -1366,7 +1267,7 @@ async function processCoinToToken(
   let res: { success: boolean; reason?: string }
   // Retry injection with linear delay progression
   try {
-    res = await retryOperation(() => injectEthereumTx(txHash, signedTx, chainProvider.provider), {
+    res = await retryOperation(() => injectEthereumTx(targetChainId, txHash, signedTx), {
       txId: txHash,
       maxRetries: 3,
     })
@@ -1378,19 +1279,30 @@ async function processCoinToToken(
     await refreshBridgeStateOnRevert(reason, targetChainId)
   }
 
-  let receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+  let receipt = await chainRpcConfig.withChainHttpProvider(
+    targetChainId,
+    (provider) => provider.getTransactionReceipt(txHash),
+    {maxRetries: 1},
+  )
   if (!receipt) {
     // Tx may have been broadcast but not yet mined — retry once after a short delay
     await delay_ms(3000)
-    receipt = await chainProvider.provider.getTransactionReceipt(txHash)
+    receipt = await chainRpcConfig.withChainHttpProvider(
+      targetChainId,
+      (provider) => provider.getTransactionReceipt(txHash),
+      {maxRetries: 1},
+    )
   }
   if (receipt) {
     if (receipt.status === 1) {
       console.log(
         `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
-      const block = await chainProvider.provider.getBlock(receipt.blockNumber)
-      chainProvider.lastBridgeInTime = block.timestamp
+      const block = await chainRpcConfig.withChainHttpProvider(
+        targetChainId,
+        (provider) => provider.getBlock(receipt.blockNumber),
+      )
+      chainState.lastBridgeInTime = block.timestamp
       updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash)
       return 'completed'
     } else {
@@ -1432,40 +1344,44 @@ async function processVaultBridge(
     destinationChainId,
   })
 
-  const sourceChainProvider = chainProviders.get(sourceChainId)
-  if (!sourceChainProvider) {
+  const sourceChainState = chainStateByChainId.get(sourceChainId)
+  if (!sourceChainState) {
     console.error(`Source chain provider not found for chainId ${sourceChainId}`)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `source chain provider not found for chainId ${sourceChainId}`)
     return 'failed'
   }
 
-  const destChainProvider = chainProviders.get(destinationChainId)
-  if (!destChainProvider) {
+  const destChainState = chainStateByChainId.get(destinationChainId)
+  if (!destChainState) {
     console.error(`Destination chain provider not found for chainId ${destinationChainId}`)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `destination chain provider not found for chainId ${destinationChainId}`)
     return 'failed'
   }
 
-  const sourceChainName = sourceChainProvider.config.name
-  const destChainName = destChainProvider.config.name
+  const sourceChainName = sourceChainState.config.name
+  const destChainName = destChainState.config.name
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
-  await waitForBridgeCooldown(destChainProvider, destChainName)
-  if (!checkMaxBridgeAmount(destChainProvider, value, txId, destChainName)) {
+  await waitForBridgeCooldown(destChainState, destChainName)
+  if (!checkMaxBridgeAmount(destChainState, value, txId, destChainName)) {
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
     return 'failed'
   }
 
-  const senderNonce = await destChainProvider.provider.getTransactionCount(
-    destChainProvider.config.tssSenderAddress,
+  const senderNonce = await chainRpcConfig.withChainHttpProvider(
+    destinationChainId,
+    (provider) => provider.getTransactionCount(destChainState.config.tssSenderAddress),
   )
-  let currentGasPrice = await destChainProvider.provider.getGasPrice()
+  let currentGasPrice = await chainRpcConfig.withChainHttpProvider(
+    destinationChainId,
+    (provider) => provider.getGasPrice(),
+  )
 
   // Apply gas price logic based on destination chain configuration
-  const gasTiers = destChainProvider.config.gasConfig.gasPriceTiers
+  const gasTiers = destChainState.config.gasConfig.gasPriceTiers
   for (let i = 0; i < gasTiers.length; i++) {
     const tierGwei = ethersUtils.parseUnits(gasTiers[i].toString(), 'gwei')
     if (currentGasPrice.lt(tierGwei)) {
@@ -1482,15 +1398,15 @@ async function processVaultBridge(
     txIdBytes32,
   ])
 
-  const bridgeInContractAddress = destChainProvider.config.contractAddress
+  const bridgeInContractAddress = destChainState.config.contractAddress
   const tx = {
     to: bridgeInContractAddress,
     value: 0,
     data,
     nonce: senderNonce,
-    gasLimit: destChainProvider.config.gasConfig.gasLimit,
+    gasLimit: destChainState.config.gasConfig.gasLimit,
     gasPrice: currentGasPrice,
-    chainId: destChainProvider.config.chainId === 31338 ? 31337 : destChainProvider.config.chainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
+    chainId: destChainState.config.chainId === 31338 ? 31337 : destChainState.config.chainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
   }
   console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
@@ -1511,13 +1427,16 @@ async function processVaultBridge(
   }
   // precompute tx hash from signedTx
   const txHash = ethersUtils.keccak256(signedTx as string)
-  const signerBalance = await destChainProvider.provider.getBalance(destChainProvider.config.tssSenderAddress)
-  console.log(`Signer ${destChainProvider.config.tssSenderAddress} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
+  const signerBalance = await chainRpcConfig.withChainHttpProvider(
+    destinationChainId,
+    (provider) => provider.getBalance(destChainState.config.tssSenderAddress),
+  )
+  console.log(`Signer ${destChainState.config.tssSenderAddress} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
   console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
   let res: { success: boolean; reason?: string }
   // Retry injection with linear delay progression
   try {
-    res = await retryOperation(() => injectEthereumTx(txHash, signedTx, destChainProvider.provider), {
+    res = await retryOperation(() => injectEthereumTx(destinationChainId, txHash, signedTx), {
       txId: txHash,
       maxRetries: 3,
     })
@@ -1529,14 +1448,21 @@ async function processVaultBridge(
     await refreshBridgeStateOnRevert(reason, destinationChainId)
   }
 
-  const receipt = await destChainProvider.provider.getTransactionReceipt(txHash)
+  const receipt = await chainRpcConfig.withChainHttpProvider(
+    destinationChainId,
+    (provider) => provider.getTransactionReceipt(txHash),
+    {maxRetries: 1},
+  )
   if (receipt) {
     if (receipt.status === 1) {
       console.log(
         `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
-      const block = await destChainProvider.provider.getBlock(receipt.blockNumber)
-      destChainProvider.lastBridgeInTime = block.timestamp
+      const block = await chainRpcConfig.withChainHttpProvider(
+        destinationChainId,
+        (provider) => provider.getBlock(receipt.blockNumber),
+      )
+      destChainState.lastBridgeInTime = block.timestamp
       updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash)
       return 'completed'
     } else {
@@ -1571,15 +1497,15 @@ async function processTokenToCoin(
 ): Promise<ProcessOutcome> {
   console.log('Processing token to coin transaction', {to, value, txId, sourceChainId})
 
-  const sourceChainProvider = chainProviders.get(sourceChainId)
-  if (!sourceChainProvider) {
+  const sourceChainState = chainStateByChainId.get(sourceChainId)
+  if (!sourceChainState) {
     console.error(`[ProcessTokenToCoin] Source chain provider not found for chainId ${sourceChainId}`)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `source chain provider not found for chainId ${sourceChainId}`)
     return 'failed'
   }
 
-  const sourceChainName = sourceChainProvider.config.name
+  const sourceChainName = sourceChainState.config.name
   console.log(`Processing transaction from ${sourceChainName}`)
 
   // convert ethers.BigNumber to bigint
@@ -1587,7 +1513,7 @@ async function processTokenToCoin(
   console.log('Amount in bigint:', amountInBigInt)
   let signedTx: SignedTx | null = null
   const tx: LiberdusTx = {
-    from: toShardusAddress(sourceChainProvider.config.tssSenderAddress),
+    from: toShardusAddress(sourceChainState.config.tssSenderAddress),
     to: toShardusAddress(to),
     amount: amountInBigInt,
     type: 'transfer',
@@ -2089,7 +2015,7 @@ async function main(): Promise<void> {
             tx.sender &&
             tx.value &&
             tx.chainId != null &&
-            getChainConfigById(tx.chainId) != null &&
+            getChainConfigById(chainConfigs, tx.chainId) != null &&
             await verifySourceTxData(tx)
           ) {
             const bridgeType: TransactionQueueItem['type'] =
@@ -2370,41 +2296,6 @@ async function main(): Promise<void> {
    * @param {Function} fn - Function to execute on schedule
    * @param {number} intervalMS - Interval in milliseconds (e.g., 3000 for 3 seconds)
    */
-
-  function startDriftResistantScheduler(fn: () => void | Promise<void>, intervalMS: number) {
-    console.log(`Starting drift-resistant scheduler for ${fn.name} with interval ${intervalMS} ms`)
-    const intervalSeconds = Math.round(intervalMS / 1000)
-
-    function scheduleNext() {
-      const now = new Date()
-      const currentSeconds = now.getSeconds()
-
-      // Find next exact boundary (e.g., if every 3s: 0, 3, 6, ..., 57)
-      let nextBoundary = Math.floor(currentSeconds / intervalSeconds + 1) * intervalSeconds
-
-      let targetTime = new Date(now)
-
-      if (nextBoundary >= 60) {
-        // Go to next minute if needed
-        targetTime.setMinutes(targetTime.getMinutes() + 1)
-        targetTime.setSeconds(nextBoundary - 60, 0)
-      } else {
-        targetTime.setSeconds(nextBoundary, 0)
-      }
-
-      const delay = targetTime.getTime() - now.getTime()
-
-      // console.log(`Next run at: ${targetTime.toISOString()}, waiting ${delay}ms`);
-
-      setTimeout(() => {
-        fn()
-        scheduleNext()
-      }, delay)
-    }
-
-    // Start the first execution
-    scheduleNext()
-  }
 
   startDriftResistantScheduler(handleTransactionQueue, txQueueProcessingInterval)
   // Add memory management and monitoring schedulers

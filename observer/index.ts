@@ -2,15 +2,15 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
-import * as TransactionDB from "./storage/transactiondb";
+import * as TransactionDB from "../shared/storage/transactiondb";
+import { chainConfigsRaw, getChainConfigById } from "../shared/config";
 import { initMonitorState, monitorState, setSyncReady, syncReady } from "./monitor/state";
 import {
   monitorEthereumBridgeOutQueryFilter,
   monitorEthereumBridgeInQueryFilter,
 } from "./monitor/ethereum";
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
-import { startDriftResistantScheduler } from "./utils/scheduler";
-import { chainConfigsRaw, getChainConfigById } from "./config";
+import { startDriftResistantScheduler } from "../shared/utils/scheduler";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -104,7 +104,7 @@ app.get("/health", (_req, res) => {
 app.post("/notify-bridgeout", (req, res) => {
   const { chainId } = req.body;
 
-  if (typeof chainId !== "number" || !getChainConfigById(chainId)) {
+  if (typeof chainId !== "number" || !getChainConfigById(chainConfigsRaw, chainId)) {
     return res.status(400).json({ Err: "Invalid or unknown chainId" });
   }
 

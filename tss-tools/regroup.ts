@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {spawnSync} from 'node:child_process'
 import * as bnbTss from './lib/bnbTss'
+import {resolveProjectRoot} from '../shared/utils/paths'
 
 function usage(): never {
   console.error(
@@ -119,7 +120,7 @@ function main() {
   if (!options.isOld && !options.isNewMember) {
     throw new Error('Regroup requires exactly one wrapper role: use --is-old for an existing member who stays, or --is-new-member for a fresh new member.');
   }
-  const signerRoot = bnbTss.resolveSignerRoot();
+  const signerRoot = resolveProjectRoot();
   const tssRoot = bnbTss.resolveTssRoot(signerRoot);
   const binary = bnbTss.resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const password = options.password || process.env.BNB_TSS_PASSWORD || process.env.TSS_PASSWORD;

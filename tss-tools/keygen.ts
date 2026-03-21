@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {spawnSync} from 'node:child_process'
 import * as bnbTss from './lib/bnbTss'
+import {resolveProjectRoot} from '../shared/utils/paths'
 
 function usage(): never {
   console.error(
@@ -94,7 +95,7 @@ function parseArgs(argv: string[]): bnbTss.KeygenOptions & {partyIdx: number; ch
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  const signerRoot = bnbTss.resolveSignerRoot();
+  const signerRoot = resolveProjectRoot();
   const tssRoot = bnbTss.resolveTssRoot(signerRoot);
   const binary = bnbTss.resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const params = bnbTss.readParams(signerRoot);
