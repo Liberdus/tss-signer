@@ -146,10 +146,6 @@ const parsedIdx = process.argv[2]
 const operationFlag = process.argv[3]
 
 const verboseLogs = true
-// When true, transactions older than TX_CLEANUP_MAX_AGE (24h) received from the
-// observer/local DB are archived to the data store and failed-tx log and skipped instead
-// of being queued.  Matches the txQueue eviction logic.
-const rejectOldTransactions = true
 
 const serverStartTime = Date.now()
 
@@ -793,32 +789,6 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED || tx.status === TransactionStatus.REVERTED) {
         console.log(`[poll] Skipping tx ${tx.txId} — DB reports ${txStatusLabel(tx.status)}`)
         continue
-      }
-      if (rejectOldTransactions) {
-        const currentTimestamp = Date.now()
-        if (currentTimestamp - tx.txTimestamp > TX_CLEANUP_MAX_AGE) {
-          console.warn(
-            `[poll] Tx ${tx.txId} is older than 24h (age: ${Math.floor((currentTimestamp - tx.txTimestamp) / 3_600_000)}h) — archiving and skipping`,
-          )
-          const bridgeType: TransactionQueueItem['type'] =
-            tx.type === TransactionType.BRIDGE_IN
-              ? 'coinToToken'
-              : tx.type === TransactionType.BRIDGE_VAULT
-                ? 'vaultBridge'
-                : 'tokenToCoin'
-          const txData: TransactionQueueItem = {
-            receipt: null as any,
-            from: tx.sender,
-            value: ethers.BigNumber.from(tx.value),
-            txId: tx.txId,
-            type: bridgeType,
-            chainId: tx.chainId,
-            txTimestamp: tx.txTimestamp,
-          }
-          appendToTxDataStore(txData)
-          appendToFailedTxsLogs(txData, 'tx older than 24h max age — skipped by poll')
-          continue
-        }
       }
 
       const existingEntry = txQueueMap.get(tx.txId)
