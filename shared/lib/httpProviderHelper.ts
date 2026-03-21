@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { markUrlFailed, pickAvailableUrlFromList, shouldBlacklistForError } from "./rpcUrls";
+import { toNetworkChainId } from "../config";
 
 const { providers } = ethers;
 export interface GetProviderOptions {
@@ -16,11 +17,6 @@ export interface WithCachedRetryOptions extends WithRetryOptions {
   logCache?: boolean;
 }
 
-function normalizeProviderChainId(chainId: number): number {
-  // [HACK] Local setup may configure secondary chain as 31338 while
-  // Hardhat network reports 31337.
-  return chainId === 31338 ? 31337 : chainId;
-}
 
 export function getHttpProviderForChain(
   httpUrls: string[],
@@ -32,7 +28,7 @@ export function getHttpProviderForChain(
 
   const network =
     options.chainId != null
-      ? { chainId: normalizeProviderChainId(options.chainId), name: "unknown" }
+      ? { chainId: toNetworkChainId(options.chainId), name: "unknown" }
       : undefined;
   return new providers.JsonRpcProvider(url, network);
 }

@@ -14,6 +14,7 @@ import {
   getConfiguredChains,
   getEffectiveChainIds,
   getChainConfigById,
+  toNetworkChainId,
   ParamsConfig,
   paramsConfigRaw,
 } from '../shared/config'
@@ -917,7 +918,7 @@ async function processCoinToToken(
     nonce: senderNonce,
     gasLimit: chainState.config.gasConfig.gasLimit,
     gasPrice: currentGasPrice,
-    chainId: targetChainId === 31338 ? 31337 : targetChainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
+    chainId: toNetworkChainId(targetChainId),
   }
   console.log(`eth tx to sign on ${targetChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
@@ -1081,7 +1082,7 @@ async function processVaultBridge(
     nonce: senderNonce,
     gasLimit: destChainState.config.gasConfig.gasLimit,
     gasPrice: currentGasPrice,
-    chainId: destChainState.config.chainId === 31338 ? 31337 : destChainState.config.chainId, // [HACK] In local development, secondary contract is deployed as 31338 for chainId, but the network is 31337
+    chainId: toNetworkChainId(destChainState.config.chainId),
   }
   console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)

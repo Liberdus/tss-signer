@@ -95,5 +95,14 @@ export function getChainConfigById(chainConfigs: ChainConfigs, chainId: number):
   return chainConfigs.supportedChains[chainId.toString()]
 }
 
+/**
+ * Maps a configured chainId to the actual network chainId for transaction
+ * signing. In local development the secondary contract may be deployed with
+ * chainId 31338, but the Hardhat network itself reports 31337.
+ */
+export function toNetworkChainId(chainId: number): number {
+  return chainId === 31338 ? 31337 : chainId
+}
+
 export const chainConfigsRaw = validateChainConfigs(loadChainConfigs())
 export const paramsConfigRaw = loadParamsConfig()
