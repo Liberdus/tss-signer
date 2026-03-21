@@ -143,6 +143,18 @@ const BRIDGE_CONTRACT_IFACE = new ethersUtils.Interface(BRIDGE_CONTRACT_ABI)
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigs.collectorHost;
 const proxyServerHost = process.env.PROXY_SERVER_HOST || chainConfigs.proxyServerHost;
 
+// Calls the V8 garbage collector only when --expose-gc is active.
+// Without that flag global.gc is undefined and calls would silently no-op.
+let gcUnavailableWarned = false
+function tryGC(): void {
+  if (typeof global.gc === 'function') {
+    global.gc()
+  } else if (!gcUnavailableWarned) {
+    gcUnavailableWarned = true
+    console.warn('[gc] global.gc is not available — start Node with --expose-gc to enable forced GC')
+  }
+}
+
 // Observer URL and DB path — derived from party index (set after ourParty is initialized below)
 
 const tssPartyIdx =
@@ -372,7 +384,7 @@ function cleanupOldTransactions() {
   // Force garbage collection more aggressively
   if (global.gc && (removedCount > 0 || process.memoryUsage().heapUsed > 256 * 1024 * 1024)) { // 256MB threshold
     const beforeGC = process.memoryUsage().heapUsed
-    global.gc()
+    tryGC()
     const afterGC = process.memoryUsage().heapUsed
     const freedMB = Math.round((beforeGC - afterGC) / 1024 / 1024)
     if (freedMB > 0) {
@@ -1302,7 +1314,7 @@ async function retryOperation<T>(
 
       // Force garbage collection of error objects on final attempt
       if (global.gc && attempt === maxRetries) {
-        global.gc()
+        tryGC()
       }
 
       if (!shouldRetry(lastError) || attempt === maxRetries) {
@@ -1350,7 +1362,7 @@ function logMemoryUsage() {
   if (heapUsedMB > 500 && global.gc) { // Raised from 40MB — Node.js baseline overhead makes lower thresholds fire constantly
     console.log('⚠️ High heap usage detected, forcing garbage collection')
     const beforeGC = usage.heapUsed
-    global.gc()
+    tryGC()
     
     // Log memory after GC
     const afterGC = process.memoryUsage()
@@ -1366,7 +1378,7 @@ function logMemoryUsage() {
     console.warn(`⚠️ High RSS memory usage: ${formatMB(usage.rss)}. Triggering aggressive cleanup.`)
     cleanupOldTransactions()
     if (global.gc) {
-      global.gc()
+      tryGC()
     }
   }
   
@@ -1396,7 +1408,7 @@ function checkPostTransactionMemory(txId: string, operationType: string) {
   if (heapUsedMB > 500 || rssMB > 1024) {
     console.warn(`🚨 Memory spike detected after ${operationType} (${txId}). Forcing immediate cleanup.`)
     if (global.gc) {
-      global.gc()
+      tryGC()
       
       // Log memory after forced GC
       const afterGC = process.memoryUsage()
@@ -1470,7 +1482,7 @@ function emergencyCleanup() {
   
   // Force GC after emergency cleanup
   if (global.gc) {
-    global.gc()
+    tryGC()
     console.log('🗑️ Forced garbage collection after emergency cleanup')
   }
 }
@@ -1803,7 +1815,7 @@ async function main(): Promise<void> {
       
       // Force cleanup after successful transaction processing
       if (global.gc) {
-        global.gc()
+        tryGC()
       }
     } catch (error: any) {
       if (error.message === 'signing-timeout') {
@@ -1845,7 +1857,7 @@ async function main(): Promise<void> {
         console.log('🧹 Performing cleanup after "enough party" wait')
         checkPostTransactionMemory(validTx.txId, 'enough-party-wait-final')
         if (global.gc) {
-          global.gc()
+          tryGC()
         }
       } else if (error.message === 'Transaction processing timed out') {
         // Handle timeout errors more gracefully
@@ -1856,7 +1868,7 @@ async function main(): Promise<void> {
         
         // Force cleanup after timeout
         if (global.gc) {
-          global.gc()
+          tryGC()
         }
       } else {
         // Handle other errors
@@ -1866,7 +1878,7 @@ async function main(): Promise<void> {
         
         // Force cleanup after any error
         if (global.gc) {
-          global.gc()
+          tryGC()
         }
       }
       console.error('Error processing transaction:', error)
