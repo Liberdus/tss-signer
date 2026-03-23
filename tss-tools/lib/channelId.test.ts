@@ -1,32 +1,10 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const Module = require('node:module');
-const path = require('node:path');
-const ts = require('typescript');
-
-function requireTypeScriptModule(filePath) {
-  const source = fs.readFileSync(filePath, 'utf8');
-  const transpiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-      esModuleInterop: true,
-    },
-    fileName: filePath,
-  });
-  const tsModule = new Module(filePath, module);
-  tsModule.filename = filePath;
-  tsModule.paths = Module._nodeModulePaths(path.dirname(filePath));
-  tsModule._compile(transpiled.outputText, filePath);
-  return tsModule.exports;
-}
-
-const {
+import assert from 'node:assert/strict';
+import {
   deriveDeterministicChannelId,
   deriveDeterministicChannelPassword,
-} = requireTypeScriptModule(path.join(__dirname, 'channelId.ts'));
+} from './channelId';
 
-function testDeterministicChannelIdFormat() {
+function testDeterministicChannelIdFormat(): void {
   const txId = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
   const txTimestampMs = 1_710_000_000_000;
   const channelId = deriveDeterministicChannelId(txId, txTimestampMs, 1_710_000_100);
@@ -37,7 +15,7 @@ function testDeterministicChannelIdFormat() {
   assert.equal(channelId.slice(3), expectedExpiryHex);
 }
 
-function testDeterministicChannelIdAdvancesExpiredTimestamp() {
+function testDeterministicChannelIdAdvancesExpiredTimestamp(): void {
   const txId = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
   const txTimestampMs = 1_710_000_000_000;
   const nowSec = 1_710_010_000;
@@ -49,7 +27,7 @@ function testDeterministicChannelIdAdvancesExpiredTimestamp() {
   assert.equal((expirySec - (Math.floor(txTimestampMs / 1000) + 1800)) % 1800, 0);
 }
 
-function testDeterministicChannelIdRejectsInvalidInputs() {
+function testDeterministicChannelIdRejectsInvalidInputs(): void {
   assert.throws(() => deriveDeterministicChannelId('nope', Date.now()), /Invalid normalized txId/);
   assert.throws(
     () => deriveDeterministicChannelId('abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789', 0),
@@ -57,12 +35,12 @@ function testDeterministicChannelIdRejectsInvalidInputs() {
   );
 }
 
-function testDeterministicChannelPassword() {
+function testDeterministicChannelPassword(): void {
   const channelPassword = deriveDeterministicChannelPassword(
     'ABC65EC8E88',
     '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc',
   );
-
+  
   assert.equal(channelPassword.length, 64);
   assert.match(channelPassword, /^[0-9a-f]+$/);
   assert.equal(
@@ -71,7 +49,7 @@ function testDeterministicChannelPassword() {
   );
 }
 
-function main() {
+function main(): void {
   testDeterministicChannelIdFormat();
   testDeterministicChannelIdAdvancesExpiredTimestamp();
   testDeterministicChannelIdRejectsInvalidInputs();

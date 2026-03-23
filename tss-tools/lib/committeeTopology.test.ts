@@ -1,31 +1,12 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const Module = require('node:module');
-const path = require('node:path');
-const ts = require('typescript');
+import assert from 'node:assert/strict';
+import * as bnbTss from './bnbTss';
+import {
+  deriveLocalPeerAddrs,
+  extractCommitteeTopologyFromDescribeOutput,
+} from './committeeTopology';
 
-function requireTypeScriptModule(filePath) {
-  const source = fs.readFileSync(filePath, 'utf8');
-  const transpiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-      esModuleInterop: true,
-    },
-    fileName: filePath,
-  });
-  const tsModule = new Module(filePath, module);
-  tsModule.filename = filePath;
-  tsModule.paths = Module._nodeModulePaths(path.dirname(filePath));
-  tsModule._compile(transpiled.outputText, filePath);
-  return tsModule.exports;
-}
-
-const bnbTss = requireTypeScriptModule(path.join(__dirname, 'bnbTss.ts'));
-const committeeTopology = requireTypeScriptModule(path.join(__dirname, 'committeeTopology.ts'));
-
-function testDeriveLocalPeerAddrs() {
-  const peerAddrs = committeeTopology.deriveLocalPeerAddrs({
+function testDeriveLocalPeerAddrs(): void {
+  const peerAddrs = deriveLocalPeerAddrs({
     chainId: 31338,
     parties: 3,
     partyIdx: 2,
@@ -37,9 +18,9 @@ function testDeriveLocalPeerAddrs() {
   ]);
 }
 
-function testExtractCommitteeTopologyFromDescribeOutput() {
+function testExtractCommitteeTopologyFromDescribeOutput(): void {
   const output = `address of this vault: bnb1test\nconfig of this vault:\n{\n  "p2p": {\n    "peer_addrs": ["/ip4/127.0.0.1/tcp/43381"],\n    "peers": ["party-1@peerid1"]\n  }\n}`;
-  const parsed = committeeTopology.extractCommitteeTopologyFromDescribeOutput(output);
+  const parsed = extractCommitteeTopologyFromDescribeOutput(output);
 
   assert.deepEqual(parsed, {
     peerAddrs: ['/ip4/127.0.0.1/tcp/43381'],
@@ -47,16 +28,18 @@ function testExtractCommitteeTopologyFromDescribeOutput() {
   });
 }
 
-function testBuildKeygenArgsIncludesPeerAddrs() {
+function testBuildKeygenArgsIncludesPeerAddrs(): void {
   const args = bnbTss.buildKeygenArgs({
     home: '/tmp/party-1',
     vaultName: 'default',
     password: 'vault-password',
+    logLevel: 'debug',
     channelId: '12369B44E38',
     channelPassword: 'session-password',
     threshold: 1,
     parties: 3,
     peerAddrs: ['/ip4/127.0.0.1/tcp/43382', '/ip4/127.0.0.1/tcp/43383'],
+    extraArgs: [],
   });
 
   assert.deepEqual(args, [
@@ -82,7 +65,7 @@ function testBuildKeygenArgsIncludesPeerAddrs() {
   ]);
 }
 
-function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember() {
+function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember(): void {
   const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
     chainId: 31338,
     parties: 3,
@@ -100,7 +83,7 @@ function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember() {
   ]);
 }
 
-function testDeriveLocalRegroupPeerAddrsForNewOnlyMember() {
+function testDeriveLocalRegroupPeerAddrsForNewOnlyMember(): void {
   const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
     chainId: 31338,
     parties: 3,
@@ -118,7 +101,7 @@ function testDeriveLocalRegroupPeerAddrsForNewOnlyMember() {
   ]);
 }
 
-function testBuildRegroupWrapperArgsUsesExplicitOverrides() {
+function testBuildRegroupWrapperArgsUsesExplicitOverrides(): void {
   const extraArgs = ['--p2p.new_peer_addrs', '/ip4/127.0.0.1/tcp/49991,/ip4/127.0.0.1/tcp/49992'];
   assert.equal(
     extraArgs.some((arg) => arg === '--p2p.new_peer_addrs' || arg.startsWith('--p2p.new_peer_addrs=')),
@@ -126,7 +109,7 @@ function testBuildRegroupWrapperArgsUsesExplicitOverrides() {
   );
 }
 
-function testDeriveLocalRegroupPeerAddrsHasNoDuplicates() {
+function testDeriveLocalRegroupPeerAddrsHasNoDuplicates(): void {
   const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
     chainId: 31338,
     parties: 3,
@@ -139,7 +122,7 @@ function testDeriveLocalRegroupPeerAddrsHasNoDuplicates() {
   assert.equal(new Set(peerAddrs).size, peerAddrs.length);
 }
 
-function testDeriveLocalRegroupPeerAddrsRejectsMixedWrapperRoles() {
+function testDeriveLocalRegroupPeerAddrsRejectsMixedWrapperRoles(): void {
   assert.throws(
     () =>
       bnbTss.deriveLocalRegroupPeerAddrs({
@@ -155,8 +138,10 @@ function testDeriveLocalRegroupPeerAddrsRejectsMixedWrapperRoles() {
   );
 }
 
-function testGetCommitteeTopologyUsesParsedDescribeOutput() {
+function testGetCommitteeTopologyUsesParsedDescribeOutput(): void {
   const parsed = bnbTss.getCommitteeTopology({
+    partyIdx: 1,
+    chainId: 31338,
     describeOutput: `config of this vault:\n{"p2p":{"peer_addrs":["/ip4/127.0.0.1/tcp/43382"],"peers":["party-2@peerid2"]}}`,
   });
 
@@ -166,7 +151,7 @@ function testGetCommitteeTopologyUsesParsedDescribeOutput() {
   });
 }
 
-function main() {
+function main(): void {
   testDeriveLocalPeerAddrs();
   testExtractCommitteeTopologyFromDescribeOutput();
   testBuildKeygenArgsIncludesPeerAddrs();
