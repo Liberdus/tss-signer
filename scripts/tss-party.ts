@@ -26,7 +26,7 @@ import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAUL
 import {initializeChainRpcConfig} from '../shared/chainRpc'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import * as TransactionDB from '../shared/storage/transactiondb'
-import {Transaction, TransactionStatus, TransactionType} from '../shared/storage/transactiondb'
+import {Transaction, TransactionStatus, TransactionType, ExecutionHistoryEntry} from '../shared/storage/transactiondb'
 
 const {BigNumber, utils: ethersUtils} = ethers
 
@@ -138,6 +138,7 @@ const BRIDGE_CONTRACT_ABI = [
   'function maxBridgeInAmount() view returns (uint256)',
   'function lastBridgeInTime() view returns (uint256)',
   'function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public',
+  'event BridgedIn(address indexed to, uint256 amount, uint256 indexed chainId, bytes32 indexed txId, uint256 timestamp)',
 ]
 const BRIDGE_CONTRACT_IFACE = new ethersUtils.Interface(BRIDGE_CONTRACT_ABI)
 
@@ -198,12 +199,15 @@ async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields 
       const [cooldownRaw, maxAmountRaw, lastTimeRaw] = await Promise.all([
         chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
           provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown')}),
+          { maxRetries: 3 },
         ),
         chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
           provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount')}),
+          { maxRetries: 3 },
         ),
         chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
           provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime')}),
+          { maxRetries: 3 },
         ),
       ])
       chainState.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
@@ -224,6 +228,7 @@ async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields 
     } else if (fields === 'lastBridgeInTime') {
       const lastTimeRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
         provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime')}),
+        { maxRetries: 3 },
       )
       chainState.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
       const lastBridgeInStr = chainState.lastBridgeInTime > 0
@@ -233,12 +238,14 @@ async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields 
     } else if (fields === 'bridgeInCooldown') {
       const cooldownRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
         provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown')}),
+        { maxRetries: 3 },
       )
       chainState.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
       console.log(`Bridge bridgeInCooldown fetched for ${chainState.config.name}: ${chainState.bridgeInCooldown}s`)
     } else if (fields === 'maxBridgeInAmount') {
       const maxAmountRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
         provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('maxBridgeInAmount')}),
+        { maxRetries: 3 },
       )
       chainState.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
       const maxAmountStr = chainState.maxBridgeInAmount.isZero()
@@ -256,6 +263,7 @@ async function waitForBridgeCooldown(chainState: ChainState, chainName: string):
   const latestBlock = await chainRpcConfig.withChainHttpProvider(
     chainState.config.chainId,
     (provider) => provider.getBlock('latest'),
+    { maxRetries: 3 },
   )
   const now = latestBlock.timestamp
   const cooldownEnd = chainState.lastBridgeInTime + chainState.bridgeInCooldown
@@ -275,16 +283,9 @@ async function waitForBridgeCooldown(chainState: ChainState, chainName: string):
 function checkMaxBridgeAmount(
   chainState: ChainState,
   value: ethers.BigNumber,
-  txId: string,
-  chainName: string,
 ): boolean {
   if (chainState.maxBridgeInAmount.isZero()) return true
   if (value.lte(chainState.maxBridgeInAmount)) return true
-  const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${chainName}`
-  console.error(reason)
-  updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', reason)
-  // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
-  removeFromPendingTxQueue(txId)
   return false
 }
 
@@ -460,6 +461,8 @@ function updateTxStatusInLocalDB(
   txId: string,
   status: TransactionStatus,
   receiptId: string,
+  tssSender: string,
+  nonce: number,
   failedReason = '',
 ): void {
   try {
@@ -470,6 +473,8 @@ function updateTxStatusInLocalDB(
       normalizedTxId,
       status,
       normalizedReceiptId,
+      tssSender,
+      nonce,
       failedReason || null,
     )
 
@@ -633,6 +638,62 @@ async function refreshLastBridgeInTime(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Nonce manager — tracks the expected next EVM nonce per chain per sender.
+// Initialized from on-chain state at startup, incremented locally on
+// success/revert (nonce consumed), NOT incremented on send failure.
+// ---------------------------------------------------------------------------
+
+const nonceManager: Map<string, number> = new Map() // key: `${chainId}:${tssSender}`
+
+function nonceManagerKey(chainId: number, tssSender: string): string {
+  return `${chainId}:${tssSender.toLowerCase()}`
+}
+
+async function initNonceManager(chainId: number, tssSender: string): Promise<void> {
+  const chainNonce = await getLatestChainNonce(chainId, tssSender)
+  const key = nonceManagerKey(chainId, tssSender)
+  nonceManager.set(key, chainNonce)
+  console.log(`[nonce-manager] Initialized ${key} -> nonce ${chainNonce}`)
+}
+
+function getLocalNonce(chainId: number, tssSender: string): number | undefined {
+  return nonceManager.get(nonceManagerKey(chainId, tssSender))
+}
+
+function incrementLocalNonce(chainId: number, tssSender: string): void {
+  const key = nonceManagerKey(chainId, tssSender)
+  const current = nonceManager.get(key)
+  if (current != null) {
+    nonceManager.set(key, current + 1)
+    console.log(`[nonce-manager] Incremented ${key} -> nonce ${current + 1}`)
+  }
+}
+
+function setLocalNonce(chainId: number, tssSender: string, nonce: number): void {
+  const key = nonceManagerKey(chainId, tssSender)
+  nonceManager.set(key, nonce)
+  console.log(`[nonce-manager] Set ${key} -> nonce ${nonce}`)
+}
+
+async function getLatestChainNonce(chainId: number, tssSender: string): Promise<number> {
+  return chainRpcConfig.withChainHttpProvider(
+    chainId, (provider) => provider.getTransactionCount(tssSender), { maxRetries: 3 })
+}
+
+async function getChainTransactionReceipt(chainId: number, txHash: string): Promise<ethers.providers.TransactionReceipt | null> {
+  return chainRpcConfig.withChainHttpProvider(
+    chainId, (provider) => provider.getTransactionReceipt(txHash), { maxRetries: 3 })
+}
+
+// ---------------------------------------------------------------------------
+// In-memory signed tx cache — for EVM rebroadcast without re-signing.
+// Keyed by normalized txId. Cleared on completion, revert, or process restart.
+// ---------------------------------------------------------------------------
+
+const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: number }> = new Map()
+
+// ---------------------------------------------------------------------------
 function reconcileTxStatusWithLocalDB(
   txId: string,
   context: 'pre-process' | 'pre-sign',
@@ -653,13 +714,188 @@ function reconcileTxStatusWithLocalDB(
   }
 }
 
-// Maps the string returned by reconcileTxStatusWithLocalDB to the corresponding ProcessOutcome.
+// Maps a reconcile skip status to the corresponding ProcessOutcome.
 function dbStatusToSkipOutcome(
   status: 'completed' | 'failed' | 'reverted',
 ): ProcessOutcome {
   if (status === 'completed') return 'skipped_db_completed'
   if (status === 'reverted') return 'skipped_db_reverted'
   return 'skipped_db_failed'
+}
+
+
+// ---------------------------------------------------------------------------
+// getTransactionHashByNonce — binary-searches block history to find the txHash
+// for a given sender address + nonce. Falls back to null if not found.
+// ---------------------------------------------------------------------------
+
+async function getTransactionHashByNonce(
+  chainId: number,
+  address: string,
+  targetNonce: number,
+): Promise<string | null> {
+  // Binary search: find the first block where getTransactionCount(address) > targetNonce
+  const currentBlock = await chainRpcConfig.withChainHttpProvider(
+    chainId, (p) => p.getBlockNumber(), { maxRetries: 3 })
+
+  let low = 0
+  let high = currentBlock
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    const nonceAtMid = await chainRpcConfig.withChainHttpProvider(
+      chainId, (p) => p.getTransactionCount(address, mid), { maxRetries: 3 })
+    if (nonceAtMid <= targetNonce) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+
+  // `low` is the block that first included the tx consuming `targetNonce`
+  const block = await chainRpcConfig.withChainHttpProvider(
+    chainId, (p) => p.getBlockWithTransactions(low), { maxRetries: 3 })
+  if (!block) return null
+
+  for (const tx of block.transactions) {
+    if (tx.from?.toLowerCase() === address.toLowerCase() && tx.nonce === targetNonce) {
+      return tx.hash
+    }
+  }
+  return null
+}
+
+// reconcileNonceDrift — called when the chain nonce is ahead of the local nonce tracker,
+// meaning some transactions were mined without our knowledge (e.g. after a crash/restart or
+// a missed receipt). Scans the drift range [fromNonce, toNonce):
+//   1. Checks the local DB for any known txs that used nonces in the range.
+//   2. For any nonce not accounted for in the DB (gap nonces), binary-searches the chain to
+//      find the txHash, fetches its receipt, extracts the txId from the BridgedIn event (success)
+//      or calldata (revert), and updates the DB accordingly.
+//   3. If the chain has advanced further than toNonce during reconciliation, recurses to cover
+//      the wider gap.
+// Returns { latestDbNonce, receiptId } where receiptId is non-null if currentTxId was found
+// to have been completed during this reconciliation pass.
+// ---------------------------------------------------------------------------
+
+async function reconcileNonceDrift(
+  currentTxId: string,
+  chainId: number,
+  tssSender: string,
+  fromNonce: number,
+  toNonce: number,
+): Promise<{ latestDbNonce: number; receiptId: string | null } | null> {
+  console.log(`[nonce-drift] Reconciling drift for chain ${chainId}: from=${fromNonce}, to=${toNonce}`)
+
+  // Find txs in our DB that used nonces in the drift range
+  let driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, tssSender, fromNonce, toNonce)
+
+  console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain ${chainId}: from=${fromNonce}, to=${toNonce}`)
+
+  let latestDbNonce = fromNonce - 1  // gap scan starts at latestDbNonce + 1 = fromNonce
+  let receiptId = ''
+
+  for (const tx of driftTxs) {
+    // Track receiptId if this is the tx we're currently processing
+    if (tx.receiptId && tx.txId === currentTxId) {
+      receiptId = tx.receiptId
+    }
+    if (tx.status === TransactionStatus.COMPLETED && tx.nonce != null) {
+      if (latestDbNonce < tx.nonce) {
+        latestDbNonce = tx.nonce
+      }
+    }
+
+    // Check execution history entries for consumed nonces (COMPLETED or REVERTED = nonce used)
+    const history: Record<string, ExecutionHistoryEntry> = JSON.parse(tx.executionHistory || '{}')
+    for (const [nonceKey, entry] of Object.entries(history)) {
+      if (entry.status === TransactionStatus.REVERTED || entry.status === TransactionStatus.COMPLETED) {
+        if (latestDbNonce < Number(nonceKey)) {
+          latestDbNonce = Number(nonceKey)
+        }
+      }
+    }
+  }
+
+  if (latestDbNonce + 1 < toNonce) {
+    // There are nonces in (latestDbNonce, toNonce) not accounted for in DB.
+    // Binary-search on-chain to find the txHash for each missing nonce, then
+    // fetch its receipt. These may belong to txs processed by another party or
+    // submitted outside our DB.
+    for (let nonce = latestDbNonce + 1; nonce < toNonce; nonce++) {
+      try {
+        const txHash = await getTransactionHashByNonce(chainId, tssSender, nonce)
+        if (!txHash) {
+          console.warn(`[nonce-drift] Could not find tx for nonce=${nonce} on chain ${chainId}`)
+          continue
+        }
+        const [receipt, onChainTx] = await Promise.all([
+          getChainTransactionReceipt(chainId, txHash),
+          chainRpcConfig.withChainHttpProvider(
+            chainId, (p) => p.getTransaction(txHash), { maxRetries: 3 }),
+        ])
+        if (receipt) {
+          latestDbNonce = nonce  // nonce was consumed regardless of status
+          console.log(`[nonce-drift] Gap nonce=${nonce} status=${receipt.status} txHash=${txHash} on chain ${chainId}`)
+
+          // Extract txId: from BridgedIn event logs on success, or from calldata on revert
+          let parsedTxId: string | null = null
+
+          if (receipt.status === 1) {
+            for (const log of receipt.logs) {
+              try {
+                const parsed = BRIDGE_CONTRACT_IFACE.parseLog(log)
+                if (parsed.name === 'BridgedIn') {
+                  parsedTxId = normalizeTxId(parsed.args.txId as string)
+                  break
+                }
+              } catch {
+                // Not a BridgedIn log — skip
+              }
+            }
+          } else if (receipt.status === 0 && onChainTx?.data) {
+            // No event on revert — decode txId from calldata instead
+            try {
+              const decoded = BRIDGE_CONTRACT_IFACE.decodeFunctionData('bridgeIn', onChainTx.data)
+              parsedTxId = normalizeTxId(decoded.txId as string)
+            } catch {
+              console.warn(`[nonce-drift] Gap nonce=${nonce} reverted but failed to decode calldata`)
+            }
+          }
+
+          if (parsedTxId) {
+            const newStatus = receipt.status === 1 ? TransactionStatus.COMPLETED : TransactionStatus.REVERTED
+            console.log(`[nonce-drift] Gap nonce=${nonce} → txId=${parsedTxId} ${newStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'REVERTED'} on chain ${chainId}`)
+            updateTxStatusInLocalDB(parsedTxId, newStatus, txHash, tssSender, nonce, '')
+            if (receipt.status === 1 && parsedTxId === normalizeTxId(currentTxId)) {
+              receiptId = txHash
+            }
+          } else {
+            console.warn(`[nonce-drift] Gap nonce=${nonce} could not determine txId for txHash=${txHash}`)
+          }
+        }
+      } catch (err) {
+        console.warn(`[nonce-drift] Error fetching tx for nonce=${nonce}: ${err instanceof Error ? err.message : err}`)
+      }
+    }
+
+    // Check if chain has advanced further than toNonce — recurse to cover the wider gap
+    const latestChainNonce = await getLatestChainNonce(chainId, tssSender)
+    if (latestChainNonce < latestDbNonce) {
+      // This shouldn't happen
+      console.error(`[nonce-drift] DB nonce ${latestDbNonce} > chain nonce ${latestChainNonce} for chain ${chainId}`)
+    } else if (latestChainNonce > toNonce) {
+      const recurseResult = await reconcileNonceDrift(currentTxId, chainId, tssSender, latestDbNonce + 1, latestChainNonce)
+      if (recurseResult) {
+        latestDbNonce = recurseResult.latestDbNonce
+        if (recurseResult.receiptId) receiptId = recurseResult.receiptId
+      }
+    }
+  }
+
+  return {
+    latestDbNonce,
+    receiptId: receiptId || null,
+  }
 }
 
 function getBnbTssExpectedAddresses(): Record<number, string> {
@@ -870,22 +1106,93 @@ async function processCoinToToken(
   }
 
   const targetChainName = chainState.config.name
+  const tssSender = chainState.config.tssSenderAddress
+  let senderNonce = getLocalNonce(targetChainId, tssSender)
   console.log(`Processing transaction on ${targetChainName}`)
 
   await waitForBridgeCooldown(chainState, targetChainName)
-  if (!checkMaxBridgeAmount(chainState, value, txId, targetChainName)) {
+  if (!checkMaxBridgeAmount(chainState, value)) {
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName}`
+    console.error(reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
+    removeFromPendingTxQueue(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
     return 'failed'
   }
 
-  const senderNonce = await chainRpcConfig.withChainHttpProvider(
-    targetChainId,
-    (provider) => provider.getTransactionCount(chainState.config.tssSenderAddress),
-  )
+  // Fetch chain nonce and compare with local nonce manager
+  const chainNonce = await getLatestChainNonce(targetChainId, tssSender)
+  let localNonce = getLocalNonce(targetChainId, tssSender)
+
+  if (localNonce != null && chainNonce > localNonce) {
+    // Nonce drift — some txs with nonces in [localNonce, chainNonce) were mined without our knowledge
+    console.warn(`[nonce-manager] Drift on ${targetChainName}: local=${localNonce}, chain=${chainNonce}`)
+    const driftResult = await reconcileNonceDrift(txId, targetChainId, tssSender, localNonce, chainNonce)
+    setLocalNonce(targetChainId, tssSender, chainNonce)
+    localNonce = getLocalNonce(targetChainId, tssSender)
+    if (driftResult?.receiptId) {
+      console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
+      await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId)
+      return 'completed'
+    }
+  } else if (localNonce != null && localNonce > chainNonce) {
+    // This shouldn't happen — local is ahead of chain
+    console.warn(`[nonce-manager] Local nonce ahead of chain on ${targetChainName}: local=${localNonce}, chain=${chainNonce}`)
+    // Abort this transaction to avoid potential double execution
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `local nonce ahead of chain on ${targetChainName}`)
+    return 'failed'
+  } else if (localNonce == null) {
+    // First time — just sync
+    setLocalNonce(targetChainId, tssSender, chainNonce)
+    localNonce = getLocalNonce(targetChainId, tssSender)
+  }
+
+  // At this point, we have a valid local nonce that matches the chain nonce
+  senderNonce = localNonce
+
+  // Normalize txId
+  const normalizedTxId = normalizeTxId(txId)
+
+  // Try rebroadcast from in-memory cache (same nonce = tx not yet mined)
+  const cached = signedTxCache.get(normalizedTxId)
+  if (cached && cached.nonce === senderNonce) {
+    console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
+    try {
+      await retryOperation(() => injectEthereumTx(targetChainId, cached.txHash, cached.signedTx), {
+        txId: cached.txHash,
+        maxRetries: 2,
+      })
+      const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
+      if (cachedReceipt?.status === 1) {
+        const block = await chainRpcConfig.withChainHttpProvider(
+          targetChainId, (provider) => provider.getBlock(cachedReceipt.blockNumber), { maxRetries: 3 })
+        chainState.lastBridgeInTime = block.timestamp
+        updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+        signedTxCache.delete(normalizedTxId)
+        incrementLocalNonce(targetChainId, tssSender)
+        return 'completed'
+      } else if (cachedReceipt?.status === 0) {
+        console.log(`[nonce-guard] Cached tx reverted on ${targetChainName}: ${cached.txHash}`)
+        updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
+        signedTxCache.delete(normalizedTxId)
+        incrementLocalNonce(targetChainId, tssSender)
+        return 'reverted'
+      }
+    } catch (e) {
+      console.warn(`[nonce-guard] Rebroadcast failed, will re-sign: ${e instanceof Error ? e.message : e}`)
+    }
+  } else if (cached) {
+    // Nonce changed — cached tx is stale
+    signedTxCache.delete(normalizedTxId)
+  }
+
   let currentGasPrice = await chainRpcConfig.withChainHttpProvider(
     targetChainId,
     (provider) => provider.getGasPrice(),
+    { maxRetries: 3 },
   )
 
   // Apply gas price logic based on chain configuration
@@ -919,10 +1226,10 @@ async function processCoinToToken(
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
-  const dbStatusCoinToToken = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
-  if (dbStatusCoinToToken != null) return dbStatusToSkipOutcome(dbStatusCoinToToken)
+  const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
+  if (preSign != null) return dbStatusToSkipOutcome(preSign)
 
-  // Use chain-specific keystore for signing
+  // Sign via TSS (Use target chain provider  for signing)
   const signedTx = await signEthereumTransaction(tx, digest, targetChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign Ethereum transaction on ${targetChainName}, skipping`, txId)
@@ -930,9 +1237,12 @@ async function processCoinToToken(
     if (txData) appendToFailedTxsLogs(txData, `failed to sign Ethereum transaction on ${targetChainName}`)
     return 'failed'
   }
-  // precompute tx hash from signedTx
+
+  // Cache signed tx + broadcast
   const txHash = ethersUtils.keccak256(signedTx as string)
+  signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce })
   console.log(`Injecting ethereum transaction on ${targetChainName}`, txHash)
+
   let res: { success: boolean; reason?: string }
   // Retry injection with linear delay progression
   try {
@@ -948,19 +1258,11 @@ async function processCoinToToken(
     await refreshBridgeStateOnRevert(reason, targetChainId)
   }
 
-  let receipt = await chainRpcConfig.withChainHttpProvider(
-    targetChainId,
-    (provider) => provider.getTransactionReceipt(txHash),
-    {maxRetries: 1},
-  )
+  let receipt = await getChainTransactionReceipt(targetChainId, txHash)
   if (!receipt) {
     // Tx may have been broadcast but not yet mined — retry once after a short delay
     await delay_ms(3000)
-    receipt = await chainRpcConfig.withChainHttpProvider(
-      targetChainId,
-      (provider) => provider.getTransactionReceipt(txHash),
-      {maxRetries: 1},
-    )
+    receipt = await getChainTransactionReceipt(targetChainId, txHash)
   }
   if (receipt) {
     if (receipt.status === 1) {
@@ -970,9 +1272,12 @@ async function processCoinToToken(
       const block = await chainRpcConfig.withChainHttpProvider(
         targetChainId,
         (provider) => provider.getBlock(receipt.blockNumber),
+        { maxRetries: 3 },
       )
       chainState.lastBridgeInTime = block.timestamp
-      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash)
+      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+      signedTxCache.delete(normalizedTxId)
+      incrementLocalNonce(targetChainId, tssSender)
       return 'completed'
     } else {
       console.log(
@@ -980,7 +1285,9 @@ async function processCoinToToken(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
+      signedTxCache.delete(normalizedTxId)
+      incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on revert
       return 'reverted'
     }
   } else {
@@ -990,9 +1297,11 @@ async function processCoinToToken(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${targetChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     removeFromPendingTxQueue(txId)
+    // Don't increment nonce — tx may not have been broadcast/mined
+    // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
     return 'failed'
   }
 }
@@ -1031,22 +1340,91 @@ async function processVaultBridge(
 
   const sourceChainName = sourceChainState.config.name
   const destChainName = destChainState.config.name
+  const tssSender = destChainState.config.tssSenderAddress
+  const normalizedTxId = normalizeTxId(txId)
+  let senderNonce = getLocalNonce(destinationChainId, tssSender)
+
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
   await waitForBridgeCooldown(destChainState, destChainName)
-  if (!checkMaxBridgeAmount(destChainState, value, txId, destChainName)) {
+  if (!checkMaxBridgeAmount(destChainState, value)) {
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName}`
+    console.error(reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
+    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
+    removeFromPendingTxQueue(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
     return 'failed'
   }
 
-  const senderNonce = await chainRpcConfig.withChainHttpProvider(
-    destinationChainId,
-    (provider) => provider.getTransactionCount(destChainState.config.tssSenderAddress),
-  )
+  // Fetch chain nonce and compare with local nonce manager
+  const chainNonce = await getLatestChainNonce(destinationChainId, tssSender)
+  let localNonce = getLocalNonce(destinationChainId, tssSender)
+
+  if (localNonce != null && chainNonce > localNonce) {
+    // Nonce drift — some txs with nonces in [localNonce, chainNonce) were mined without our knowledge
+    console.warn(`[nonce-manager] Drift on ${destChainName}: local=${localNonce}, chain=${chainNonce}`)
+    const driftResult = await reconcileNonceDrift(txId, destinationChainId, tssSender, localNonce, chainNonce)
+    setLocalNonce(destinationChainId, tssSender, chainNonce)
+    localNonce = getLocalNonce(destinationChainId, tssSender)
+    if (driftResult?.receiptId) {
+      console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
+      await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId)
+      return 'completed'
+    }
+  } else if (localNonce != null && localNonce > chainNonce) {
+    // This shouldn't happen — local is ahead of chain
+    console.warn(`[nonce-manager] Local nonce ahead of chain on ${destChainName}: local=${localNonce}, chain=${chainNonce}`)
+    // Abort this transaction to avoid potential double execution
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `local nonce ahead of chain on ${destChainName}`)
+    return 'failed'
+  } else if (localNonce == null) {
+    // First time — just sync
+    setLocalNonce(destinationChainId, tssSender, chainNonce)
+    localNonce = getLocalNonce(destinationChainId, tssSender)
+  }
+
+  // At this point, we have a valid local nonce that matches the chain nonce
+  senderNonce = localNonce
+
+  // Step 3: Try rebroadcast from in-memory cache
+  const cached = signedTxCache.get(normalizedTxId)
+  if (cached && cached.nonce === senderNonce) {
+    console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
+    try {
+      await retryOperation(() => injectEthereumTx(destinationChainId, cached.txHash, cached.signedTx), {
+        txId: cached.txHash,
+        maxRetries: 2,
+      })
+      const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
+      if (receipt?.status === 1) {
+        const block = await chainRpcConfig.withChainHttpProvider(
+          destinationChainId, (provider) => provider.getBlock(receipt.blockNumber), { maxRetries: 3 })
+        destChainState.lastBridgeInTime = block.timestamp
+        updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+        signedTxCache.delete(normalizedTxId)
+        incrementLocalNonce(destinationChainId, tssSender)
+        return 'completed'
+      } else if (receipt?.status === 0) {
+        console.log(`[nonce-guard] Cached tx reverted on ${destChainName}: ${cached.txHash}`)
+        updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
+        signedTxCache.delete(normalizedTxId)
+        incrementLocalNonce(destinationChainId, tssSender)
+        return 'reverted'
+      }
+    } catch (e) {
+      console.warn(`[nonce-guard] Rebroadcast failed, will re-sign: ${e instanceof Error ? e.message : e}`)
+    }
+  } else if (cached) {
+    signedTxCache.delete(normalizedTxId)
+  }
+
   let currentGasPrice = await chainRpcConfig.withChainHttpProvider(
     destinationChainId,
     (provider) => provider.getGasPrice(),
+    { maxRetries: 3 },
   )
 
   // Apply gas price logic based on destination chain configuration
@@ -1081,10 +1459,10 @@ async function processVaultBridge(
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
-  const dbStatusVaultBridge = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
-  if (dbStatusVaultBridge != null) return dbStatusToSkipOutcome(dbStatusVaultBridge)
+  const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
+  if (preSign != null) return dbStatusToSkipOutcome(preSign)
 
-  // Use destination chain's keystore for signing
+  // Step 5: Sign via TSS (destination chain keystore)
   const signedTx = await signEthereumTransaction(tx, digest, destinationChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
@@ -1092,13 +1470,17 @@ async function processVaultBridge(
     if (txData) appendToFailedTxsLogs(txData, `failed to sign EVM-to-EVM transaction on ${destChainName}`)
     return 'failed'
   }
-  // precompute tx hash from signedTx
+
+  // Step 6: Cache signed tx + broadcast
   const txHash = ethersUtils.keccak256(signedTx as string)
+  signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce })
+
   const signerBalance = await chainRpcConfig.withChainHttpProvider(
     destinationChainId,
-    (provider) => provider.getBalance(destChainState.config.tssSenderAddress),
+    (provider) => provider.getBalance(tssSender),
+    { maxRetries: 3 },
   )
-  console.log(`Signer ${destChainState.config.tssSenderAddress} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
+  console.log(`Signer ${tssSender} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
   console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
   let res: { success: boolean; reason?: string }
   // Retry injection with linear delay progression
@@ -1115,11 +1497,12 @@ async function processVaultBridge(
     await refreshBridgeStateOnRevert(reason, destinationChainId)
   }
 
-  const receipt = await chainRpcConfig.withChainHttpProvider(
-    destinationChainId,
-    (provider) => provider.getTransactionReceipt(txHash),
-    {maxRetries: 1},
-  )
+  let receipt = await getChainTransactionReceipt(destinationChainId, txHash)
+  if (!receipt) {
+    // Tx may have been broadcast but not yet mined — retry once after a short delay
+    await delay_ms(3000)
+    receipt = await getChainTransactionReceipt(destinationChainId, txHash)
+  }
   if (receipt) {
     if (receipt.status === 1) {
       console.log(
@@ -1128,17 +1511,22 @@ async function processVaultBridge(
       const block = await chainRpcConfig.withChainHttpProvider(
         destinationChainId,
         (provider) => provider.getBlock(receipt.blockNumber),
+        { maxRetries: 3 },
       )
       destChainState.lastBridgeInTime = block.timestamp
-      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash)
+      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+      signedTxCache.delete(normalizedTxId)
+      incrementLocalNonce(destinationChainId, tssSender)
       return 'completed'
     } else {
       console.log(
-        `EVM-to-EVM transaction failed in execution  - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+        `EVM-to-EVM transaction failed in execution - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
+      signedTxCache.delete(normalizedTxId)
+      incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on revert
       return 'reverted'
     }
   } else {
@@ -1148,9 +1536,11 @@ async function processVaultBridge(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${destChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     removeFromPendingTxQueue(txId)
+    // Don't increment nonce — tx may not have been broadcast/mined
+    // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
     return 'failed'
   }
 }
@@ -1201,8 +1591,8 @@ async function processTokenToCoin(
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
-  const dbStatusTokenToCoin = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
-  if (dbStatusTokenToCoin != null) return dbStatusToSkipOutcome(dbStatusTokenToCoin)
+  const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
+  if (preSign != null) return dbStatusToSkipOutcome(preSign)
 
   // Use chain-specific keystore for signing (source chain for Liberdus transactions)
   signedTx = await signLiberdusTransaction(tx, digest, sourceChainId, channelId, channelPassword)
@@ -1241,12 +1631,14 @@ async function processTokenToCoin(
   await sleep(5000) // wait for 5 seconds
   
   const receipt = await getLiberdusReceipt(signedTxId, fetchReceiptRetry)
+  const liberdusTssSender = sourceChainState.config.tssSenderAddress
+  const liberdusNonce = tx.timestamp
   if (receipt) {
     if (receipt.success === true) {
       console.log(
         `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
       )
-      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, signedTxId)
+      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, signedTxId, liberdusTssSender, liberdusNonce)
       return 'completed'
     } else {
       console.log(
@@ -1254,7 +1646,7 @@ async function processTokenToCoin(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, receipt.reason)
-      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, signedTxId, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, signedTxId, liberdusTssSender, liberdusNonce, receipt.reason)
       return 'reverted'
     }
   } else {
@@ -1263,7 +1655,7 @@ async function processTokenToCoin(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed from ${sourceChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, liberdusTssSender, liberdusNonce, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     removeFromPendingTxQueue(txId)
     return 'failed'
@@ -1613,6 +2005,15 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // Initialize nonce manager for each chain's TSS sender
+  for (const [chainId, chainState] of chainStateByChainId.entries()) {
+    try {
+      await initNonceManager(chainId, chainState.config.tssSenderAddress)
+    } catch (e) {
+      console.warn(`[nonce-manager] Failed to initialize for chain ${chainId}:`, e)
+    }
+  }
+
   await fetchStartupBridgeState()
 
   // Wait for the paired observer process to complete its initial sync
@@ -1727,7 +2128,7 @@ async function main(): Promise<void> {
       return
     }
 
-    // Verify with the local DB that this tx hasn't already been completed/is being processed
+    // Verify with the local DB that this tx hasn't already been completed
     const preProcessStatus = reconcileTxStatusWithLocalDB(txId, 'pre-process')
     if (preProcessStatus != null) {
       removeFromPendingTxQueue(txId)

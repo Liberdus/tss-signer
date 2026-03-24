@@ -359,14 +359,36 @@ export async function monitorEthereumBridgeInQueryFilter(
 
           if (existing) {
             if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
+              if (existing.receiptId !== normalizeTxId(event.transactionHash)) {
+                console.error(`[observer/bridgeIn] Duplicate BridgedIn event for ${txId} on ${chainName}, but different receipt ${event.transactionHash} vs ${existing.receiptId}`);
+              }
               console.log(`[observer/bridgeIn] Already completed ${txId} on ${chainName}`);
               continue;
+            }
+            let txTssSender: string | null = null;
+            let txNonce: number | null = null;
+            // Sync nonce + tssSender from the on-chain tx if they differ
+            try {
+              const onChainTx = await observerChainRpc.withChainHttpProvider(
+                chainId,
+                (provider) => provider.getTransaction(event.transactionHash),
+                { maxRetries: 3 },
+              );
+              txNonce = onChainTx?.nonce ?? null;
+              txTssSender = onChainTx?.from?.toLowerCase() ?? null;
+              if (txNonce == null || txTssSender == null) {
+                console.warn(`[observer/bridgeIn] Failed to extract nonce for ${txId} on ${chainName}`, txNonce, txTssSender);
+              }
+            } catch {
+              console.warn(`[observer/bridgeIn] Failed to sync nonce for ${txId} on ${chainName}`);
             }
             const result = TransactionDB.updateTransactionStatus(
               txId,
               TransactionDB.TransactionStatus.COMPLETED,
               normalizeTxId(event.transactionHash),
-              null
+              txTssSender as string,  // null falls back to current.tssSender in DB
+              txNonce as number,       // null falls back to current.nonce in DB
+              null,
             );
             if (result === "ok") {
               console.log(`[observer/bridgeIn] Marked ${txId} COMPLETED on ${chainName}`);
@@ -389,7 +411,25 @@ export async function monitorEthereumBridgeInQueryFilter(
             chainId: isVaultMode ? 0 : (event.args.chainId as ethers.BigNumber).toNumber(),
             receiptId: normalizeTxId(event.transactionHash),
             status: TransactionDB.TransactionStatus.COMPLETED,
+            tssSender: chainConfig.tssSenderAddress.toLowerCase() || null,
           };
+
+          // Attempt to extract nonce + tssSender from the on-chain transaction
+          try {
+            const onChainTx = await observerChainRpc.withChainHttpProvider(
+              chainId,
+              (provider) => provider.getTransaction(event.transactionHash),
+              { maxRetries: 3 },
+            );
+            if (onChainTx?.nonce != null) {
+              earlyTx.nonce = onChainTx.nonce;
+            }
+            if (onChainTx?.from) {
+              earlyTx.tssSender = onChainTx.from.toLowerCase();
+            }
+          } catch {
+            console.warn(`[observer/bridgeIn] Failed to sync nonce for ${txId} on ${chainName}`);
+          }
 
           TransactionDB.saveTransaction(earlyTx);
           console.log(

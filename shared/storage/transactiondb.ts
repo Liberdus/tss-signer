@@ -14,9 +14,18 @@ export interface Transaction {
   chainId: number;
   status: TransactionStatus;
   receiptId: string;
-  reason?: string | null;
+  tssSender?: string | null;          // TSS sender address used for this tx
+  nonce?: number | null;              // EVM sender nonce OR Liberdus tx timestamp
+  reason?: string | null;             // Reason for failure
+  executionHistory?: string | null;   // JSON: tracks failed/reverted attempts
   createdAt?: number;
   updatedAt?: number;
+}
+
+export interface ExecutionHistoryEntry {
+  status: TransactionStatus;
+  receiptId?: string;
+  reason?: string;
 }
 
 export enum TransactionStatus {
@@ -75,17 +84,20 @@ export function initializeTransactionsDatabase(dbPath: string): void {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS transactions (
-      txId         TEXT NOT NULL UNIQUE PRIMARY KEY,
-      sender       TEXT NOT NULL,
-      value        TEXT NOT NULL,
-      type         INTEGER NOT NULL,
-      txTimestamp  BIGINT NOT NULL,
-      receiptId    TEXT NOT NULL,
-      chainId      INTEGER NOT NULL,
-      status       INTEGER NOT NULL,
-      reason       TEXT,
-      createdAt    INTEGER DEFAULT (strftime('%s','now')),
-      updatedAt    INTEGER DEFAULT (strftime('%s','now'))
+      txId             TEXT NOT NULL UNIQUE PRIMARY KEY,
+      sender           TEXT NOT NULL,
+      value            TEXT NOT NULL,
+      type             INTEGER NOT NULL,
+      txTimestamp      BIGINT NOT NULL,
+      receiptId        TEXT NOT NULL,
+      chainId          INTEGER NOT NULL,
+      status           INTEGER NOT NULL,
+      tssSender        TEXT,
+      nonce            INTEGER,
+      reason           TEXT,
+      executionHistory TEXT DEFAULT '{}',
+      createdAt        INTEGER DEFAULT (strftime('%s','now')),
+      updatedAt        INTEGER DEFAULT (strftime('%s','now'))
     );
 
     CREATE TRIGGER IF NOT EXISTS trg_transactions_updatedAt
@@ -106,14 +118,16 @@ export function initializeTransactionsDatabase(dbPath: string): void {
 
   stmtInsert = db.prepare(`
     INSERT OR IGNORE INTO transactions
-      (txId, sender, value, type, txTimestamp, receiptId, chainId, status, reason)
+      (txId, sender, value, type, txTimestamp, receiptId, chainId, status, tssSender, nonce, reason, executionHistory)
     VALUES
-      (@txId, @sender, @value, @type, @txTimestamp, @receiptId, @chainId, @status, @reason)
+      (@txId, @sender, @value, @type, @txTimestamp, @receiptId, @chainId, @status, @tssSender, @nonce, @reason, @executionHistory)
   `);
 
   stmtUpdateStatus = db.prepare(
-    "UPDATE transactions SET status = @status, receiptId = @receiptId, reason = @reason WHERE txId = @txId"
+    "UPDATE transactions SET status = @status, receiptId = @receiptId, tssSender = @tssSender, nonce = @nonce, reason = @reason, executionHistory = @executionHistory WHERE txId = @txId"
   );
+
+  console.log("[db] initialized");
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +144,10 @@ export function saveTransaction(transaction: Transaction): void {
     receiptId: transaction.receiptId,
     chainId: transaction.chainId,
     status: transaction.status,
+    tssSender: transaction.tssSender ?? null,
+    nonce: transaction.nonce ?? null,
     reason: transaction.reason ?? null,
+    executionHistory: transaction.executionHistory ?? "{}",
   });
   if (result.changes === 0) {
     console.warn(`[db] saveTransaction: txId ${transaction.txId} already exists — insert ignored`);
@@ -185,7 +202,9 @@ export function updateTransactionStatus(
   txId: string,
   status: TransactionStatus,
   receiptId: string,
-  reason: string | null
+  tssSender: string,
+  nonce: number,
+  reason: string | null,
 ): UpdateStatusResult {
   const run = db.transaction((): UpdateStatusResult => {
     const current = stmtGetById.get(txId) as Transaction | undefined;
@@ -208,11 +227,33 @@ export function updateTransactionStatus(
       return "no_downgrade";
     }
 
-    const effectiveReason = status === TransactionStatus.FAILED ? (reason ?? "") : "";
+    // Use the passed-in nonce if provided, otherwise fall back to the row's existing nonce
+    const effectiveTssSender = tssSender ?? current.tssSender;
+    const effectiveNonce = nonce ?? current.nonce;
+
+    // Auto-append to executionHistory when transitioning to FAILED or REVERTED
+    // and a nonce is known (meaning a signing attempt was made).
+    let updatedHistory = current.executionHistory || "{}";
+    if (
+      (status === TransactionStatus.FAILED || status === TransactionStatus.REVERTED) &&
+      effectiveNonce != null
+    ) {
+      const history: Record<string, ExecutionHistoryEntry> = JSON.parse(updatedHistory);
+      history[String(effectiveNonce)] = {
+        status,
+        receiptId: receiptId || undefined,
+        reason: reason || undefined,
+      };
+      updatedHistory = JSON.stringify(history);
+    }
+
     stmtUpdateStatus.run({
       status,
       receiptId,
-      reason: effectiveReason,
+      tssSender: effectiveTssSender ?? null,
+      nonce: effectiveNonce ?? null,
+      reason,
+      executionHistory: updatedHistory,
       txId,
     });
     return "ok";
@@ -271,6 +312,48 @@ export function getTransactionCountsByStatus(): {
     failed:     map.get(TransactionStatus.FAILED)     ?? 0,
     reverted:   map.get(TransactionStatus.REVERTED)   ?? 0,
   };
+}
+
+export function appendExecutionHistory(
+  txId: string,
+  key: string,
+  entry: ExecutionHistoryEntry,
+): void {
+  const run = db.transaction(() => {
+    const current = stmtGetById.get(txId) as Transaction | undefined;
+    if (!current) {
+      console.warn(`[db] appendExecutionHistory: txId ${txId} not found`);
+      return;
+    }
+    const history: Record<string, ExecutionHistoryEntry> = JSON.parse(current.executionHistory || "{}");
+    history[key] = entry;
+    db.prepare("UPDATE transactions SET executionHistory = @history WHERE txId = @txId").run({
+      history: JSON.stringify(history),
+      txId,
+    });
+  });
+  run();
+}
+
+export function getExecutionHistory(
+  txId: string,
+): Record<string, ExecutionHistoryEntry> | null {
+  const row = stmtGetById.get(txId) as Transaction | undefined;
+  if (!row) return null;
+  return JSON.parse(row.executionHistory || "{}");
+}
+
+export function getTransactionsByNonceRange(
+  chainId: number,
+  tssSender: string,
+  fromNonce: number,
+  toNonce: number,
+): Transaction[] {
+  return db
+    .prepare(
+      "SELECT * FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce >= @fromNonce AND nonce < @toNonce ORDER BY nonce ASC"
+    )
+    .all({ chainId, tssSender, fromNonce, toNonce }) as Transaction[];
 }
 
 // ---------------------------------------------------------------------------
