@@ -4,6 +4,7 @@ set -euo pipefail
 DEFAULT_GO_VERSION="1.20.3"
 DEFAULT_BINARY_NAME="tss"
 DEFAULT_DERIVE_BINARY_NAME="tss-derive-pubkey"
+DEFAULT_TBNBCLI_NAME="tbnbcli"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIGNER_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -11,6 +12,8 @@ TSS_ROOT="${BNB_TSS_ROOT:-${SIGNER_ROOT}/tss}"
 PATCH_PATH="${SIGNER_ROOT}/tss-tools/patches/tss-source.patch"
 BINARY_PATH="${TSS_ROOT}/.tooling/bin/${DEFAULT_BINARY_NAME}"
 DERIVE_BINARY_PATH="${TSS_ROOT}/.tooling/bin/${DEFAULT_DERIVE_BINARY_NAME}"
+TBNBCLI_SOURCE_PATH="${TSS_ROOT}/${DEFAULT_TBNBCLI_NAME}"
+TBNBCLI_TARGET_PATH="${TSS_ROOT}/.tooling/bin/${DEFAULT_TBNBCLI_NAME}"
 HELPER_SOURCE_PATH="${SIGNER_ROOT}/tss-tools/derive-pubkey/main.go"
 HELPER_DIR="${TSS_ROOT}/.tooling/derive-pubkey"
 HELPER_MAIN_PATH="${HELPER_DIR}/main.go"
@@ -100,5 +103,13 @@ fi
   env GOCACHE="${GOCACHE}" GOMODCACHE="${GOMODCACHE}" "${GO_BIN}" build -o "${DERIVE_BINARY_PATH}" ./.tooling/derive-pubkey/main.go
 )
 
+if [[ -f "${TBNBCLI_SOURCE_PATH}" ]]; then
+  cp "${TBNBCLI_SOURCE_PATH}" "${TBNBCLI_TARGET_PATH}"
+  chmod +x "${TBNBCLI_TARGET_PATH}"
+fi
+
 echo "Built ${BINARY_PATH}"
 echo "Built ${DERIVE_BINARY_PATH}"
+if [[ -f "${TBNBCLI_TARGET_PATH}" ]]; then
+  echo "Copied ${TBNBCLI_TARGET_PATH}"
+fi

@@ -123,6 +123,7 @@ function main() {
   }
   const signerRoot = resolveProjectRoot();
   const tssRoot = bnbTss.resolveTssRoot(signerRoot);
+  const regroupCwd = `${tssRoot}/.tooling/bin`;
   const binary = bnbTss.resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const password = options.password || process.env.BNB_TSS_PASSWORD || process.env.TSS_PASSWORD;
   const channelId = options.channelId || process.env.BNB_TSS_CHANNEL_ID;
@@ -193,8 +194,9 @@ function main() {
   if (options.isNewMember) {
     autoInput = 'n\n';
   }
+  console.log(`Running ${binary} ${args.join(' ')}`);
   const result = spawnSync(binary, args, {
-    cwd: tssRoot,
+    cwd: regroupCwd,
     env: {...process.env, TSS_PASSWORD: password},
     encoding: 'utf8',
     input: autoInput,

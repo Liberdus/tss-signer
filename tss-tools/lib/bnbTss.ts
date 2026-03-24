@@ -630,14 +630,21 @@ export function deriveLocalRegroupPeerAddrs(options: LocalRegroupPeerAddrsOption
   const peerAddrs: string[] = [];
 
   for (const idx of oldParticipantIdxs) {
-    if (idx === partyIdx && !isOld) {
+    if (idx === partyIdx) {
+      if (isOld) {
+        continue;
+      }
+      pushUniqueAddr(peerAddrs, getLocalPeerAddr(chainId, idx));
       continue;
     }
     pushUniqueAddr(peerAddrs, getLocalPeerAddr(chainId, idx));
   }
 
   for (const idx of oldAndNewIdxs) {
-    if (idx === partyIdx && isOld) {
+    if (idx === partyIdx) {
+      if (isOld) {
+        pushUniqueAddr(peerAddrs, getLocalRegroupPeerAddr(chainId, idx));
+      }
       continue;
     }
     pushUniqueAddr(peerAddrs, getLocalRegroupPeerAddr(chainId, idx));
