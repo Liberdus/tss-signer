@@ -186,6 +186,10 @@ const chainStateByChainId: Map<number, ChainState> = new Map(
   ]),
 )
 
+for (const [chainId, chainState] of chainStateByChainId) {
+  console.log(`Initialized chain state for ${chainState.config.name} (chainId ${chainId}) with bridge contract at ${chainState.config.contractAddress}`)
+}
+
 type FetchBridgeStateFields = 'all' | 'bridgeInCooldown' | 'maxBridgeInAmount' | 'lastBridgeInTime'
 
 // Fetch bridge contract state for a chain. Pass fields to limit which values are fetched.
@@ -350,6 +354,7 @@ function cleanupOldTransactions() {
   const removedTxIds = new Set<string>()
 
   for (const [txId, entry] of txQueueMap.entries()) {
+    if (entry.status === 'pending' || entry.status === 'processing') continue
     const txAge = entry.txTimestamp > 0 ? now - entry.txTimestamp : now - serverStartTime
     if (txAge > TX_CLEANUP_MAX_AGE) {
       txQueueMap.delete(txId)
@@ -469,11 +474,13 @@ function updateTxStatusInLocalDB(
     const normalizedTxId = normalizeTxId(txId)
     const normalizedReceiptId = receiptId ? normalizeTxId(receiptId) : receiptId
 
+    const normalizedTssSender = toEthereumAddress(tssSender)
+
     const result = TransactionDB.updateTransactionStatus(
       normalizedTxId,
       status,
       normalizedReceiptId,
-      tssSender,
+      normalizedTssSender,
       nonce,
       failedReason || null,
     )
@@ -723,6 +730,20 @@ function dbStatusToSkipOutcome(
   return 'skipped_db_failed'
 }
 
+// Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/REVERTED) tx for this sender
+// is ahead. chainId is the source chain as stored in the DB. For vaultBridge the nonce manager
+// lives on the destination chain, so nonceCacheChainId is derived from txType.
+function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: number, tssSender: string): void {
+  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, tssSender)
+  if (maxDbNonce == null) return
+  const nonceCacheChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
+  const currentLocal = getLocalNonce(nonceCacheChainId, tssSender)
+  if (currentLocal == null || maxDbNonce + 1 > currentLocal) {
+    setLocalNonce(nonceCacheChainId, tssSender, maxDbNonce + 1)
+    console.log(`[nonce-manager] Synced nonce for chain ${nonceCacheChainId} to ${maxDbNonce + 1} (dbChain=${chainId}, maxDbNonce=${maxDbNonce})`)
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // getTransactionHashByNonce — binary-searches block history to find the txHash
@@ -780,16 +801,19 @@ async function getTransactionHashByNonce(
 async function reconcileNonceDrift(
   currentTxId: string,
   chainId: number,
+  txType: TransactionQueueItem['type'],
   tssSender: string,
   fromNonce: number,
   toNonce: number,
 ): Promise<{ latestDbNonce: number; receiptId: string | null } | null> {
-  console.log(`[nonce-drift] Reconciling drift for chain ${chainId}: from=${fromNonce}, to=${toNonce}`)
+  // For vaultBridge, on-chain RPC calls target the destination chain; DB queries use the source chainId
+  const rpcChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
+  console.log(`[nonce-drift] Reconciling drift for chain=${chainId}, rpcChain=${rpcChainId}: from=${fromNonce}, to=${toNonce}`)
 
   // Find txs in our DB that used nonces in the drift range
   let driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, tssSender, fromNonce, toNonce)
 
-  console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain ${chainId}: from=${fromNonce}, to=${toNonce}`)
+  console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain=${chainId}, rpcChain=${rpcChainId}: from=${fromNonce}, to=${toNonce}`)
 
   let latestDbNonce = fromNonce - 1  // gap scan starts at latestDbNonce + 1 = fromNonce
   let receiptId = ''
@@ -823,19 +847,19 @@ async function reconcileNonceDrift(
     // submitted outside our DB.
     for (let nonce = latestDbNonce + 1; nonce < toNonce; nonce++) {
       try {
-        const txHash = await getTransactionHashByNonce(chainId, tssSender, nonce)
+        const txHash = await getTransactionHashByNonce(rpcChainId, tssSender, nonce)
         if (!txHash) {
-          console.warn(`[nonce-drift] Could not find tx for nonce=${nonce} on chain ${chainId}`)
+          console.warn(`[nonce-drift] Could not find tx for nonce=${nonce} on chain ${rpcChainId}`)
           continue
         }
         const [receipt, onChainTx] = await Promise.all([
-          getChainTransactionReceipt(chainId, txHash),
+          getChainTransactionReceipt(rpcChainId, txHash),
           chainRpcConfig.withChainHttpProvider(
-            chainId, (p) => p.getTransaction(txHash), { maxRetries: 3 }),
+            rpcChainId, (p) => p.getTransaction(txHash), { maxRetries: 3 }),
         ])
         if (receipt) {
           latestDbNonce = nonce  // nonce was consumed regardless of status
-          console.log(`[nonce-drift] Gap nonce=${nonce} status=${receipt.status} txHash=${txHash} on chain ${chainId}`)
+          console.log(`[nonce-drift] Gap nonce=${nonce} status=${receipt.status} txHash=${txHash} on chain ${rpcChainId}`)
 
           // Extract txId: from BridgedIn event logs on success, or from calldata on revert
           let parsedTxId: string | null = null
@@ -864,7 +888,7 @@ async function reconcileNonceDrift(
 
           if (parsedTxId) {
             const newStatus = receipt.status === 1 ? TransactionStatus.COMPLETED : TransactionStatus.REVERTED
-            console.log(`[nonce-drift] Gap nonce=${nonce} → txId=${parsedTxId} ${newStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'REVERTED'} on chain ${chainId}`)
+            console.log(`[nonce-drift] Gap nonce=${nonce} → txId=${parsedTxId} ${newStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'REVERTED'} on chain ${rpcChainId}`)
             updateTxStatusInLocalDB(parsedTxId, newStatus, txHash, tssSender, nonce, '')
             if (receipt.status === 1 && parsedTxId === normalizeTxId(currentTxId)) {
               receiptId = txHash
@@ -879,12 +903,12 @@ async function reconcileNonceDrift(
     }
 
     // Check if chain has advanced further than toNonce — recurse to cover the wider gap
-    const latestChainNonce = await getLatestChainNonce(chainId, tssSender)
+    const latestChainNonce = await getLatestChainNonce(rpcChainId, tssSender)
     if (latestChainNonce < latestDbNonce) {
       // This shouldn't happen
-      console.error(`[nonce-drift] DB nonce ${latestDbNonce} > chain nonce ${latestChainNonce} for chain ${chainId}`)
+      console.error(`[nonce-drift] DB nonce ${latestDbNonce} > chain nonce ${latestChainNonce} for chain ${rpcChainId}`)
     } else if (latestChainNonce > toNonce) {
-      const recurseResult = await reconcileNonceDrift(currentTxId, chainId, tssSender, latestDbNonce + 1, latestChainNonce)
+      const recurseResult = await reconcileNonceDrift(currentTxId, chainId, txType, tssSender, latestDbNonce + 1, latestChainNonce)
       if (recurseResult) {
         latestDbNonce = recurseResult.latestDbNonce
         if (recurseResult.receiptId) receiptId = recurseResult.receiptId
@@ -900,11 +924,9 @@ async function reconcileNonceDrift(
 
 function getBnbTssExpectedAddresses(): Record<number, string> {
   const expected: Record<number, string> = {}
-  for (const chainId of getEffectiveChainIds()) {
-    const config = getChainConfigById(chainConfigs, chainId)
-    if (config?.tssSenderAddress) {
-      expected[chainId] = config.tssSenderAddress
-    }
+  for (const chainId of getEffectiveChainIds(chainConfigs)) {
+    const config = getChainConfigById(chainConfigs, chainId)!
+    expected[chainId] = config.tssSenderAddress!
   }
   return expected
 }
@@ -1129,7 +1151,7 @@ async function processCoinToToken(
   if (localNonce != null && chainNonce > localNonce) {
     // Nonce drift — some txs with nonces in [localNonce, chainNonce) were mined without our knowledge
     console.warn(`[nonce-manager] Drift on ${targetChainName}: local=${localNonce}, chain=${chainNonce}`)
-    const driftResult = await reconcileNonceDrift(txId, targetChainId, tssSender, localNonce, chainNonce)
+    const driftResult = await reconcileNonceDrift(txId, targetChainId, 'coinToToken', tssSender, localNonce, chainNonce)
     setLocalNonce(targetChainId, tssSender, chainNonce)
     localNonce = getLocalNonce(targetChainId, tssSender)
     if (driftResult?.receiptId) {
@@ -1365,7 +1387,8 @@ async function processVaultBridge(
   if (localNonce != null && chainNonce > localNonce) {
     // Nonce drift — some txs with nonces in [localNonce, chainNonce) were mined without our knowledge
     console.warn(`[nonce-manager] Drift on ${destChainName}: local=${localNonce}, chain=${chainNonce}`)
-    const driftResult = await reconcileNonceDrift(txId, destinationChainId, tssSender, localNonce, chainNonce)
+    // For vault bridge, sourceChainId has to be passed to reconcileNonceDrift
+    const driftResult = await reconcileNonceDrift(txId, sourceChainId, 'vaultBridge', tssSender, localNonce, chainNonce)
     setLocalNonce(destinationChainId, tssSender, chainNonce)
     localNonce = getLocalNonce(destinationChainId, tssSender)
     if (driftResult?.receiptId) {
@@ -2005,10 +2028,12 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  // Initialize nonce manager for each chain's TSS sender
-  for (const [chainId, chainState] of chainStateByChainId.entries()) {
+  // Initialize nonce manager for each effective chain's TSS sender.
+  for (const chainId of getEffectiveChainIds(chainConfigs)) {
+    const config = getChainConfigById(chainConfigs, chainId)!
+
     try {
-      await initNonceManager(chainId, chainState.config.tssSenderAddress)
+      await initNonceManager(chainId, config.tssSenderAddress!)
     } catch (e) {
       console.warn(`[nonce-manager] Failed to initialize for chain ${chainId}:`, e)
     }
@@ -2035,86 +2060,6 @@ async function main(): Promise<void> {
     }
   })()
 
-  // Startup recovery: verify pending/processing entries against local DB
-  console.log('🔄 Running startup recovery check against local DB...')
-  const txIdsToCheck = [...txQueueMap.entries()]
-    .filter(([, entry]) => entry.status === 'pending' || entry.status === 'processing')
-    .map(([txId]) => txId)
-
-  for (const txId of txIdsToCheck) {
-    try {
-      const dbStatus = checkTxStatusFromLocalDB(txId)
-      const entry = txQueueMap.get(txId)!
-
-      if (dbStatus === TransactionStatus.COMPLETED) {
-        entry.status = 'completed'
-        removeFromPendingTxQueue(txId)
-        console.log(`[startup] ${txId} already COMPLETED in local DB, skipping`)
-      } else if (dbStatus === TransactionStatus.REVERTED) {
-        entry.status = 'reverted'
-        removeFromPendingTxQueue(txId)
-        console.log(`[startup] ${txId} already REVERTED in local DB, skipping`)
-      } else if (dbStatus === TransactionStatus.FAILED) {
-        entry.status = 'failed'
-        const txData = pendingTxQueue.find(t => t.txId === txId)
-        if (txData) {
-          appendToFailedTxsLogs(txData, 'already failed in local DB at startup')
-          removeFromPendingTxQueue(txId)
-        }
-        console.log(`[startup] ${txId} already FAILED in local DB, skipping`)
-      } else {
-        // PENDING or PROCESSING in DB — ensure txData is in pendingTxQueue
-        const alreadyInQueue = pendingTxQueue.some(t => t.txId === txId)
-        if (!alreadyInQueue) {
-          // Was processing when we crashed — recover tx data directly from local DB
-          const tx = TransactionDB.getTransactionById(txId)
-          if (
-            tx &&
-            tx.txId &&
-            isNormalizedTxId(tx.txId) &&
-            tx.txTimestamp &&
-            tx.sender &&
-            tx.value &&
-            tx.chainId != null &&
-            getChainConfigById(chainConfigs, tx.chainId) != null
-          ) {
-            const bridgeType: TransactionQueueItem['type'] =
-              tx.type === TransactionType.BRIDGE_IN
-                ? 'coinToToken'
-                : tx.type === TransactionType.BRIDGE_VAULT
-                  ? 'vaultBridge'
-                  : 'tokenToCoin'
-            const txData: TransactionQueueItem = {
-              receipt: null as any,
-              from: tx.sender,
-              value: ethers.BigNumber.from(tx.value),
-              txId: tx.txId,
-              type: bridgeType,
-              chainId: tx.chainId,
-              txTimestamp: tx.txTimestamp,
-            }
-            pendingTxQueue.push(txData)
-            entry.status = 'pending'
-            console.log(`[startup] Recovered in-flight tx ${txId} from local DB, verified, and re-queued`)
-          } else {
-            entry.status = 'failed'
-            console.warn(`[startup] Cannot recover verified txData from local DB for ${txId}, marking failed`)
-          }
-        }
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      console.warn(`[startup] Local DB check failed for ${txId}, skipping: ${errorMessage}`)
-    }
-  }
-
-  // Sort pendingTxQueue by txTimestamp
-  pendingTxQueue.sort((a, b) => (a.txTimestamp ?? Infinity) - (b.txTimestamp ?? Infinity))
-  console.log(`[startup] Recovery complete. pendingTxQueue: ${pendingTxQueue.length}, txQueueMap: ${txQueueMap.size}`)
-
-  // Run initial cleanup
-  cleanupOldTransactions()
-
   async function processTransaction(validTx: any): Promise<void> {
     const {txId} = validTx
     const startTime = Date.now()
@@ -2129,15 +2074,20 @@ async function main(): Promise<void> {
     }
 
     // Verify with the local DB that this tx hasn't already been completed
-    const preProcessStatus = reconcileTxStatusWithLocalDB(txId, 'pre-process')
-    if (preProcessStatus != null) {
+    const preProcess = reconcileTxStatusWithLocalDB(txId, 'pre-process')
+    if (preProcess != null) {
       removeFromPendingTxQueue(txId)
-      if (preProcessStatus === 'completed') {
+      const tssSender = validTx.type === 'vaultBridge'
+        ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
+        : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+      if (preProcess === 'completed') {
+        syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
-      } else if (preProcessStatus === 'reverted') {
+      } else if (preProcess === 'reverted') {
+        syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         appendToFailedTxsLogs(validTx, 'already reverted in local DB at pre-process')
-      } else if (preProcessStatus === 'failed') {
+      } else if (preProcess === 'failed') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed in local DB at pre-process')
       }
@@ -2202,12 +2152,20 @@ async function main(): Promise<void> {
         console.log(`Transaction ${validTx.txId} was already completed in local DB (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         removeFromPendingTxQueue(txId)
+        const tssSender = validTx.type === 'vaultBridge'
+          ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
+          : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+        syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_reverted') {
         console.log(`Transaction ${validTx.txId} was already reverted in local DB (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         appendToFailedTxsLogs(validTx, 'already reverted in local DB before signing')
         removeFromPendingTxQueue(txId)
+        const tssSender = validTx.type === 'vaultBridge'
+          ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
+          : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+        syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_failed') {
         console.log(`Transaction ${validTx.txId} was already failed in local DB (pre-sign), skipping`)

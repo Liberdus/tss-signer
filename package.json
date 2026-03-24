@@ -22,12 +22,15 @@
     "tss-verify": "npm run compile && node dist/tss-tools/verify.js",
     "tss-sign-ethereum-tx": "npm run compile && node dist/tss-tools/sign-ethereum-tx.js",
     "test:tss-tools": "node dist/tss-tools/lib/committeeTopology.test.js && node dist/tss-tools/lib/channelId.test.js",
-    "start-tss": "pm2 start ecosystem.config.js",
+    "start-tss": "npm run compile && pm2 start ecosystem.config.js",
     "stop-tss": "pm2 stop ecosystem.config.js",
-    "restart-tss": "pm2 restart ecosystem.config.js",
+    "restart-tss": "npm run compile && pm2 restart ecosystem.config.js",
+    "restart-tss:observers": "npm run compile && pm2 restart $(node -e \"const {apps}=require('./ecosystem.config.js'); process.stdout.write(apps.filter(app => app.name.startsWith('observer-')).map(app => app.name).join(' '))\")",
+    "restart-tss:tss-parties": "npm run compile && pm2 restart $(node -e \"const {apps}=require('./ecosystem.config.js'); process.stdout.write(apps.filter(app => app.name.startsWith('tss-party-')).map(app => app.name).join(' '))\")",
     "delete-tss": "pm2 delete ecosystem.config.js",
     "logs-tss": "pm2 logs",
-    "status-tss": "pm2 status"
+    "status-tss": "pm2 status",
+    "flush-tss": "pm2 stop ecosystem.config.js && pm2 delete ecosystem.config.js && rm -f ./logs/*.log && pm2 flush"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",

@@ -356,6 +356,13 @@ export function getTransactionsByNonceRange(
     .all({ chainId, tssSender, fromNonce, toNonce }) as Transaction[];
 }
 
+export function getMaxNonceForSender(chainId: number, tssSender: string): number | null {
+  const row = db
+    .prepare("SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @reverted)")
+    .get({ chainId, tssSender, completed: TransactionStatus.COMPLETED, reverted: TransactionStatus.REVERTED }) as { maxNonce: number | null } | undefined
+  return row?.maxNonce ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
