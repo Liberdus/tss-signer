@@ -13,6 +13,7 @@ const DEFAULT_GO_VERSION = '1.20.3';
 const DEFAULT_MISE_VERSION = 'v2026.3.8';
 const DEFAULT_BINARY_NAME = 'tss';
 const DEFAULT_DERIVE_BINARY_NAME = 'tss-derive-pubkey';
+export const SIGNING_TIMEOUT_ERROR = 'signing-timeout';
 
 const REGROUP_LISTEN_PORT_OFFSET = 1000;
 
@@ -20,6 +21,8 @@ const REGROUP_LISTEN_PORT_OFFSET = 1000;
 type ExecOptions = {
   cwd?: string
   env?: NodeJS.ProcessEnv
+  timeoutMs?: number
+  timeoutErrorMessage?: string
 }
 
 type CommandResult = {
@@ -97,6 +100,7 @@ export type SignEthereumTxOptions = BasePartyOptions & {
   channelId?: string
   channelPassword?: string
   signDiscoveryTimeout?: string
+  timeoutMs?: number
   extraArgs?: string[]
 }
 
@@ -322,6 +326,34 @@ function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}
     let stdout = '';
     let stderr = '';
     let stdoutPending = '';
+    let settled = false;
+    let timedOut = false;
+    const timeoutMs = options.timeoutMs;
+    const timeoutErrorMessage = options.timeoutErrorMessage || 'Command timed out';
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    const timeoutTimer = timeoutMs && timeoutMs > 0
+      ? setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          timedOut = true;
+          child.kill('SIGTERM');
+          forceKillTimer = setTimeout(() => {
+            if (!settled) {
+              child.kill('SIGKILL');
+            }
+          }, 2000);
+        }, timeoutMs)
+      : undefined;
+
+    const cleanupTimers = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+      }
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+    };
 
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
@@ -345,10 +377,28 @@ function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}
     });
 
     child.on('error', (error) => {
-      reject(error);
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanupTimers();
+      if (timedOut) {
+        reject(new Error(timeoutErrorMessage));
+      } else {
+        reject(error);
+      }
     });
 
     child.on('close', (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanupTimers();
+      if (timedOut) {
+        reject(new Error(timeoutErrorMessage));
+        return;
+      }
       if (code !== 0) {
         const output = (stderr || stdout || '').trim();
         reject(new Error(output || `${path.basename(command)} exited with status ${code}`));
@@ -974,6 +1024,8 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
     env: {
       TSS_PASSWORD: password,
     },
+    timeoutMs: options.timeoutMs,
+    timeoutErrorMessage: SIGNING_TIMEOUT_ERROR,
   });
   const signatureHex = extractSignatureHex(`${result.stdout}\n${result.stderr}`);
   const signature = parseCompactSignature(signatureHex);
