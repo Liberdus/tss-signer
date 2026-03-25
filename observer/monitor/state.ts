@@ -9,6 +9,10 @@ export interface MonitorState {
   blocks: Record<string, number>;
   bridgeInBlocks: Record<string, number>;
   lastLiberdusTimestamp: number;
+  // Revert detection — keyed by chainId string
+  revertScanBlocks: Record<string, number>;
+  // Last known on-chain nonce per sender — keyed by `${chainId}:${tssSender}`
+  revertedNonces: Record<string, number>;
 }
 
 // Mutable singleton — mutated directly by ethereum.ts and liberdus.ts
@@ -17,6 +21,8 @@ export const monitorState: MonitorState = {
   blocks: {},
   bridgeInBlocks: {},
   lastLiberdusTimestamp: Date.now(),
+  revertScanBlocks: {},
+  revertedNonces: {},
 };
 
 // In-memory sync readiness flag — set to true after initial ordered sync
@@ -38,6 +44,8 @@ export function initMonitorState(statePath: string): void {
       );
       Object.assign(monitorState, saved);
       if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
+      if (!monitorState.revertScanBlocks) monitorState.revertScanBlocks = {};
+      if (!monitorState.revertedNonces) monitorState.revertedNonces = {};
     } catch (e) {
       console.warn("[observer/monitor] Failed to load monitor state, using defaults:", e);
     }

@@ -12,8 +12,12 @@ const BRIDGE_OUT_EVENT_ABI =
 const BRIDGE_IN_EVENT_ABI =
   "event BridgedIn(address indexed to, uint256 amount, uint256 indexed chainId, bytes32 indexed txId, uint256 timestamp)";
 
+const BRIDGE_IN_FUNCTION_ABI =
+  "function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public";
+
 const BRIDGE_OUT_IFACE = new ethers.utils.Interface([BRIDGE_OUT_EVENT_ABI]);
 const BRIDGE_IN_IFACE = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
+const BRIDGE_IN_CALL_IFACE = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 const INITIAL_BATCH_SIZE = 2000;
 const MIN_BATCH_SIZE = 100;
@@ -28,6 +32,10 @@ const bridgeOutBatchSizes = new Map<number, number>();
 
 const isBridgeInChainRunning = new Map<number, boolean>();
 const bridgeInBatchSizes = new Map<number, number>();
+
+const isRevertChainRunning = new Map<number, boolean>();
+// Max blocks fetched per cycle — keeps each run bounded when catching up after a long gap
+const MAX_REVERT_SCAN_BLOCKS_PER_CYCLE = 500;
 
 function getInterBatchDelayMs(nextCursor: number, toBlock: number): number {
   const remaining = toBlock - nextCursor + 1;
@@ -459,5 +467,175 @@ export async function monitorEthereumBridgeInQueryFilter(
     }
     if (requireFullSync && !chainFullyScanned) allChainsFullyScanned = false;
   }
+  // Run revert detection immediately after BridgeIn scan — always paired together
+  await monitorRevertedBridgeIns(targetChainId);
   return allChainsFullyScanned;
+}
+
+// ---------------------------------------------------------------------------
+// monitorRevertedBridgeIns — detects reverted bridgeIn calls from tssSender.
+//
+// Standard eth_getLogs cannot capture reverted transactions (no events emitted).
+// Instead this function:
+//   1. Compares the on-chain nonce for tssSender against the last known nonce.
+//   2. When a gap is detected, scans blocks in the gap range with
+//      getBlockWithTransactions, filtering for txs FROM tssSender TO the bridge
+//      contract.
+//   3. For any tx with receipt.status === 0, decodes the txId from calldata and
+//      marks the DB row as REVERTED so the TSS party's pre-sign guard can exit
+//      cleanly on the next retry.
+//
+// The block cursor (revertScanBlocks) is advanced per block so a crash mid-scan
+// resumes where it left off rather than re-scanning from the start.
+// ---------------------------------------------------------------------------
+
+export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<boolean> {
+  let allChainsSeeded = true;
+  for (const chainId of observerChainRpc.chainIds) {
+    if (targetChainId !== undefined && chainId !== targetChainId) continue;
+
+    const chainConfig = getChainConfigById(chainConfigsRaw, chainId);
+    if (!chainConfig?.tssSenderAddress) continue;
+
+    // Mirror the BridgeIn scan: vault mode only scans the secondary chain
+    if (!chainConfigsRaw.enableLiberdusNetwork) {
+      if (chainId !== chainConfigsRaw.secondaryChainConfig?.chainId) continue;
+    }
+
+    if (isRevertChainRunning.get(chainId)) {
+      console.log(`[observer/revert] Chain ${chainId} scan still active, skipping`);
+      continue;
+    }
+    isRevertChainRunning.set(chainId, true);
+
+    const tssSender = chainConfig.tssSenderAddress.toLowerCase();
+    const bridgeContract = chainConfig.contractAddress.toLowerCase();
+    const chainKey = chainId.toString();
+    const senderKey = `${chainId}:${tssSender}`;
+
+    try {
+      const [currentBlock, chainNonce] = await Promise.all([
+        observerChainRpc.withChainHttpProvider(chainId, (p) => p.getBlockNumber(), { maxRetries: 3 }),
+        observerChainRpc.withChainHttpProvider(chainId, (p) => p.getTransactionCount(tssSender), { maxRetries: 3 }),
+      ]);
+
+      // On first run, seed the nonce baseline without scanning history
+      if (monitorState.revertedNonces[senderKey] == null) {
+        monitorState.revertedNonces[senderKey] = chainNonce;
+        monitorState.revertScanBlocks[chainKey] = currentBlock;
+        saveMonitorState();
+        continue;
+      }
+
+      const lastKnownNonce = monitorState.revertedNonces[senderKey];
+
+      if (chainNonce <= lastKnownNonce) {
+        // No new txs from tssSender — advance block cursor, keeping a confirmation
+        // buffer so RPC inconsistency between getBlockNumber and getTransactionCount
+        // (e.g. load-balanced nodes at different chain tips) doesn't cause the cursor
+        // to skip past a block that contains a revert tx.
+        monitorState.revertScanBlocks[chainKey] = Math.max(
+          monitorState.revertScanBlocks[chainKey] ?? 0,
+          currentBlock - BLOCK_CONFIRMATION_BUFFER,
+        );
+        saveMonitorState();
+        continue;
+      }
+
+      const gapCount = chainNonce - lastKnownNonce;
+      const fromBlock = monitorState.revertScanBlocks[chainKey] ?? Math.max(chainConfig.deploymentBlock ?? 0, currentBlock - BLOCK_CONFIRMATION_BUFFER);
+      const toBlock = Math.min(currentBlock, fromBlock + MAX_REVERT_SCAN_BLOCKS_PER_CYCLE);
+
+      console.log(`[observer/revert] Nonce gap on chain ${chainId} (${chainConfig.name}): ${lastKnownNonce} → ${chainNonce} (${gapCount} tx(s)), scanning blocks ${fromBlock + 1}–${toBlock}`);
+
+      // In vault mode, vaultBridge DB records are stored under the source (vault) chain ID,
+      // not the secondary chain being scanned here.
+      const dbChainId = !chainConfigsRaw.enableLiberdusNetwork && chainId === chainConfigsRaw.secondaryChainConfig?.chainId
+        ? chainConfigsRaw.vaultChain!.chainId
+        : chainId;
+
+      // Check DB first — tss-party shares the same DB and may have already recorded these nonces
+      const dbTxs = TransactionDB.getTransactionsByNonceRange(dbChainId, tssSender, lastKnownNonce, chainNonce);
+      const dbFinalizedNonces = new Set(
+        dbTxs
+          .filter(tx => tx.status === TransactionDB.TransactionStatus.COMPLETED || tx.status === TransactionDB.TransactionStatus.REVERTED)
+          .map(tx => tx.nonce!)
+      );
+      // Check if every nonce in the gap is accounted for in DB
+      let allGapResolved = true;
+      for (let n = lastKnownNonce; n < chainNonce; n++) {
+        if (!dbFinalizedNonces.has(n)) { allGapResolved = false; break; }
+      }
+
+      if (allGapResolved) {
+        // All gap nonces already in DB — no block scan needed
+        console.log(`[observer/revert] All gap nonces [${lastKnownNonce}–${chainNonce - 1}] resolved in DB, skipping block scan`);
+        monitorState.revertedNonces[senderKey] = chainNonce;
+        monitorState.revertScanBlocks[chainKey] = currentBlock - BLOCK_CONFIRMATION_BUFFER;
+        saveMonitorState();
+        continue;
+      }
+
+      let found = 0;
+
+      for (let blockNum = fromBlock + 1; blockNum <= toBlock && found < gapCount; blockNum++) {
+        const block = await observerChainRpc.withChainHttpProvider(
+          chainId, (p) => p.getBlockWithTransactions(blockNum), { maxRetries: 3 });
+
+        if (block) {
+          for (const tx of block.transactions) {
+            if (tx.from?.toLowerCase() !== tssSender) continue;
+            if (tx.to?.toLowerCase() !== bridgeContract) continue;
+
+            found++;
+
+            // Skip nonces already finalized in DB
+            if (dbFinalizedNonces.has(tx.nonce)) continue;
+
+            const receipt = await observerChainRpc.withChainHttpProvider(
+              chainId, (p) => p.getTransactionReceipt(tx.hash), { maxRetries: 3 });
+
+            if (receipt?.status !== 0) continue; // success is handled by BridgeIn event scan
+
+            let txId: string | null = null;
+            try {
+              const decoded = BRIDGE_IN_CALL_IFACE.decodeFunctionData("bridgeIn", tx.data);
+              txId = normalizeTxId(decoded.txId as string);
+            } catch {
+              console.warn(`[observer/revert] Failed to decode calldata for reverted tx ${tx.hash} nonce=${tx.nonce} on chain ${chainId}`);
+            }
+
+            if (txId) {
+              const result = TransactionDB.updateTransactionStatus(
+                txId,
+                TransactionDB.TransactionStatus.REVERTED,
+                tx.hash,
+                tssSender,
+                tx.nonce,
+                null,
+              );
+              console.log(`[observer/revert] Marked ${txId} REVERTED (nonce=${tx.nonce}, hash=${tx.hash}) on chain ${chainId}: ${result}`);
+            }
+          }
+        }
+
+        monitorState.revertScanBlocks[chainKey] = blockNum;
+        saveMonitorState();
+      }
+
+      // Only advance the nonce baseline once we have scanned up to currentBlock
+      if (toBlock >= currentBlock) {
+        monitorState.revertedNonces[senderKey] = chainNonce;
+        saveMonitorState();
+      } else {
+        console.log(`[observer/revert] Scan capped at ${MAX_REVERT_SCAN_BLOCKS_PER_CYCLE} blocks, will continue next cycle`);
+      }
+    } catch (err) {
+      console.error(`[observer/revert] Error for chain ${chainId}:`, err);
+      allChainsSeeded = false;
+    } finally {
+      isRevertChainRunning.set(chainId, false);
+    }
+  }
+  return allChainsSeeded;
 }

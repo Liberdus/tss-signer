@@ -719,91 +719,40 @@ function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: num
 }
 
 
-// ---------------------------------------------------------------------------
-// getTransactionHashByNonce — binary-searches block history to find the txHash
-// for a given sender address + nonce. Falls back to null if not found.
-// ---------------------------------------------------------------------------
-
-async function getTransactionHashByNonce(
-  chainId: number,
-  address: string,
-  targetNonce: number,
-): Promise<string | null> {
-  // Binary search: find the first block where getTransactionCount(address) > targetNonce
-  const currentBlock = await chainRpcConfig.withChainHttpProvider(
-    chainId, (p) => p.getBlockNumber(), { maxRetries: 3 })
-
-  let low = 0
-  let high = currentBlock
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2)
-    const nonceAtMid = await chainRpcConfig.withChainHttpProvider(
-      chainId, (p) => p.getTransactionCount(address, mid), { maxRetries: 3 })
-    if (nonceAtMid <= targetNonce) {
-      low = mid + 1
-    } else {
-      high = mid
-    }
-  }
-
-  // `low` is the block that first included the tx consuming `targetNonce`
-  const block = await chainRpcConfig.withChainHttpProvider(
-    chainId, (p) => p.getBlockWithTransactions(low), { maxRetries: 3 })
-  if (!block) return null
-
-  for (const tx of block.transactions) {
-    if (tx.from?.toLowerCase() === address.toLowerCase() && tx.nonce === targetNonce) {
-      return tx.hash
-    }
-  }
-  return null
-}
-
-// reconcileNonceDrift — called when the chain nonce is ahead of the local nonce tracker,
-// meaning some transactions were mined without our knowledge (e.g. after a crash/restart or
-// a missed receipt). Scans the drift range [fromNonce, toNonce):
-//   1. Checks the local DB for any known txs that used nonces in the range.
-//   2. For any nonce not accounted for in the DB (gap nonces), binary-searches the chain to
-//      find the txHash, fetches its receipt, extracts the txId from the BridgedIn event (success)
-//      or calldata (revert), and updates the DB accordingly.
-//   3. If the chain has advanced further than toNonce during reconciliation, recurses to cover
-//      the wider gap.
-// Returns { latestDbNonce, receiptId } where receiptId is non-null if currentTxId was found
-// to have been completed during this reconciliation pass.
+// reconcileNonceDrift — called when the chain nonce is ahead of the local nonce tracker.
+// Checks the local DB for any tx in [fromNonce, toNonce) that matches currentTxId and is
+// already COMPLETED (i.e. another party submitted and it succeeded while we were away).
+// Gap nonces not in the DB are left for the observer's monitorRevertedBridgeIns to resolve
+// asynchronously; the pre-sign reconcile guard catches REVERTED/COMPLETED on the next retry.
+// Returns receiptId if currentTxId was found COMPLETED in the DB, null otherwise.
 // ---------------------------------------------------------------------------
 
-async function reconcileNonceDrift(
+function reconcileNonceDrift(
   currentTxId: string,
   chainId: number,
-  txType: TransactionQueueItem['type'],
   tssSender: string,
   fromNonce: number,
   toNonce: number,
-): Promise<{ latestDbNonce: number; receiptId: string | null } | null> {
-  // For vaultBridge, on-chain RPC calls target the destination chain; DB queries use the source chainId
-  const rpcChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
-  console.log(`[nonce-drift] Reconciling drift for chain=${chainId}, rpcChain=${rpcChainId}: from=${fromNonce}, to=${toNonce}`)
+): { latestDbNonce: number; receiptId: string | null } {
+  console.log(`[nonce-drift] Reconciling drift for chain=${chainId}: from=${fromNonce}, to=${toNonce}`)
 
-  // Find txs in our DB that used nonces in the drift range
-  let driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, tssSender, fromNonce, toNonce)
-
-  console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain=${chainId}, rpcChain=${rpcChainId}: from=${fromNonce}, to=${toNonce}`)
+  const driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, tssSender, fromNonce, toNonce)
+  console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain=${chainId}`)
 
   let latestDbNonce = fromNonce - 1  // gap scan starts at latestDbNonce + 1 = fromNonce
   let receiptId = ''
 
   for (const tx of driftTxs) {
-    // Track receiptId if this is the tx we're currently processing
-    if (tx.receiptId && tx.txId === currentTxId) {
+    // Only COMPLETED and REVERTED txs consumed an on-chain nonce — FAILED never reached the chain
+    if ((tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.REVERTED) && tx.receiptId && tx.txId === normalizeTxId(currentTxId)) {
       receiptId = tx.receiptId
     }
-    if (tx.status === TransactionStatus.COMPLETED && tx.nonce != null) {
+    if ((tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.REVERTED) && tx.nonce != null) {
       if (latestDbNonce < tx.nonce) {
         latestDbNonce = tx.nonce
       }
     }
-
-    // Check execution history entries for consumed nonces (COMPLETED or REVERTED = nonce used)
+    // Check execution history entries for additional consumed nonces
     const history: Record<string, ExecutionHistoryEntry> = JSON.parse(tx.executionHistory || '{}')
     for (const [nonceKey, entry] of Object.entries(history)) {
       if (entry.status === TransactionStatus.REVERTED || entry.status === TransactionStatus.COMPLETED) {
@@ -815,79 +764,9 @@ async function reconcileNonceDrift(
   }
 
   if (latestDbNonce + 1 < toNonce) {
-    // There are nonces in (latestDbNonce, toNonce) not accounted for in DB.
-    // Binary-search on-chain to find the txHash for each missing nonce, then
-    // fetch its receipt. These may belong to txs processed by another party or
-    // submitted outside our DB.
-    for (let nonce = latestDbNonce + 1; nonce < toNonce; nonce++) {
-      try {
-        const txHash = await getTransactionHashByNonce(rpcChainId, tssSender, nonce)
-        if (!txHash) {
-          console.warn(`[nonce-drift] Could not find tx for nonce=${nonce} on chain ${rpcChainId}`)
-          continue
-        }
-        const [receipt, onChainTx] = await Promise.all([
-          getChainTransactionReceipt(rpcChainId, txHash),
-          chainRpcConfig.withChainHttpProvider(
-            rpcChainId, (p) => p.getTransaction(txHash), { maxRetries: 3 }),
-        ])
-        if (receipt) {
-          latestDbNonce = nonce  // nonce was consumed regardless of status
-          console.log(`[nonce-drift] Gap nonce=${nonce} status=${receipt.status} txHash=${txHash} on chain ${rpcChainId}`)
-
-          // Extract txId: from BridgedIn event logs on success, or from calldata on revert
-          let parsedTxId: string | null = null
-
-          if (receipt.status === 1) {
-            for (const log of receipt.logs) {
-              try {
-                const parsed = BRIDGE_CONTRACT_IFACE.parseLog(log)
-                if (parsed.name === 'BridgedIn') {
-                  parsedTxId = normalizeTxId(parsed.args.txId as string)
-                  break
-                }
-              } catch {
-                // Not a BridgedIn log — skip
-              }
-            }
-          } else if (receipt.status === 0 && onChainTx?.data) {
-            // No event on revert — decode txId from calldata instead
-            try {
-              const decoded = BRIDGE_CONTRACT_IFACE.decodeFunctionData('bridgeIn', onChainTx.data)
-              parsedTxId = normalizeTxId(decoded.txId as string)
-            } catch {
-              console.warn(`[nonce-drift] Gap nonce=${nonce} reverted but failed to decode calldata`)
-            }
-          }
-
-          if (parsedTxId) {
-            const newStatus = receipt.status === 1 ? TransactionStatus.COMPLETED : TransactionStatus.REVERTED
-            console.log(`[nonce-drift] Gap nonce=${nonce} → txId=${parsedTxId} ${newStatus === TransactionStatus.COMPLETED ? 'COMPLETED' : 'REVERTED'} on chain ${rpcChainId}`)
-            updateTxStatusInLocalDB(parsedTxId, newStatus, txHash, tssSender, nonce, '')
-            if (receipt.status === 1 && parsedTxId === normalizeTxId(currentTxId)) {
-              receiptId = txHash
-            }
-          } else {
-            console.warn(`[nonce-drift] Gap nonce=${nonce} could not determine txId for txHash=${txHash}`)
-          }
-        }
-      } catch (err) {
-        console.warn(`[nonce-drift] Error fetching tx for nonce=${nonce}: ${err instanceof Error ? err.message : err}`)
-      }
-    }
-
-    // Check if chain has advanced further than toNonce — recurse to cover the wider gap
-    const latestChainNonce = await getLatestChainNonce(rpcChainId, tssSender)
-    if (latestChainNonce < latestDbNonce) {
-      // This shouldn't happen
-      console.error(`[nonce-drift] DB nonce ${latestDbNonce} > chain nonce ${latestChainNonce} for chain ${rpcChainId}`)
-    } else if (latestChainNonce > toNonce) {
-      const recurseResult = await reconcileNonceDrift(currentTxId, chainId, txType, tssSender, latestDbNonce + 1, latestChainNonce)
-      if (recurseResult) {
-        latestDbNonce = recurseResult.latestDbNonce
-        if (recurseResult.receiptId) receiptId = recurseResult.receiptId
-      }
-    }
+    console.log(`[nonce-drift] Gap: DB only resolved up to nonce=${latestDbNonce}, chain is at ${toNonce} — observer will detect via monitorRevertedBridgeIns`)
+  } else {
+    console.log(`[nonce-drift] All drift nonces resolved in DB (latestDbNonce=${latestDbNonce})`)
   }
 
   return {
@@ -1135,14 +1014,19 @@ async function processCoinToToken(
   if (localNonce != null && chainNonce > localNonce) {
     // Nonce drift — some txs with nonces in [localNonce, chainNonce) were mined without our knowledge
     console.warn(`[nonce-manager] Drift on ${targetChainName}: local=${localNonce}, chain=${chainNonce}`)
-    const driftResult = await reconcileNonceDrift(txId, targetChainId, 'coinToToken', tssSender, localNonce, chainNonce)
-    setLocalNonce(targetChainId, tssSender, chainNonce)
-    localNonce = getLocalNonce(targetChainId, tssSender)
-    if (driftResult?.receiptId) {
+    const driftResult = reconcileNonceDrift(txId, targetChainId, tssSender, localNonce, chainNonce)
+    syncLocalNonceFromDB('coinToToken', targetChainId, tssSender)
+    if (driftResult.receiptId) {
       console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
       await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId)
       return 'completed'
     }
+    if (driftResult.latestDbNonce + 1 < chainNonce) {
+      console.warn(`[nonce-drift] Gap on ${targetChainName} not yet resolved by observer, retrying later`)
+      return 'failed'
+    }
+    // All drift nonces resolved — update localNonce and continue with this tx
+    localNonce = getLocalNonce(targetChainId, tssSender)
   } else if (localNonce != null && localNonce > chainNonce) {
     // This shouldn't happen — local is ahead of chain
     console.warn(`[nonce-manager] Local nonce ahead of chain on ${targetChainName}: local=${localNonce}, chain=${chainNonce}`)
@@ -1368,15 +1252,20 @@ async function processVaultBridge(
   if (localNonce != null && chainNonce > localNonce) {
     // Nonce drift — some txs with nonces in [localNonce, chainNonce) were mined without our knowledge
     console.warn(`[nonce-manager] Drift on ${destChainName}: local=${localNonce}, chain=${chainNonce}`)
-    // For vault bridge, sourceChainId has to be passed to reconcileNonceDrift
-    const driftResult = await reconcileNonceDrift(txId, sourceChainId, 'vaultBridge', tssSender, localNonce, chainNonce)
-    setLocalNonce(destinationChainId, tssSender, chainNonce)
-    localNonce = getLocalNonce(destinationChainId, tssSender)
-    if (driftResult?.receiptId) {
+    // For vault bridge, sourceChainId is the DB key for nonce lookups
+    const driftResult = reconcileNonceDrift(txId, sourceChainId, tssSender, localNonce, chainNonce)
+    syncLocalNonceFromDB('vaultBridge', sourceChainId, tssSender)
+    if (driftResult.receiptId) {
       console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
       await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId)
       return 'completed'
     }
+    if (driftResult.latestDbNonce + 1 < chainNonce) {
+      console.warn(`[nonce-drift] Gap on ${destChainName} not yet resolved by observer, retrying later`)
+      return 'failed'
+    }
+    // All drift nonces resolved — update localNonce and continue with this tx
+    localNonce = getLocalNonce(destinationChainId, tssSender)
   } else if (localNonce != null && localNonce > chainNonce) {
     // This shouldn't happen — local is ahead of chain
     console.warn(`[nonce-manager] Local nonce ahead of chain on ${destChainName}: local=${localNonce}, chain=${chainNonce}`)
