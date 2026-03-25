@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import 'dotenv/config'
 import {spawnSync} from 'node:child_process'
 import * as bnbTss from './lib/bnbTss'
 import {resolveProjectRoot} from '../shared/utils/paths'

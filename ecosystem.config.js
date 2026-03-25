@@ -1,6 +1,12 @@
 const PARTIES = [1, 2, 3, 4, 5];
 
 const commonNodeArgs = '--max-old-space-size=2048 --expose-gc';
+const commonRestartPolicy = {
+  autorestart: true,
+  min_uptime: '10s',
+  max_restarts: 10,
+  restart_delay: 5000,
+};
 const commonEnv = {
   NODE_ENV: 'production',
   NODE_OPTIONS: '--max-old-space-size=2048 --expose-gc',
@@ -10,7 +16,7 @@ const observerApps = PARTIES.map((n) => ({
   name: `observer-${n}`,
   script: './dist/observer/index.js',
   instances: 1,
-  autorestart: true,
+  ...commonRestartPolicy,
   watch: false,
   max_memory_restart: '1G',
   node_args: commonNodeArgs,
@@ -30,7 +36,7 @@ const tssPartyApps = PARTIES.map((n) => ({
   script: './dist/scripts/tss-party.js',
   args: String(n),
   instances: 1,
-  autorestart: true,
+  ...commonRestartPolicy,
   watch: false,
   max_memory_restart: '2G',
   node_args: commonNodeArgs,

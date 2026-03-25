@@ -70,7 +70,7 @@ export async function fetchChainlistAndMerge(
     const res = await axios.get(CHAINLIST_RPCS_URL, { timeout: 15_000 });
     mergeChainlistResponse(res.data as unknown, new Set(supportedChainIds));
   } catch (error: any) {
-    console.warn("[observer/rpcUrls] Chainlist fetch failed:", error?.message || error);
+    console.warn("[rpcUrls] Chainlist fetch failed:", error?.message || error);
   }
 }
 
@@ -78,13 +78,13 @@ export function startHourlyChainlistFetch(
   supportedChainIds: number[]
 ): () => void {
   fetchChainlistAndMerge(supportedChainIds).then(() => {
-    console.log("[observer/rpcUrls] Initial chainlist fetch completed");
+    console.log("[rpcUrls] Initial chainlist fetch completed");
   });
 
   const interval = setInterval(() => {
     fetchChainlistAndMerge(supportedChainIds).then(() => {
       if (process.env.NODE_ENV !== "test") {
-        console.log("[observer/rpcUrls] Hourly chainlist merge completed");
+        console.log("[rpcUrls] Hourly chainlist merge completed");
       }
     });
   }, HOURLY_MS);
@@ -96,7 +96,7 @@ export function markUrlFailed(url: string, ttlMs?: number, reason?: string): voi
   urlBlacklistExpiry.set(url, Date.now() + (ttlMs ?? DEFAULT_TTL_MS));
   const reasonText = reason ? ` reason=${reason}` : "";
   console.warn(
-    `[observer/rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}`
+    `[rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}`
   );
   // Prune expired entries to prevent unbounded growth. URLs removed from the
   // active chainlist are never accessed again via pickAvailableUrlFromList, so
@@ -134,6 +134,13 @@ export function shouldBlacklistForError(error: unknown): boolean {
   if (code === "ETIMEDOUT") return false;
   if (/timeout|timed out/i.test(msg)) return false;
   if (/429|rate limit|too many requests|throttl/i.test(msg)) return false;
+  // Transaction-state errors usually indicate a valid node response rather than
+  // a bad RPC endpoint, even when some providers wrap them in HTTP 5xx.
+  if (
+    /nonce too low|nonce has already been used|nonce expired|already known|replacement transaction underpriced/i.test(msg)
+  ) {
+    return false;
+  }
   if (/5\d{2}/.test(String((error as any)?.status ?? (error as any)?.response?.status ?? "")))
     return true;
   if (/5\d{2}/.test(msg)) return true;

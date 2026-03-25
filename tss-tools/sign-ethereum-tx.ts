@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import 'dotenv/config'
 import * as fs from 'node:fs'
 import {ethers} from 'ethers'
 import * as bnbTss from './lib/bnbTss'

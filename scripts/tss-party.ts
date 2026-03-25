@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import {ethers} from 'ethers'
 import * as fs from 'fs'
 import {writeFile} from 'fs/promises'
@@ -934,8 +935,9 @@ function getBnbTssExpectedAddresses(): Record<number, string> {
 async function validateBnbTssSetup(): Promise<void> {
   const expectedAddressesByChainId = getBnbTssExpectedAddresses()
   const chainIds = Object.keys(expectedAddressesByChainId).map(Number)
+  console.error('Validating BNB TSS vaults for chains', chainIds)
   if (chainIds.length === 0) {
-    throw new Error('useBnbTss is enabled, but no chain has tssSenderAddress configured')
+    throw new Error('No chains configured for BNB TSS vault validation')
   }
   const results = bnbTss.validatePartyVaults({
     partyIdx: ourParty.idx,
@@ -2016,6 +2018,7 @@ async function main(): Promise<void> {
     console.log('BNB TSS vaults are ready')
   } catch (e) {
     console.error('Failed to validate BNB TSS setup:', e)
+    await sleep(200) // Small delay before exiting to show up the error in logs
     process.exit(1)
   }
 

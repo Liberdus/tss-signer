@@ -4,8 +4,7 @@
 cd /Users/user/Documents/MyProject/Shardus/Liberdus/tss-research/tss-signer
 
 # Current code path
-# scripts/tss-party.ts currently uses:
-#   const useBnbTss = true
+# scripts/tss-party.ts uses native BNB TSS signing by default.
 #
 # User-facing party indices start at 1.
 
@@ -43,6 +42,19 @@ export BNB_TSS_PASSWORD=1234567890
 export BNB_TSS_CHANNEL_ID=<replace_with_channel_id>
 export BNB_TSS_CHANNEL_PASSWORD=1234567890
 
+# Required envs by flow:
+# - BNB_TSS_PASSWORD:
+#   required for init, keygen, verify, and tss-party startup validation.
+#   If missing, startup fails with:
+#   BNB TSS vault password is required (BNB_TSS_PASSWORD)
+# - BNB_TSS_CHANNEL_ID:
+#   required for manual native keygen/regroup/sign commands unless passed via flags
+# - BNB_TSS_CHANNEL_PASSWORD:
+#   required for manual native keygen/regroup/sign commands unless passed via flags
+# - SHARDUS_CRYPTO_HASH_KEY:
+#   optional override for deterministic signing channel passwords used by tss-party.
+#   If you set it, all parties must share the same value.
+#
 # The long-lived tss-party signer derives a deterministic signing channel id from
 # each txId + txTimestamp. Keep BNB_TSS_CHANNEL_ID for manual native
 # keygen/regroup flows and ad-hoc direct tss signing.
@@ -272,7 +284,7 @@ npm run tss-regroup -- --party 5 --chain-id 31338 --is-new-member --threshold 1 
 
 
 # 15) Run the long-lived tss-party process in native mode
-# tss-party.ts currently has useBnbTss = true, so normal startup uses native tss signing.
+# tss-party.ts uses native BNB TSS signing by default, so normal startup uses native TSS signing.
 # It expects existing BNB TSS vaults and validates them on startup.
 
 node dist/tss-party.js 1

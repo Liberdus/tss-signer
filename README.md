@@ -74,10 +74,19 @@ export BNB_TSS_CHANNEL_ID=<shared-channel-id>
 export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>
 ```
 
+Required envs by flow:
+
+- `BNB_TSS_PASSWORD`: required for native vault access. This must be set before `tss-init`, `tss-keygen`, `tss-verify`, and before starting `tss-party`. If it is missing, startup validation fails with `BNB TSS vault password is required (BNB_TSS_PASSWORD)`.
+- `BNB_TSS_CHANNEL_ID`: required for manual native keygen/regroup/sign flows unless passed explicitly on the command line.
+- `BNB_TSS_CHANNEL_PASSWORD`: required for manual native keygen/regroup/sign flows unless passed explicitly on the command line.
+- `SHARDUS_CRYPTO_HASH_KEY`: optional override for the long-lived `tss-party` signer. When unset, the code falls back to a built-in default. If you set it, all parties must use the same value so deterministic signing channel passwords match.
+
 `BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD` are still required for manual native keygen and regroup flows. The long-lived `tss-party` signer derives a deterministic signing `channelId` per transaction from each transaction `txId` and `txTimestamp`, and a deterministic signing `channelPassword` from `channelId + SHARDUS_CRYPTO_HASH_KEY`.
 Native vaults are stored under `keystores/bnbtss/party-<idx>/chain-<chainId>/default/`.
 User-facing party indices start at `1`.
 The native binary is built to `./tss/.tooling/bin/tss`.
+
+For a starter env file, copy [`.env.example`](/Users/user/Documents/MyProject/Shardus/Liberdus/tss-signer/.env.example) to `.env` and fill in the BNB TSS values before running native flows.
 
 Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](tss-tools/guide.md).
 

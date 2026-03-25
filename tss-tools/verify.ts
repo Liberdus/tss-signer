@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import 'dotenv/config'
 import * as bnbTss from './lib/bnbTss'
 
 function usage(): never {

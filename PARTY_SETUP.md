@@ -32,9 +32,23 @@ Set the required environment variables before running any party commands. Confir
 ```bash
 export COLLECTOR_HOST=http://<collector-ip>:3035
 export PROXY_SERVER_HOST=http://<proxy-ip>:3030
+export BNB_TSS_PASSWORD=<shared-vault-password>
 ```
 
 These can also be set in `chain-config.json` if you prefer not to use environment variables.
+
+BNB TSS env requirements:
+
+- `BNB_TSS_PASSWORD` is required for native vault access. It must be present for `tss-init`, `tss-keygen`, `tss-verify`, and `tss-party` startup validation.
+- `BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD` are required for manual native keygen/regroup/sign commands unless passed explicitly as flags.
+- `SHARDUS_CRYPTO_HASH_KEY` is optional for `tss-party`. If you override it, every party must use the same value because signing channel passwords are derived from it.
+
+Example shared native TSS variables for keygen/regroup:
+
+```bash
+export BNB_TSS_CHANNEL_ID=<shared-channel-id>
+export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>
+```
 
 ---
 
@@ -194,7 +208,7 @@ npm run restart-tss   # restart all parties
 npm run stop-tss      # stop all parties
 ```
 
-Individual party logs are at `logs/tss-party-N-out.log` and `logs/tss-party-N-error.log`.
+Individual party logs are at `logs/tss-party-N-combined.log`.
 
 ---
 
