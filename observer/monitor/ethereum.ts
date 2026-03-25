@@ -590,8 +590,11 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
       );
 
       const pendingMissingNonces = new Set(missingNonces);
+      let scannedThroughBlock = fromBlock;
+      let shouldRetryCurrentWindow = false;
 
       for (let blockNum = fromBlock + 1; blockNum <= toBlock && pendingMissingNonces.size > 0; blockNum++) {
+        scannedThroughBlock = blockNum;
         const block = await observerChainRpc.withChainHttpProvider(
           chainId, (p) => p.getBlockWithTransactions(blockNum), { maxRetries: 3 });
 
@@ -606,41 +609,49 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
 
             const receipt = await observerChainRpc.withChainHttpProvider(
               chainId, (p) => p.getTransactionReceipt(tx.hash), { maxRetries: 3 });
-
-            if (receipt?.status !== 0) continue; // success is handled by BridgeIn event scan
+            if (!receipt) {
+              shouldRetryCurrentWindow = true;
+              continue;
+            }
 
             let txId: string | null = null;
             try {
               const decoded = BRIDGE_IN_CALL_IFACE.decodeFunctionData("bridgeIn", tx.data);
               txId = normalizeTxId(decoded.txId as string);
             } catch {
-              console.warn(`[observer/revert] Failed to decode calldata for reverted tx ${tx.hash} nonce=${tx.nonce} on chain ${chainId}`);
+              console.warn(`[observer/revert] Failed to decode calldata for tx ${tx.hash} nonce=${tx.nonce} on chain ${chainId}`);
             }
 
             if (txId) {
+              const status = receipt.status === 1 ? TransactionDB.TransactionStatus.COMPLETED : TransactionDB.TransactionStatus.REVERTED;
+              const statusLabel = status === TransactionDB.TransactionStatus.COMPLETED ? 'COMPLETED' : 'REVERTED';
               const result = TransactionDB.updateTransactionStatus(
                 txId,
-                TransactionDB.TransactionStatus.REVERTED,
+                status,
                 tx.hash,
                 tssSender,
                 tx.nonce,
                 null,
               );
               pendingMissingNonces.delete(tx.nonce);
-              console.log(`[observer/revert] Marked ${txId} REVERTED (nonce=${tx.nonce}, hash=${tx.hash}) on chain ${chainId}: ${result}`);
+              console.log(`[observer/revert] Marked ${txId} as ${statusLabel} (nonce=${tx.nonce}, hash=${tx.hash}) on chain ${chainId}: ${result}`);
             }
           }
         }
-
-        monitorState.revertScanBlocks[chainKey] = blockNum;
-        saveMonitorState();
       }
 
       // Only advance the nonce baseline once we have scanned up to currentBlock
-      if (toBlock >= currentBlock) {
+      if (shouldRetryCurrentWindow) {
+        console.log(`[observer/revert] Missing receipt(s) encountered while scanning chain ${chainId}; retrying this window next interval without advancing state`);
+      } else {
+        monitorState.revertScanBlocks[chainKey] = scannedThroughBlock;
+        saveMonitorState();
+      }
+
+      if (!shouldRetryCurrentWindow && toBlock >= currentBlock) {
         monitorState.revertedNonces[senderKey] = chainNonce;
         saveMonitorState();
-      } else {
+      } else if (!shouldRetryCurrentWindow) {
         console.log(`[observer/revert] Scan capped at ${MAX_REVERT_SCAN_BLOCKS_PER_CYCLE} blocks, will continue next cycle`);
       }
     } catch (err) {
