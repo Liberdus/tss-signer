@@ -546,7 +546,10 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
       const fromBlock = monitorState.revertScanBlocks[chainKey] ?? Math.max(chainConfig.deploymentBlock ?? 0, currentBlock - BLOCK_CONFIRMATION_BUFFER);
       const toBlock = Math.min(currentBlock, fromBlock + MAX_REVERT_SCAN_BLOCKS_PER_CYCLE);
 
-      console.log(`[observer/revert] Nonce gap on chain ${chainId} (${chainConfig.name}): ${lastKnownNonce} → ${chainNonce} (${gapCount} tx(s)), scanning blocks ${fromBlock + 1}–${toBlock}`);
+      console.log(
+        `[observer/revert] Observed sender nonce advance on chain ${chainId} (${chainConfig.name}): ` +
+        `${lastKnownNonce} → ${chainNonce} (${gapCount} tx(s)); checking DB before block scan`
+      );
 
       // In vault mode, vaultBridge DB records are stored under the source (vault) chain ID,
       // not the secondary chain being scanned here.
@@ -561,10 +564,14 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
           .filter(tx => tx.status === TransactionDB.TransactionStatus.COMPLETED || tx.status === TransactionDB.TransactionStatus.REVERTED)
           .map(tx => tx.nonce!)
       );
+      const missingNonces: number[] = [];
       // Check if every nonce in the gap is accounted for in DB
       let allGapResolved = true;
       for (let n = lastKnownNonce; n < chainNonce; n++) {
-        if (!dbFinalizedNonces.has(n)) { allGapResolved = false; break; }
+        if (!dbFinalizedNonces.has(n)) {
+          allGapResolved = false;
+          missingNonces.push(n);
+        }
       }
 
       if (allGapResolved) {
@@ -576,9 +583,15 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
         continue;
       }
 
-      let found = 0;
+      console.log(
+        `[observer/revert] DB does not fully resolve nonce range [${lastKnownNonce}–${chainNonce - 1}] ` +
+        `(missing nonce${missingNonces.length === 1 ? '' : 's'}: ${missingNonces.join(', ')}), ` +
+        `scanning blocks ${fromBlock + 1}–${toBlock}`
+      );
 
-      for (let blockNum = fromBlock + 1; blockNum <= toBlock && found < gapCount; blockNum++) {
+      const pendingMissingNonces = new Set(missingNonces);
+
+      for (let blockNum = fromBlock + 1; blockNum <= toBlock && pendingMissingNonces.size > 0; blockNum++) {
         const block = await observerChainRpc.withChainHttpProvider(
           chainId, (p) => p.getBlockWithTransactions(blockNum), { maxRetries: 3 });
 
@@ -587,10 +600,9 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
             if (tx.from?.toLowerCase() !== tssSender) continue;
             if (tx.to?.toLowerCase() !== bridgeContract) continue;
 
-            found++;
-
             // Skip nonces already finalized in DB
             if (dbFinalizedNonces.has(tx.nonce)) continue;
+            if (!pendingMissingNonces.has(tx.nonce)) continue;
 
             const receipt = await observerChainRpc.withChainHttpProvider(
               chainId, (p) => p.getTransactionReceipt(tx.hash), { maxRetries: 3 });
@@ -614,6 +626,7 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
                 tx.nonce,
                 null,
               );
+              pendingMissingNonces.delete(tx.nonce);
               console.log(`[observer/revert] Marked ${txId} REVERTED (nonce=${tx.nonce}, hash=${tx.hash}) on chain ${chainId}: ${result}`);
             }
           }

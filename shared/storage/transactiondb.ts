@@ -112,6 +112,10 @@ export function initializeTransactionsDatabase(dbPath: string): void {
       ON transactions(sender);
     CREATE INDEX IF NOT EXISTS idx_transactions_type
       ON transactions(type);
+    CREATE INDEX IF NOT EXISTS idx_transactions_chain_tssSender_nonce
+      ON transactions(chainId, tssSender, nonce);
+    CREATE INDEX IF NOT EXISTS idx_transactions_chain_tssSender_status_nonce
+      ON transactions(chainId, tssSender, status, nonce);
   `);
 
   stmtGetById = db.prepare("SELECT * FROM transactions WHERE txId = ?");
