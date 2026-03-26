@@ -602,7 +602,8 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
 
 function checkTxStatusFromLocalDB(txId: string): TransactionStatus | null {
   try {
-    const tx = TransactionDB.getTransactionById(txId)
+    const normalizedTxId = normalizeTxId(txId)
+    const tx = TransactionDB.getTransactionById(normalizedTxId)
     if (!tx) return null
     return tx.status
   } catch (error) {
@@ -716,10 +717,15 @@ function dbStatusToSkipOutcome(
 // is ahead. chainId is the source chain as stored in the DB. For vaultBridge the nonce manager
 // lives on the destination chain, so nonceCacheChainId is derived from txType.
 function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: number, tssSender: string): void {
-  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, tssSender)
-  if (maxDbNonce == null) return
+  const normalizedTssSender = toEthereumAddress(tssSender)
+  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, normalizedTssSender)
+  if (maxDbNonce == null) {
+    console.log(`[nonce-manager] No finalized tx for ${tssSender} on chain ${chainId}, skipping nonce sync`)
+    return
+  }
   const nonceCacheChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
   const currentLocal = getLocalNonce(nonceCacheChainId, tssSender)
+  console.log(`[nonce-manager] Syncing nonce for chain ${nonceCacheChainId} to ${maxDbNonce + 1} (dbChain=${chainId}, maxDbNonce=${maxDbNonce}) (currentLocal=${currentLocal})`)
   if (currentLocal == null || maxDbNonce + 1 > currentLocal) {
     setLocalNonce(nonceCacheChainId, tssSender, maxDbNonce + 1)
     console.log(`[nonce-manager] Synced nonce for chain ${nonceCacheChainId} to ${maxDbNonce + 1} (dbChain=${chainId}, maxDbNonce=${maxDbNonce})`)
@@ -743,8 +749,8 @@ function reconcileNonceDrift(
   toNonce: number,
 ): { latestDbNonce: number; receiptId: string | null } {
   console.log(`[nonce-drift] Reconciling drift for chain=${chainId}: from=${fromNonce}, to=${toNonce}`)
-
-  const driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, tssSender, fromNonce, toNonce)
+  const normalizedTssSender = toEthereumAddress(tssSender)
+  const driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, normalizedTssSender, fromNonce, toNonce)
   console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain=${chainId}`)
 
   let latestDbNonce = fromNonce - 1  // gap scan starts at latestDbNonce + 1 = fromNonce
