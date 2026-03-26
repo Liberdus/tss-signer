@@ -61,7 +61,7 @@ const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
 // /notify-bridgeout state
 // ---------------------------------------------------------------------------
 
-const NOTIFY_COOLDOWN_MS = 5_000;
+const NOTIFY_COOLDOWN_MS = 15_000;
 const notifyLastPollAt = new Map<number, number>();
 const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
 
