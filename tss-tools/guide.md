@@ -1,7 +1,7 @@
-# BNB TSS integration tryout from tss-signer
+# BNB TSS Operator Guide
 
 # Repo
-cd /Users/user/Documents/MyProject/Shardus/Liberdus/tss-research/tss-signer
+cd ~/tss-signer
 
 # Current code path
 # scripts/tss-party.ts uses native BNB TSS signing by default.

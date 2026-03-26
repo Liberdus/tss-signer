@@ -1,6 +1,6 @@
 const PARTIES = [1, 2, 3, 4, 5];
 
-const commonNodeArgs = '--max-old-space-size=2048 --expose-gc';
+const commonNodeArgs = '--max-old-space-size=4096 --expose-gc';
 const commonRestartPolicy = {
   autorestart: true,
   min_uptime: '10s',
@@ -9,7 +9,7 @@ const commonRestartPolicy = {
 };
 const commonEnv = {
   NODE_ENV: 'production',
-  NODE_OPTIONS: '--max-old-space-size=2048 --expose-gc',
+  NODE_OPTIONS: '--max-old-space-size=4096 --expose-gc',
 };
 
 const observerApps = PARTIES.map((n) => ({
@@ -18,7 +18,7 @@ const observerApps = PARTIES.map((n) => ({
   instances: 1,
   ...commonRestartPolicy,
   watch: false,
-  max_memory_restart: '1G',
+  max_memory_restart: '4G',
   node_args: commonNodeArgs,
   env: {
     ...commonEnv,
@@ -38,7 +38,7 @@ const tssPartyApps = PARTIES.map((n) => ({
   instances: 1,
   ...commonRestartPolicy,
   watch: false,
-  max_memory_restart: '2G',
+  max_memory_restart: '4G',
   node_args: commonNodeArgs,
   env: commonEnv,
   merge_logs: true,

@@ -137,7 +137,22 @@ git clone https://github.com/Liberdus/tss-signer.git
 cd tss-signer
 npm install
 npm run compile
-echo -e "${GREEN}TSS signer cloned and built successfully!${NC}"
+echo -e "${GREEN}TSS signer TypeScript compiled successfully!${NC}"
+
+# Fetch the upstream tss submodule
+echo -e "\n${YELLOW}Fetching native TSS submodule...${NC}"
+git submodule update --init --recursive
+
+# Bootstrap vendored Go toolchain if system go is missing or wrong version
+echo -e "\n${YELLOW}Bootstrapping Go toolchain (if needed)...${NC}"
+if ! command -v go &>/dev/null || [[ "$(go version 2>/dev/null)" != *"go1.20"* ]]; then
+    ./tss-tools/setup-mise-go.sh
+fi
+
+# Build the native BNB TSS binary
+echo -e "\n${YELLOW}Building native BNB TSS binary...${NC}"
+npm run tss-build
+echo -e "${GREEN}Native TSS binary built successfully!${NC}"
 
 # Print installation summary
 echo -e "\n${GREEN}==================================${NC}"
@@ -169,4 +184,4 @@ echo -e "\n${YELLOW}Switch to the customer user to continue setup:${NC}"
 echo -e "  ${GREEN}su - customer${NC}"
 echo -e "\n${YELLOW}TSS signer is at:${NC}"
 echo -e "  ${GREEN}~/tss-signer${NC}"
-echo -e "\n${YELLOW}Next: follow PARTY_SETUP.md for native TSS init, keygen, and starting the party.${NC}"
+echo -e "\n${YELLOW}Next: follow PARTY_SETUP.md for native TSS init, keygen, and starting the observer + party.${NC}"

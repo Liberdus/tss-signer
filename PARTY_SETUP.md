@@ -158,11 +158,13 @@ The contract admin is responsible for this. Send a sufficient amount of native t
 
 ---
 
-## Step 4 — Start the TSS Party
+## Step 4 — Start the Observer and TSS Party
 
 > **Role: Party operators**
 
 Once all operators have verified their keystores and the TSS address has been registered in the contracts, the parties can be started.
+
+Each party index runs **two** paired processes: an **observer** (on-chain monitor) and a **TSS party** (signer). Both must be running for the bridge to operate.
 
 **Option A — all 5 parties on one machine via PM2**
 
@@ -170,20 +172,22 @@ Once all operators have verified their keystores and the TSS address has been re
 npm run start-tss
 ```
 
-This starts all 5 party processes under PM2 (`tss-party-1` through `tss-party-5`) with auto-restart and log rotation.
+This starts all 10 processes under PM2 — `observer-1` through `observer-5` and `tss-party-1` through `tss-party-5` — with auto-restart and log rotation.
 
-**Option B — single party via PM2 (one party per machine)**
+**Option B — single party per machine via PM2**
 
-When each operator runs on a separate machine, start only your own party with PM2:
+When each operator runs on a separate machine, start only your own observer and TSS party using `ecosystem.config.js` with `--only`. This picks up all memory limits, node args, and env vars from the config automatically.
 
 ```bash
-pm2 start npm --name "tss-party-<YOUR_PARTY_INDEX>" -- run tss-party -- <YOUR_PARTY_INDEX>
+pm2 start ecosystem.config.js --only observer-<YOUR_PARTY_INDEX>
+pm2 start ecosystem.config.js --only tss-party-<YOUR_PARTY_INDEX>
 ```
 
 For example, operator 3 runs:
 
 ```bash
-pm2 start npm --name "tss-party-3" -- run tss-party -- 3
+pm2 start ecosystem.config.js --only observer-3
+pm2 start ecosystem.config.js --only tss-party-3
 ```
 
 Save the PM2 process list so it restarts on reboot:
@@ -193,22 +197,37 @@ pm2 save
 pm2 startup
 ```
 
-**Option C — single party directly (no PM2)**
+**Option C — directly (no PM2, for debugging)**
 
 ```bash
-node dist/tss-party.js <YOUR_PARTY_INDEX>
+# In one terminal: start the observer
+PARTY_INDEX=<YOUR_PARTY_INDEX> node dist/observer/index.js
+
+# In another terminal: start the TSS party
+node dist/scripts/tss-party.js <YOUR_PARTY_INDEX>
 ```
 
 **Useful PM2 commands:**
 
 ```bash
-npm run status-tss    # check all party process statuses
-npm run logs-tss      # stream combined logs
-npm run restart-tss   # restart all parties
-npm run stop-tss      # stop all parties
+# All-on-one-machine setup
+npm run status-tss              # check all process statuses
+npm run logs-tss                # stream combined logs
+npm run restart-tss             # restart all 10 processes
+npm run restart-tss:observers   # restart observer-1..5
+npm run restart-tss:tss-parties # restart tss-party-1..5
+npm run stop-tss                # stop all processes
+
+# Single-party machine — use process names directly
+pm2 restart observer-<N> tss-party-<N>
+pm2 stop observer-<N> tss-party-<N>
+pm2 logs observer-<N>
+pm2 logs tss-party-<N>
 ```
 
-Individual party logs are at `logs/tss-party-N-combined.log`.
+Log files are at:
+- `logs/observer-N-combined.log`
+- `logs/tss-party-N-combined.log`
 
 ---
 
@@ -221,4 +240,4 @@ Individual party logs are at `logs/tss-party-N-combined.log`.
 | 3. Verify (`tss-verify`) | Each party operator independently | Share and cross-check EOA addresses across all operators |
 | 4. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
 | 5. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
-| 6. Start party | Each party operator independently | TSS address must be registered and funded |
+| 6. Start observer + party | Each party operator independently | TSS address must be registered and funded; both observer and TSS party must run together |
