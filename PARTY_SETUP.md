@@ -14,11 +14,21 @@ This guide walks all 5 party operators through the one-time setup required befor
 
 > **Role: All party operators**
 
-All 5 party operators must have a working environment before starting (Node.js, PM2, Go if needed, and the built repo). If not already set up, run:
+All 5 party operators must have a working environment before starting (Node.js, PM2, Go if needed, and the built repo). If not already set up, run the environment setup script as root.
+
+**On a fresh machine (run as root):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Liberdus/tss-signer/main/scripts/setup-env.sh | sudo bash
+```
+
+**If you already have the repo cloned locally:**
 
 ```bash
 sudo bash scripts/setup-env.sh
 ```
+
+The script creates a `customer` user, installs NVM, Node.js v20, PM2, clones the repo, compiles TypeScript, and builds the native BNB TSS binary.
 
 Then switch to the `customer` user and navigate to the repo:
 
