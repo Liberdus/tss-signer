@@ -23,6 +23,12 @@ git submodule update --init --recursive
 # 4) Bootstrap the vendored Go toolchain if build says Go is missing
 ./tss-tools/setup-mise-go.sh
 
+# Supported bootstrap platforms:
+# - darwin-arm64
+# - linux-x64
+# - linux-arm64
+# Windows is not supported by this bootstrap flow.
+
 # 5) Build the patched native tss binary
 ./tss-tools/build-tss.sh
 

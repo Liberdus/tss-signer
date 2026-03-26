@@ -23,6 +23,8 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
   - Applies `patches/tss-source.patch` to the upstream `tss` checkout and builds the native binary to `../tss/.tooling/bin/tss` plus the `tss-derive-pubkey` helper.
 - `setup-mise-go.sh`
   - Bootstraps a local Go toolchain under `tss/.tooling/mise` when the system `go` binary is absent or the wrong version.
+  - Supports `darwin-arm64`, `linux-x64`, and `linux-arm64`.
+  - Windows is not supported by this bootstrap flow.
 - `test-sign-rounds.sh`
   - Multi-scenario signing test harness. Runs configurable rounds across 34 startup-delay scenarios for a configurable committee size (default 7-party, threshold=3, min_sign=4 for thorough coverage). Reports PASS/FAIL per scenario. Logs to `test-result.log` and `test-party{1..N}.log`.
 - `guide.md`

@@ -66,6 +66,8 @@ If `npm run tss-build` says the Go toolchain is missing, bootstrap the local ven
 ./tss-tools/setup-mise-go.sh
 ```
 
+The vendored Go bootstrap supports macOS and Linux on supported CPU architectures (`darwin-arm64`, `linux-x64`, `linux-arm64`). Windows is not supported by this bootstrap flow.
+
 Then build:
 
 ```bash
@@ -135,7 +137,7 @@ These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing h
 | Path | Purpose |
 |---|---|
 | `tss-tools/build-tss.sh` | Applies the local patch to the upstream `tss` checkout and builds `./tss/.tooling/bin/tss` plus `./tss/.tooling/bin/tss-derive-pubkey`. |
-| `tss-tools/setup-mise-go.sh` | Bootstraps a local Go toolchain under `tss/.tooling/mise` when system `go` is unavailable. |
+| `tss-tools/setup-mise-go.sh` | Bootstraps a local Go toolchain under `tss/.tooling/mise` when system `go` is unavailable. Supports `darwin-arm64`, `linux-x64`, and `linux-arm64`; Windows is not supported. |
 | `tss-tools/init.ts` | Initializes one native TSS party home and vault for a given party index and chain id. |
 | `tss-tools/keygen.ts` | Runs native TSS keygen for one party using the shared channel settings and `params.json` defaults unless overridden. By default it supplies deterministic local `--p2p.peer_addrs` for same-host committees. |
 | `tss-tools/verify.ts` | Derives and prints the compressed pubkey, Ethereum pubkey, or Ethereum address from an existing native vault. |

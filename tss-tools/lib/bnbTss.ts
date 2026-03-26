@@ -208,6 +208,50 @@ function resolvePatchPath(signerRoot = resolveProjectRoot()): string {
   return path.join(resolveOverlayRoot(signerRoot), 'patches', 'tss-source.patch');
 }
 
+export function resolveMisePlatform(platform = process.platform, arch = process.arch): string {
+  const normalizedPlatform = (() => {
+    switch (platform) {
+      case 'darwin':
+        return 'darwin';
+      case 'linux':
+        return 'linux';
+      default:
+        throw new Error(
+          `Unsupported platform '${platform}/${arch}'. Supported platforms: darwin/arm64, linux/x64, linux/arm64. Windows is not supported by this bootstrap flow.`,
+        );
+    }
+  })();
+
+  const normalizedArch = (() => {
+    switch (arch) {
+      case 'arm64':
+        return 'arm64';
+      case 'x64':
+        return 'x64';
+      default:
+        throw new Error(
+          `Unsupported platform '${platform}/${arch}'. Supported platforms: darwin/arm64, linux/x64, linux/arm64. Windows is not supported by this bootstrap flow.`,
+        );
+    }
+  })();
+
+  const misePlatform = `${normalizedPlatform}-${normalizedArch}`;
+  switch (misePlatform) {
+    case 'darwin-arm64':
+    case 'linux-x64':
+    case 'linux-arm64':
+      return misePlatform;
+    default:
+      throw new Error(
+        `Unsupported platform '${platform}/${arch}'. Supported platforms: darwin/arm64, linux/x64, linux/arm64. Windows is not supported by this bootstrap flow.`,
+      );
+  }
+}
+
+function resolveMiseArchiveName(platform = process.platform, arch = process.arch): string {
+  return `mise-${DEFAULT_MISE_VERSION}-${resolveMisePlatform(platform, arch)}.tar.gz`;
+}
+
 function resolveGoBinary(tssRoot: string): string | null {
   if (process.env.GO_BIN && fs.existsSync(process.env.GO_BIN)) {
     return process.env.GO_BIN;
@@ -246,7 +290,8 @@ function ensureGoBinary(tssRoot: string): string {
   fs.mkdirSync(path.join(miseRoot, 'config'), {recursive: true});
 
   if (!fs.existsSync(miseBin)) {
-    const archivePath = path.join('/tmp', 'mise-macos-arm64.tar.gz');
+    const archiveName = resolveMiseArchiveName();
+    const archivePath = path.join('/tmp', archiveName);
     runOrThrow('curl', [
       '-fL',
       '--retry',
@@ -254,7 +299,7 @@ function ensureGoBinary(tssRoot: string): string {
       '--retry-delay',
       '2',
       '--retry-all-errors',
-      `https://github.com/jdx/mise/releases/download/${DEFAULT_MISE_VERSION}/mise-${DEFAULT_MISE_VERSION}-macos-arm64.tar.gz`,
+      `https://github.com/jdx/mise/releases/download/${DEFAULT_MISE_VERSION}/${archiveName}`,
       '-o',
       archivePath,
     ]);
