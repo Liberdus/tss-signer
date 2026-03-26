@@ -11,6 +11,9 @@ tx.json
 # Environment variables
 .env
 
+# Local Infura API keys (never commit)
+infura-keys.json
+
 # Runtime database files
 db/
 *.sqlite
