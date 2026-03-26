@@ -31,6 +31,30 @@ export function initFromConfig(
   }
 }
 
+export function addHttpUrls(
+  chainId: number,
+  urls: string[],
+  options: { prepend?: boolean } = {}
+): void {
+  const list = httpRpcUrlsByChain.get(chainId) ?? [];
+  const normalized: string[] = [];
+  for (const u of urls) {
+    const url = normalizeRpcUrl(u);
+    if (!url) continue;
+    if (!(url.startsWith("http://") || url.startsWith("https://"))) continue;
+    if (!normalized.includes(url)) normalized.push(url);
+  }
+  if (normalized.length === 0) return;
+
+  const next = options.prepend ? [...normalized, ...list] : [...list, ...normalized];
+  // Deduplicate while preserving order
+  const dedup: string[] = [];
+  for (const u of next) {
+    if (!dedup.includes(u)) dedup.push(u);
+  }
+  httpRpcUrlsByChain.set(chainId, dedup);
+}
+
 export function mergeChainlistResponse(
   data: unknown,
   supportedChainIds: Set<number>
