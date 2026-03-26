@@ -373,7 +373,81 @@ bash tss-tools/test-sign-rounds.sh 1 5
 # (threshold signing) as long as at least threshold+1 parties are present.
 
 
-# 20) If verify/sign fails, check these first
+# 20) Patch peer addresses in existing vaults (multi-machine deployment fix)
+#
+# If keystores were generated locally (all parties on 127.0.0.1) and then deployed
+# to separate machines, the tss sign command will fail — it dials 127.0.0.1 instead
+# of the real machine IPs. Use the patch-peer-addrs utility to fix this without
+# re-running keygen or regroup (the TSS Ethereum address is preserved).
+#
+# The utility decrypts each party's config.json, updates peer_addrs and peers with
+# real IPs, and re-encrypts. Key share files (pk.json, sk.json, node_key) are untouched.
+#
+# Step 1: Collect each party's peer ID using tss describe
+#   The peer ID is stable — it is derived from node_key and never changes.
+#   Run on each machine (or locally if you have all keystores):
+#
+#   ./tss/.tooling/bin/tss describe \
+#     --home keystores/bnbtss/party-N/chain-<CHAIN_ID> \
+#     --vault_name default \
+#     --password <BNB_TSS_PASSWORD>
+#
+#   Look for the "Id" field in the output:
+#     "Id": "12D3KooW..."
+#
+# Step 2: Run the patch utility (from repo root or tss-tools/patch-peer-addrs/)
+#
+#   export PATH=$(pwd)/tss/.tooling/mise/data/installs/go/1.20.3/bin:$PATH
+#   cd tss-tools/patch-peer-addrs
+#   go mod tidy   # first time only
+#   go run . \
+#     --keystore-root ../../keystores/<your-keystore-dir>/bnbtss \
+#     --chain-id <CHAIN_ID> \
+#     --password <BNB_TSS_PASSWORD> \
+#     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
+#     --peer-ids "<party1-Id>,<party2-Id>,<party3-Id>,<party4-Id>,<party5-Id>"
+#
+#   Both --ips and --peer-ids are comma-separated in party order (party-1 first).
+#
+# Step 3: Verify the patch
+#   Run tss describe again — peer_addrs should now show the real IPs.
+#
+# Step 4: Deploy only config.json to each machine
+#   Key share files are unchanged so only config.json needs to be redeployed:
+#
+#   IPS=([1]="<party1-ip>" [2]="<party2-ip>" ... [5]="<party5-ip>")
+#   for i in 1 2 3 4 5; do
+#     scp -i ~/.ssh/tss_deploy \
+#       keystores/<your-keystore-dir>/bnbtss/party-$i/chain-<CHAIN_ID>/default/config.json \
+#       customer@${IPS[$i]}:~/tss-signer/keystores/bnbtss/party-$i/chain-<CHAIN_ID>/default/config.json &
+#   done
+#   wait
+#
+# Step 5: Validate with a native sign test (optional but recommended)
+#   Run on at least threshold+1 machines simultaneously with the same channel/message:
+#
+#   ~/tss-signer/tss/.tooling/bin/tss sign \
+#     --home ~/tss-signer/keystores/bnbtss/party-N/chain-<CHAIN_ID> \
+#     --vault_name default \
+#     --password <BNB_TSS_PASSWORD> \
+#     --channel_id <CHANNEL_ID> \
+#     --channel_password <CHANNEL_PASSWORD> \
+#     --message 1 \
+#     --sign_discovery_timeout 30s \
+#     --log_level info
+#
+#   A successful run prints "signing finished!" and exits 0 on all parties.
+#
+# Step 6: Restart tss-party processes
+#
+#   for i in 1 2 3 4 5; do
+#     ssh -i ~/.ssh/tss_deploy customer@${IPS[$i]} \
+#       "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && pm2 restart tss-party-$i" &
+#   done
+#   wait
+
+
+# 21) If verify/sign fails, check these first
 # - Did ./tss-tools/build-tss.sh succeed?
 # - Did you set the three env vars?
 # - Are all parties using the same channel id and channel password?
