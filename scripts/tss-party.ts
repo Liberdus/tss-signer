@@ -122,6 +122,23 @@ const operationFlag = process.argv[3]
 
 const verboseLogs = true
 
+// ─── Chaos / Debug Flags ─────────────────────────────────────────────────────
+// Inject failure scenarios during testing. All flags should be false for production.
+
+/** Skip the pre-process/pre-sign local DB status guard in reconcileTxStatusWithLocalDB.
+ *  Useful when testing without a populated DB or to force re-processing of already-completed txs. */
+const DEBUG_SKIP_TX_STATUS_CHECK = false
+
+/** Skip nonce drift reconciliation in reconcileNonceDrift; always returns toNonce-1 with no receiptId.
+ *  Use when the DB nonce index is incomplete or to isolate signing flow from nonce logic. */
+const DEBUG_SKIP_NONCE_RECONCILIATION = false
+
+/** Force processVaultBridge to return 'failed' before submitting the EVM tx, simulating a
+ *  mid-flight failure that leaves a gap in the on-chain nonce sequence (chaos: nonce drift test). */
+const DEBUG_SIMULATE_NONCE_DRIFT = false
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const serverStartTime = Date.now()
 
 const params: ParamsConfig = paramsConfigRaw
@@ -688,6 +705,7 @@ function reconcileTxStatusWithLocalDB(
   txId: string,
   context: 'pre-process' | 'pre-sign',
 ): null | 'completed' | 'failed' | 'reverted' {
+  if (DEBUG_SKIP_TX_STATUS_CHECK) return null
   try {
     const status = checkTxStatusFromLocalDB(txId)
     if (status == null || status === TransactionStatus.PENDING || status === TransactionStatus.PROCESSING) {
@@ -736,8 +754,8 @@ function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: num
 // reconcileNonceDrift — called when the chain nonce is ahead of the local nonce tracker.
 // Checks the local DB for any tx in [fromNonce, toNonce) that matches currentTxId and is
 // already COMPLETED (i.e. another party submitted and it succeeded while we were away).
-// Gap nonces not in the DB are left for the observer's monitorRevertedBridgeIns to resolve
-// asynchronously; the pre-sign reconcile guard catches REVERTED/COMPLETED on the next retry.
+// Gap nonces not in the DB are left for the observer to resolve asynchronously;
+// the pre-sign reconcile guard catches REVERTED/COMPLETED on the next retry.
 // Returns receiptId if currentTxId was found COMPLETED in the DB, null otherwise.
 // ---------------------------------------------------------------------------
 
@@ -748,6 +766,8 @@ function reconcileNonceDrift(
   fromNonce: number,
   toNonce: number,
 ): { latestDbNonce: number; receiptId: string | null } {
+  if (DEBUG_SKIP_NONCE_RECONCILIATION) return { latestDbNonce: toNonce - 1, receiptId: null }
+
   console.log(`[nonce-drift] Reconciling drift for chain=${chainId}: from=${fromNonce}, to=${toNonce}`)
   const normalizedTssSender = toEthereumAddress(tssSender)
   const driftTxs = TransactionDB.getTransactionsByNonceRange(chainId, normalizedTssSender, fromNonce, toNonce)
@@ -778,7 +798,7 @@ function reconcileNonceDrift(
   }
 
   if (latestDbNonce + 1 < toNonce) {
-    console.log(`[nonce-drift] Gap: DB only resolved up to nonce=${latestDbNonce}, chain is at ${toNonce} — observer will detect via monitorRevertedBridgeIns`)
+    console.log(`[nonce-drift] Gap: DB only resolved up to nonce=${latestDbNonce}, chain is at ${toNonce} — observer will detect and resolve`)
   } else {
     console.log(`[nonce-drift] All drift nonces resolved in DB (latestDbNonce=${latestDbNonce})`)
   }
@@ -1390,6 +1410,9 @@ async function processVaultBridge(
   console.log(`Signer ${tssSender} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
   console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
   let res: { success: boolean; reason?: string }
+
+  if (DEBUG_SIMULATE_NONCE_DRIFT) return 'failed'
+
   // Retry injection with linear delay progression
   try {
     res = await retryOperation(() => injectEthereumTx(destinationChainId, txHash, signedTx), {
