@@ -1,39 +1,39 @@
 /**
- * Drift-resistant scheduler that aligns execution to exact second boundaries,
- * preventing gradual timer drift across long-running processes.
+ * Drift-resistant scheduler that aligns execution to fixed interval boundaries
+ * derived from epoch time rather than process start, preventing gradual timer
+ * drift across long-running processes.
+ *
+ * For async functions, the next run is scheduled only after the current run
+ * settles, preventing overlapping executions.
  */
 export function startDriftResistantScheduler(
   fn: () => void | Promise<void>,
   intervalMS: number,
 ): void {
+  if (!Number.isFinite(intervalMS) || intervalMS <= 0) {
+    throw new Error(`Invalid scheduler interval: ${intervalMS}`);
+  }
+
   console.log(
     `Starting drift-resistant scheduler for ${fn.name} with interval ${intervalMS} ms`,
   );
-  const intervalSeconds = Math.round(intervalMS / 1000);
 
-  function scheduleNext() {
-    const now = new Date();
-    const currentSeconds = now.getSeconds();
+  function delayUntilNextBoundary(nowMs: number): number {
+    const remainder = nowMs % intervalMS;
+    return remainder === 0 ? intervalMS : intervalMS - remainder;
+  }
 
-    let nextBoundary =
-      Math.floor(currentSeconds / intervalSeconds + 1) * intervalSeconds;
+  function scheduleNext(): void {
+    const delay = delayUntilNextBoundary(Date.now());
 
-    const targetTime = new Date(now);
-
-    if (nextBoundary >= 60) {
-      targetTime.setMinutes(targetTime.getMinutes() + 1);
-      targetTime.setSeconds(nextBoundary - 60, 0);
-    } else {
-      targetTime.setSeconds(nextBoundary, 0);
-    }
-
-    const delay = targetTime.getTime() - now.getTime();
-
-    setTimeout(() => {
-      Promise.resolve(fn()).catch((err) => {
+    setTimeout(async () => {
+      try {
+        await fn();
+      } catch (err) {
         console.error(`[scheduler] Unhandled error in ${fn.name}:`, err);
-      });
-      scheduleNext();
+      } finally {
+        scheduleNext();
+      }
     }, delay);
   }
 
