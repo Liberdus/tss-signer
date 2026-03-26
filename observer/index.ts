@@ -104,6 +104,66 @@ app.get("/health", (_req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Transactions API (compat with bridge UI coordinator endpoint)
+// ---------------------------------------------------------------------------
+
+const TX_PAGE_SIZE = 10;
+
+function parseIntQuery(value: unknown): number | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+app.get(["/transaction", "/transactions"], (req, res) => {
+  try {
+    const txId = typeof req.query.txId === "string" ? req.query.txId : undefined;
+    const sender = typeof req.query.sender === "string" ? req.query.sender : undefined;
+    const type = parseIntQuery(req.query.type);
+    const status = parseIntQuery(req.query.status);
+    const page = Math.max(1, parseIntQuery(req.query.page) ?? 1);
+
+    if (txId) {
+      const tx = TransactionDB.getTransactionById(txId);
+      return res.json({
+        Ok: {
+          transactions: tx ? [tx] : [],
+          totalTranactions: tx ? 1 : 0,
+          totalPages: 1,
+        },
+      });
+    }
+
+    const options: Parameters<typeof TransactionDB.getTransactionsByPage>[2] = {};
+    if (sender) options.sender = sender;
+    if (TransactionDB.isTransactionType(type)) options.type = type;
+    if (TransactionDB.isTransactionStatus(status)) options.status = status;
+
+    const total = TransactionDB.getTotalTransactions(options);
+    const totalPages = Math.max(1, Math.ceil(total / TX_PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+    const offset = (safePage - 1) * TX_PAGE_SIZE;
+
+    const transactions = TransactionDB.getTransactionsByPage(
+      TX_PAGE_SIZE,
+      offset,
+      options
+    );
+
+    return res.json({
+      Ok: {
+        transactions,
+        totalTranactions: total,
+        totalPages,
+      },
+    });
+  } catch (e) {
+    console.error("[observer] /transactions failed:", e);
+    return res.status(500).json({ Err: "Failed to fetch transactions" });
+  }
+});
+
 app.post("/notify-bridgeout", (req, res) => {
   const { chainId } = req.body;
 
