@@ -322,6 +322,10 @@ if (!fs.existsSync(KEYSTORE_DIR)) {
 
 const pendingTxQueue: TransactionQueueItem[] = []
 const txQueueMap: Map<string, TxQueueEntry> = new Map()
+// Deferred removal set — populated wherever a tx should be dropped from
+// pendingTxQueue. Drained at the top of each handleTransactionQueue tick so
+// that no async code mutates pendingTxQueue while the dispatch loop iterates it.
+const pendingTxQueueRemovalSet = new Set<string>()
 const txQueueProcessingInterval = 10000
 const TX_POLL_INTERVAL = 10 * 1000 // 10s
 const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the bridgeInCooldown 1-minute)
@@ -414,14 +418,6 @@ function cleanupOldTransactions() {
     }
   }
 }
-
-function removeFromPendingTxQueue(txId: string): void {
-  const idx = pendingTxQueue.findIndex(t => t.txId === txId)
-  if (idx !== -1) pendingTxQueue.splice(idx, 1)
-}
-
-
-
 
 function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): void {
   try {
@@ -1012,7 +1008,7 @@ async function processCoinToToken(
     console.error(reason)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
-    removeFromPendingTxQueue(txId)
+    pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
     return 'failed'
@@ -1198,7 +1194,7 @@ async function processCoinToToken(
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${targetChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
-    removeFromPendingTxQueue(txId)
+    pendingTxQueueRemovalSet.add(txId)
     // Don't increment nonce — tx may not have been broadcast/mined
     // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
     return 'failed'
@@ -1250,7 +1246,7 @@ async function processVaultBridge(
     console.error(reason)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
-    removeFromPendingTxQueue(txId)
+    pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
     return 'failed'
@@ -1443,7 +1439,7 @@ async function processVaultBridge(
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${destChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
-    removeFromPendingTxQueue(txId)
+    pendingTxQueueRemovalSet.add(txId)
     // Don't increment nonce — tx may not have been broadcast/mined
     // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
     return 'failed'
@@ -1562,7 +1558,7 @@ async function processTokenToCoin(
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed from ${sourceChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, liberdusTssSender, liberdusNonce, res.reason as string)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
-    removeFromPendingTxQueue(txId)
+    pendingTxQueueRemovalSet.add(txId)
     return 'failed'
   }
 }
@@ -1951,7 +1947,7 @@ async function main(): Promise<void> {
     if (txQueueMap.get(txId)?.status === 'completed') {
       console.log(`⏩ Transaction ${txId} was recently completed, skipping duplicate processing`)
       txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
-      removeFromPendingTxQueue(txId)
+      pendingTxQueueRemovalSet.add(txId)
       processingTransactionIds.delete(txId)
       return
     }
@@ -1959,7 +1955,7 @@ async function main(): Promise<void> {
     // Verify with the local DB that this tx hasn't already been completed
     const preProcess = reconcileTxStatusWithLocalDB(txId, 'pre-process')
     if (preProcess != null) {
-      removeFromPendingTxQueue(txId)
+      pendingTxQueueRemovalSet.add(txId)
       const tssSender = validTx.type === 'vaultBridge'
         ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
         : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
@@ -2020,21 +2016,20 @@ async function main(): Promise<void> {
       const outcome = await Promise.race([processPromise, failPromise]) as ProcessOutcome
       if (outcome === 'completed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
+        pendingTxQueueRemovalSet.add(txId)
         console.log('Transaction processed successfully:', validTx)
-        // Remove the tx from the queue
-        removeFromPendingTxQueue(txId)
       } else if (outcome === 'reverted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        pendingTxQueueRemovalSet.add(txId)
         appendToFailedTxsLogs(validTx, 'reverted on-chain')
         console.warn(`Transaction ${validTx.txId} was executed but reverted on-chain`)
-        removeFromPendingTxQueue(txId)
       } else if (outcome === 'failed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         console.warn(`Transaction ${validTx.txId} reported failed outcome during processing`)
       } else if (outcome === 'skipped_db_completed') {
         console.log(`Transaction ${validTx.txId} was already completed in local DB (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
-        removeFromPendingTxQueue(txId)
+        pendingTxQueueRemovalSet.add(txId)
         const tssSender = validTx.type === 'vaultBridge'
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
@@ -2043,8 +2038,8 @@ async function main(): Promise<void> {
       } else if (outcome === 'skipped_db_reverted') {
         console.log(`Transaction ${validTx.txId} was already reverted in local DB (pre-sign), skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        pendingTxQueueRemovalSet.add(txId)
         appendToFailedTxsLogs(validTx, 'already reverted in local DB before signing')
-        removeFromPendingTxQueue(txId)
         const tssSender = validTx.type === 'vaultBridge'
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
@@ -2052,8 +2047,8 @@ async function main(): Promise<void> {
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_failed') {
         console.log(`Transaction ${validTx.txId} was already failed in local DB (pre-sign), skipping`)
-        removeFromPendingTxQueue(txId)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+        pendingTxQueueRemovalSet.add(txId)
         appendToFailedTxsLogs(validTx, 'already failed in local DB before signing')
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
@@ -2071,7 +2066,7 @@ async function main(): Promise<void> {
         const finalStatus = checkTxStatusFromLocalDB(validTx.txId)
         if (finalStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
-          removeFromPendingTxQueue(txId)
+          pendingTxQueueRemovalSet.add(txId)
           await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
           // Another party submitted this tx — nonce was consumed, advance local tracker
           if (validTx.type !== 'tokenToCoin') {
@@ -2126,6 +2121,17 @@ async function main(): Promise<void> {
 
   const handleTransactionQueue = () => {
     console.log('Running handleTransactionQueue', new Date().toISOString())
+
+    // Drain the deferred removal set — remove entries that async
+    // processing marked for removal. Backward iteration avoids index corruption.
+    if (pendingTxQueueRemovalSet.size > 0) {
+      for (let i = pendingTxQueue.length - 1; i >= 0; i--) {
+        if (pendingTxQueueRemovalSet.has(pendingTxQueue[i].txId)) {
+          pendingTxQueue.splice(i, 1)
+        }
+      }
+      pendingTxQueueRemovalSet.clear()
+    }
 
     // Process new transactions while we have available slots
     for (const validTx of pendingTxQueue) {
