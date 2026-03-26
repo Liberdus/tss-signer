@@ -1,6 +1,7 @@
 import {ChainConfig} from './config'
 import {ethers} from 'ethers'
 import * as rpcUrls from './lib/rpcUrls'
+import {infuraHttpRpcUrl} from './lib/infura'
 import {
   getHttpProviderForChain,
   invalidateCachedProvider,
@@ -42,6 +43,10 @@ export function buildChainProviderMap<T>(
 
 export function initializeChainRpcConfig(
   chains: ChainConfig[],
+  options: {
+    useInfuraRpcProviders?: boolean
+    infuraApiKeys?: string[]
+  } = {},
 ): InitializedRpcConfig {
   const chainIds = chains.map((config) => config.chainId)
   const rpcConfigByChainId: Record<string, {rpcUrl: string}> = {}
@@ -53,6 +58,19 @@ export function initializeChainRpcConfig(
   }
 
   rpcUrls.initFromConfig(rpcConfigByChainId)
+
+  // Optionally prefer Infura HTTP RPCs (when supported for the chainId).
+  if (options.useInfuraRpcProviders && (options.infuraApiKeys?.length ?? 0) > 0) {
+    for (const config of chains) {
+      const infuraUrls = (options.infuraApiKeys ?? [])
+        .map((k) => infuraHttpRpcUrl(config.chainId, k))
+        .filter((u): u is string => !!u)
+      if (infuraUrls.length > 0) {
+        rpcUrls.addHttpUrls(config.chainId, infuraUrls, {prepend: true})
+      }
+    }
+  }
+
   rpcUrls.startHourlyChainlistFetch(chainIds)
 
   function getHttpRpcUrlsForChain(chainId: number): string[] {
