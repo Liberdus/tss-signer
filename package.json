@@ -14,7 +14,7 @@
     "start-observer": "npm run compile && node dist/observer/index.js",
     "dev-observer": "nodemon --watch observer --exec ts-node observer/index.ts",
     "test": "npm run compile && npm run test:tss-tools",
-    "tss-party": "npm run compile && node dist/tss-party.js",
+    "tss-party": "npm run compile && node dist/scripts/tss-party.js",
     "tss-build": "./tss-tools/build-tss.sh",
     "tss-init": "npm run compile && node dist/tss-tools/init.js",
     "tss-keygen": "npm run compile && node dist/tss-tools/keygen.js",
