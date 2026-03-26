@@ -17,6 +17,11 @@ export interface ChainConfigs {
   vaultChain?: ChainConfig
   secondaryChainConfig?: ChainConfig
   enableLiberdusNetwork: boolean
+  /**
+   * When true, the observer prefers Infura-based RPC URLs (when supported for the
+   * configured chainId). Disabled by default; requires Infura API keys via env.
+   */
+  useInfuraRpcProviders?: boolean
   liberdusNetworkId: string
   collectorHost?: string
   proxyServerHost?: string
