@@ -1,4 +1,5 @@
 {
+  "useInfuraRpcProviders": false,
   "vaultChain": {
     "name": "Polygon Amoy Testnet",
     "chainId": 80002,
