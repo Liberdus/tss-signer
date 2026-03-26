@@ -383,6 +383,18 @@ function cleanupOldTransactions() {
     }
   }
 
+  // Prune stale signedTxCache entries (FAILED txs that were never retried)
+  let cacheEvicted = 0
+  for (const [txId, entry] of signedTxCache.entries()) {
+    if (now - entry.cachedAt > TX_CLEANUP_MAX_AGE) {
+      signedTxCache.delete(txId)
+      cacheEvicted++
+    }
+  }
+  if (cacheEvicted > 0) {
+    console.log(`🧹 Evicted ${cacheEvicted} stale signedTxCache entries`)
+  }
+
   const statusCounts = {
     pending: pendingTxQueue.length,
     processing: processingTransactionIds.size,
@@ -672,7 +684,7 @@ async function getChainTransactionReceipt(chainId: number, txHash: string): Prom
 // Keyed by normalized txId. Cleared on completion, revert, or process restart.
 // ---------------------------------------------------------------------------
 
-const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: number }> = new Map()
+const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: number; cachedAt: number }> = new Map()
 
 // ---------------------------------------------------------------------------
 function reconcileTxStatusWithLocalDB(
@@ -1127,7 +1139,7 @@ async function processCoinToToken(
 
   // Cache signed tx + broadcast
   const txHash = ethersUtils.keccak256(signedTx as string)
-  signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce })
+  signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce, cachedAt: Date.now() })
   console.log(`Injecting ethereum transaction on ${targetChainName}`, txHash)
 
   let res: { success: boolean; reason?: string }
@@ -1366,7 +1378,7 @@ async function processVaultBridge(
 
   // Step 6: Cache signed tx + broadcast
   const txHash = ethersUtils.keccak256(signedTx as string)
-  signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce })
+  signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce, cachedAt: Date.now() })
 
   const signerBalance = await chainRpcConfig.withChainHttpProvider(
     destinationChainId,
