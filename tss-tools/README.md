@@ -28,7 +28,7 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
 - `test-sign-rounds.sh`
   - Multi-scenario signing test harness. Runs configurable rounds across 34 startup-delay scenarios for a configurable committee size (default 7-party, threshold=3, min_sign=4 for thorough coverage). Reports PASS/FAIL per scenario. Logs to `test-result.log` and `test-party{1..N}.log`.
 - `patch-peer-addrs/`
-  - Standalone Go utility that patches the `peer_addrs` and `peers` fields inside each party's encrypted `config.json` vault file. Needed when keystores were generated locally (all peers on `127.0.0.1`) and must be deployed to separate machines with real public IPs. Has its own `go.mod`; run it with the mise Go toolchain. See [Patching peer addresses](#patching-peer-addresses) below.
+  - Standalone Go utility that patches the `peer_addrs` and `peers` fields inside each party's encrypted `config.json` vault file. Needed when keystores were generated locally (all peers on `127.0.0.1`) and must be deployed to separate machines with real public IPs. Built by `npm run tss-build` to `tss/.tooling/bin/patch-peer-addrs`. See [Patching peer addresses](#patching-peer-addresses) below.
 - `guide.md`
   - Step-by-step operator guide for local native TSS workflows: build, init, keygen, verify, sign, regroup, runtime requirements.
 - `patches/README.md`
@@ -62,7 +62,7 @@ When keystores are generated on a local machine (all parties on `127.0.0.1`) and
 
 ### Prerequisites
 
-- The mise Go toolchain bundled with the repo (`tss/.tooling/mise/...`)
+- Run `npm run tss-build` first — this builds the binary to `tss/.tooling/bin/patch-peer-addrs`
 - The vault password (`BNB_TSS_PASSWORD`)
 
 For full step-by-step instructions — collecting peer IDs with `tss describe`, running the utility, deploying the patched files, validating with a native sign test, and restarting processes — see **section 20** of [`guide.md`](guide.md).

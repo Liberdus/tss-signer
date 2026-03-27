@@ -395,13 +395,12 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #   Look for the "Id" field in the output:
 #     "Id": "12D3KooW..."
 #
-# Step 2: Run the patch utility (from repo root or tss-tools/patch-peer-addrs/)
+# Step 2: Run the patch utility
+#   The binary is built by npm run tss-build and lives at tss/.tooling/bin/patch-peer-addrs.
+#   Run from the repo root:
 #
-#   export PATH=$(pwd)/tss/.tooling/mise/data/installs/go/1.20.3/bin:$PATH
-#   cd tss-tools/patch-peer-addrs
-#   go mod tidy   # first time only
-#   go run . \
-#     --keystore-root ../../keystores/<your-keystore-dir>/bnbtss \
+#   ./tss/.tooling/bin/patch-peer-addrs \
+#     --keystore-root keystores/<your-keystore-dir>/bnbtss \
 #     --chain-id <CHAIN_ID> \
 #     --password <BNB_TSS_PASSWORD> \
 #     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
