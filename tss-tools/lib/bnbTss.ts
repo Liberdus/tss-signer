@@ -23,6 +23,7 @@ type ExecOptions = {
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
   timeoutErrorMessage?: string
+  printLogs?: boolean
 }
 
 type CommandResult = {
@@ -101,6 +102,7 @@ export type SignEthereumTxOptions = BasePartyOptions & {
   channelPassword?: string
   signDiscoveryTimeout?: string
   timeoutMs?: number
+  printLogs?: boolean
   extraArgs?: string[]
 }
 
@@ -362,6 +364,7 @@ function runOrThrow(command: string, args: any[], options: ExecOptions = {}): Co
 
 function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
+    const shouldPrintLogs = options.printLogs !== false;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env ? {...process.env, ...options.env} : process.env,
@@ -411,14 +414,18 @@ function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}
         if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
           continue;
         }
-        process.stderr.write(`${line}\n`);
+        if (shouldPrintLogs) {
+          process.stderr.write(`${line}\n`);
+        }
       }
     });
 
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
       stderr += text;
-      process.stderr.write(text);
+      if (shouldPrintLogs) {
+        process.stderr.write(text);
+      }
     });
 
     child.on('error', (error) => {
@@ -1078,6 +1085,7 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
     },
     timeoutMs: options.timeoutMs,
     timeoutErrorMessage: SIGNING_TIMEOUT_ERROR,
+    printLogs: options.printLogs,
   });
   const signatureHex = extractSignatureHex(`${result.stdout}\n${result.stderr}`);
   const signature = parseCompactSignature(signatureHex);
