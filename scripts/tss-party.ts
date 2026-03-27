@@ -122,6 +122,9 @@ const operationFlag = process.argv[3]
 
 const verboseLogs = true
 
+// Enable detailed logs for TSS signing flow (inputs, outputs, errors). Can be noisy, so toggle with care.
+const PRINT_TSS_SIGN_LOGS = false
+
 // ─── Chaos / Debug Flags ─────────────────────────────────────────────────────
 // Inject failure scenarios during testing. All flags should be false for production.
 
@@ -848,6 +851,7 @@ function signDigestWithBnbTss(chainId: number, digest: string, channelId: string
     channelPassword,
     signDiscoveryTimeout: BNB_SIGN_DISCOVERY_TIMEOUT,
     timeoutMs: BNB_SIGN_PROCESS_TIMEOUT_MS,
+    printLogs: PRINT_TSS_SIGN_LOGS,
   })
 }
 
