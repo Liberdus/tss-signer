@@ -116,7 +116,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
               );
               return contract.queryFilter(contract.filters.BridgedOut(), cursor, batchEnd);
             },
-            { maxRetries: 3 }
+            { maxRetries: 3, timeoutMs: 30_000 }
           );
           retryCount = 0;
           retryDelay = BASE_DELAY_MS;
@@ -310,7 +310,7 @@ export async function monitorEthereumBridgeInQueryFilter(
               );
               return contract.queryFilter(contract.filters.BridgedIn(), cursor, batchEnd);
             },
-            { maxRetries: 3 }
+            { maxRetries: 3, timeoutMs: 30_000 }
           );
           retryCount = 0;
           retryDelay = BASE_DELAY_MS;

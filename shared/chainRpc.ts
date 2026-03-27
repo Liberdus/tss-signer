@@ -95,6 +95,8 @@ export function initializeChainRpcConfig(
     providerOptions: Omit<WithCachedRetryOptions, 'fallbackRpcUrl'> = {},
   ): Promise<T> {
     return withCachedHttpProvider(chainId, getHttpRpcUrlsForChain(chainId), fn, {
+      // Default HTTP RPC timeout. Callers can still override this per request when needed.
+      timeoutMs: 10_000,
       ...providerOptions,
       fallbackRpcUrl: getFallbackRpcUrl(chainId),
     })
