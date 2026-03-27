@@ -288,21 +288,24 @@ func patchPartyConfig(configPath string, partyIdx int, parties []partyInfo, pass
 }
 
 func main() {
-	keystoreRoot := flag.String("keystore-root", "", "Path to keystores root (e.g. keystores/keystores_5_97/bnbtss)")
+	keystoreRoot := flag.String("keystore-root", "", "Path to keystores root (e.g. keystores/bnbtss)")
 	chainId := flag.Int("chain-id", 0, "Chain ID (required)")
 	password := flag.String("password", "", "Vault password (BNB_TSS_PASSWORD)")
 	vaultName := flag.String("vault", "default", "Vault name (subdirectory within party home)")
+	partyFlag := flag.Int("party", 0, "Patch only this party index (1-based). Omit to patch all parties found under keystore-root.")
 	ipsFlag := flag.String("ips", "", "Comma-separated list of party IPs in order (party-1 first), e.g. 1.2.3.4,5.6.7.8,...")
 	peerIDsFlag := flag.String("peer-ids", "", "Comma-separated list of libp2p peer IDs in order (party-1 first). Obtain via: tss describe --home <vault-dir> --password <pass>")
 	flag.Parse()
 
 	if *keystoreRoot == "" || *password == "" || *chainId == 0 || *ipsFlag == "" || *peerIDsFlag == "" {
-		fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...>")
+		fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...> [--party N]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  --ips       Comma-separated public IPs of each party machine, in party order (party-1 first)")
 		fmt.Fprintln(os.Stderr, "  --peer-ids  Comma-separated libp2p peer IDs, in party order.")
 		fmt.Fprintln(os.Stderr, "              Obtain via: tss describe --home <vault-dir> --password <pass>")
 		fmt.Fprintln(os.Stderr, "              Look for the 'Id' field in the output.")
+		fmt.Fprintln(os.Stderr, "  --party     (optional) patch only this party's vault. Use when each operator")
+		fmt.Fprintln(os.Stderr, "              runs this tool locally against their own keystore only.")
 		os.Exit(1)
 	}
 
@@ -346,6 +349,9 @@ func main() {
 	parties := buildParties(*chainId, ips, peerIDs, monikers)
 
 	for _, p := range parties {
+		if *partyFlag != 0 && p.Idx != *partyFlag {
+			continue
+		}
 		configPath := filepath.Join(
 			*keystoreRoot,
 			fmt.Sprintf("party-%d", p.Idx),
@@ -361,5 +367,5 @@ func main() {
 		fmt.Printf("  OK\n")
 	}
 
-	fmt.Println("\nAll parties patched. Deploy updated keystores to remote machines and restart tss-party processes.")
+	fmt.Println("\nDone. Restart the tss-party process for the patched party.")
 }

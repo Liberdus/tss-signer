@@ -64,5 +64,15 @@ When keystores are generated on a local machine (all parties on `127.0.0.1`) and
 
 - Run `npm run tss-build` first — this builds the binary to `tss/.tooling/bin/patch-peer-addrs`
 - The vault password (`BNB_TSS_PASSWORD`)
+- All parties' public IPs and peer IDs (collected via `tss describe` on each machine)
 
-For full step-by-step instructions — collecting peer IDs with `tss describe`, running the utility, deploying the patched files, validating with a native sign test, and restarting processes — see **section 20** of [`guide.md`](guide.md).
+### Two modes
+
+| Mode | Flag | Use case |
+|---|---|---|
+| Patch all | *(omit `--party`)* | All keystores present locally (dev/staging) |
+| Patch one | `--party N` | Production: each operator runs on their own machine against their own vault only |
+
+In production, the workflow is: each operator runs `tss describe` to get their peer ID → share all peer IDs out-of-band → each operator runs `patch-peer-addrs --party N` locally → restart.
+
+For full step-by-step instructions for both modes — see **section 20** of [`guide.md`](guide.md).

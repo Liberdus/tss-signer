@@ -383,21 +383,26 @@ bash tss-tools/test-sign-rounds.sh 1 5
 # The utility decrypts each party's config.json, updates peer_addrs and peers with
 # real IPs, and re-encrypts. Key share files (pk.json, sk.json, node_key) are untouched.
 #
-# Step 1: Collect each party's peer ID using tss describe
-#   The peer ID is stable — it is derived from node_key and never changes.
-#   Run on each machine (or locally if you have all keystores):
+# --party flag:
+#   omit      -> patches all party vaults found under --keystore-root
+#                use this when all keystores are available locally (dev/staging)
+#   --party N -> patches only party N's vault
+#                use this in production where each operator only has their own keystore
 #
-#   ./tss/.tooling/bin/tss describe \
-#     --home keystores/bnbtss/party-N/chain-<CHAIN_ID> \
-#     --vault_name default \
-#     --password <BNB_TSS_PASSWORD>
+# --- LOCAL / STAGING (all vaults present) ---
 #
-#   Look for the "Id" field in the output:
-#     "Id": "12D3KooW..."
+# Step 1: Collect all peer IDs using tss describe
+#   The peer ID is stable — derived from node_key and never changes.
 #
-# Step 2: Run the patch utility
-#   The binary is built by npm run tss-build and lives at tss/.tooling/bin/patch-peer-addrs.
-#   Run from the repo root:
+#   for i in {1..5}; do
+#     echo "=== party-$i ==="
+#     ./tss/.tooling/bin/tss describe \
+#       --home keystores/bnbtss/party-$i/chain-<CHAIN_ID> \
+#       --vault_name default \
+#       --password <BNB_TSS_PASSWORD> 2>/dev/null | grep -E '"Id"|"Moniker"'
+#   done
+#
+# Step 2: Patch all vaults at once
 #
 #   ./tss/.tooling/bin/patch-peer-addrs \
 #     --keystore-root keystores/<your-keystore-dir>/bnbtss \
@@ -406,23 +411,40 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
 #     --peer-ids "<party1-Id>,<party2-Id>,<party3-Id>,<party4-Id>,<party5-Id>"
 #
-#   Both --ips and --peer-ids are comma-separated in party order (party-1 first).
-#
-# Step 3: Verify the patch
-#   Run tss describe again — peer_addrs should now show the real IPs.
-#
-# Step 4: Deploy only config.json to each machine
+# Step 3: Deploy only config.json to each machine
 #   Key share files are unchanged so only config.json needs to be redeployed:
 #
 #   IPS=([1]="<party1-ip>" [2]="<party2-ip>" ... [5]="<party5-ip>")
 #   for i in 1 2 3 4 5; do
 #     scp -i ~/.ssh/tss_deploy \
 #       keystores/<your-keystore-dir>/bnbtss/party-$i/chain-<CHAIN_ID>/default/config.json \
-#       customer@${IPS[$i]}:~/tss-signer/keystores/bnbtss/party-$i/chain-<CHAIN_ID>/default/config.json &
+#       user@${IPS[$i]}:~/tss-signer/keystores/bnbtss/party-$i/chain-<CHAIN_ID>/default/config.json &
 #   done
 #   wait
 #
-# Step 5: Validate with a native sign test (optional but recommended)
+# --- PRODUCTION (each operator has only their own keystore) ---
+#
+# Step 1: Each operator collects their own peer ID and shares it out-of-band
+#
+#   ./tss/.tooling/bin/tss describe \
+#     --home ~/tss-signer/keystores/bnbtss/party-N/chain-<CHAIN_ID> \
+#     --vault_name default \
+#     --password <BNB_TSS_PASSWORD> 2>/dev/null | grep -E '"Id"|"Moniker"'
+#
+#   Share the "Id" value with all other operators (e.g. secure group chat).
+#   Collect all operators' IPs and peer IDs before proceeding.
+#
+# Step 2: Each operator patches only their own vault using --party N
+#
+#   ./tss/.tooling/bin/patch-peer-addrs \
+#     --keystore-root ~/tss-signer/keystores/bnbtss \
+#     --chain-id <CHAIN_ID> \
+#     --party N \
+#     --password <BNB_TSS_PASSWORD> \
+#     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
+#     --peer-ids "<party1-Id>,<party2-Id>,<party3-Id>,<party4-Id>,<party5-Id>"
+#
+# Step 3: Validate with a native sign test (optional but recommended)
 #   Run on at least threshold+1 machines simultaneously with the same channel/message:
 #
 #   ~/tss-signer/tss/.tooling/bin/tss sign \
@@ -437,13 +459,9 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #
 #   A successful run prints "signing finished!" and exits 0 on all parties.
 #
-# Step 6: Restart tss-party processes
+# Step 4: Each operator restarts their own tss-party process
 #
-#   for i in 1 2 3 4 5; do
-#     ssh -i ~/.ssh/tss_deploy customer@${IPS[$i]} \
-#       "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && pm2 restart tss-party-$i" &
-#   done
-#   wait
+#   pm2 restart tss-party-N
 
 
 # 21) If verify/sign fails, check these first
