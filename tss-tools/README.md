@@ -75,4 +75,6 @@ When keystores are generated on a local machine (all parties on `127.0.0.1`) and
 
 In production, the workflow is: each operator runs `tss describe` to get their peer ID → share all peer IDs out-of-band → each operator runs `patch-peer-addrs --party N` locally → restart.
 
+> **Custom monikers:** If non-default monikers were used during `tss init`, pass `--monikers m1,m2,...` so remote party entries in `p2p.peers` are written correctly. Without it, the tool synthesizes `party-N-chain-ID` for any vault it cannot read locally and prints a WARNING. `--party` is validated to be in range; an out-of-range value exits with an error.
+
 For full step-by-step instructions for both modes — see **section 20** of [`guide.md`](guide.md).

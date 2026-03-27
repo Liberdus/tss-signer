@@ -293,12 +293,13 @@ func main() {
 	password := flag.String("password", "", "Vault password (BNB_TSS_PASSWORD)")
 	vaultName := flag.String("vault", "default", "Vault name (subdirectory within party home)")
 	partyFlag := flag.Int("party", 0, "Patch only this party index (1-based). Omit to patch all parties found under keystore-root.")
+	monikersFlag := flag.String("monikers", "", "Comma-separated list of monikers in party order. Only needed if custom monikers were used during tss init; defaults to party-N-chain-ID.")
 	ipsFlag := flag.String("ips", "", "Comma-separated list of party IPs in order (party-1 first), e.g. 1.2.3.4,5.6.7.8,...")
 	peerIDsFlag := flag.String("peer-ids", "", "Comma-separated list of libp2p peer IDs in order (party-1 first). Obtain via: tss describe --home <vault-dir> --password <pass>")
 	flag.Parse()
 
 	if *keystoreRoot == "" || *password == "" || *chainId == 0 || *ipsFlag == "" || *peerIDsFlag == "" {
-		fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...> [--party N]")
+		fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...> [--party N] [--monikers m1,m2,...]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  --ips       Comma-separated public IPs of each party machine, in party order (party-1 first)")
 		fmt.Fprintln(os.Stderr, "  --peer-ids  Comma-separated libp2p peer IDs, in party order.")
@@ -306,6 +307,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "              Look for the 'Id' field in the output.")
 		fmt.Fprintln(os.Stderr, "  --party     (optional) patch only this party's vault. Use when each operator")
 		fmt.Fprintln(os.Stderr, "              runs this tool locally against their own keystore only.")
+		fmt.Fprintln(os.Stderr, "  --monikers  (optional) override synthesized monikers. Required when custom")
+		fmt.Fprintln(os.Stderr, "              monikers were used during tss init and not all vaults are present.")
 		os.Exit(1)
 	}
 
@@ -322,12 +325,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Pre-pass: read each party's actual Moniker from their decrypted vault config.
-	// Falls back to synthesized "party-N-chain-ID" if the field is absent or the
-	// vault cannot be decrypted (e.g. file not present yet in a partial deployment).
+	// Validate --party is in range.
+	if *partyFlag != 0 && (*partyFlag < 1 || *partyFlag > len(ips)) {
+		fmt.Fprintf(os.Stderr, "ERROR: --party %d is out of range; must be between 1 and %d\n", *partyFlag, len(ips))
+		os.Exit(1)
+	}
+
+	// Resolve monikers: explicit --monikers flag takes precedence, then read from
+	// each vault, then fall back to synthesized "party-N-chain-ID".
+	var explicitMonikers []string
+	if *monikersFlag != "" {
+		explicitMonikers = strings.Split(*monikersFlag, ",")
+		for i := range explicitMonikers {
+			explicitMonikers[i] = strings.TrimSpace(explicitMonikers[i])
+		}
+		if len(explicitMonikers) != len(ips) {
+			fmt.Fprintf(os.Stderr, "ERROR: --monikers has %d entries but --ips has %d entries; counts must match\n", len(explicitMonikers), len(ips))
+			os.Exit(1)
+		}
+	}
+
 	monikers := make([]string, len(ips))
+	synthesizedAny := false
 	for i := range ips {
 		idx := i + 1
+		if len(explicitMonikers) > 0 {
+			monikers[i] = explicitMonikers[i]
+			continue
+		}
 		configPath := filepath.Join(
 			*keystoreRoot,
 			fmt.Sprintf("party-%d", idx),
@@ -337,13 +362,17 @@ func main() {
 		)
 		moniker, err := readMoniker(configPath, *password)
 		if err != nil || moniker == "" {
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: could not read moniker for party-%d (%v); using synthesized name\n", idx, err)
-			}
 			monikers[i] = fmt.Sprintf("party-%d-chain-%d", idx, *chainId)
+			synthesizedAny = true
 		} else {
 			monikers[i] = moniker
 		}
+	}
+
+	if synthesizedAny && *partyFlag != 0 {
+		fmt.Fprintln(os.Stderr, "WARNING: monikers for one or more remote parties could not be read and were")
+		fmt.Fprintln(os.Stderr, "         synthesized as party-N-chain-ID. If custom monikers were used during")
+		fmt.Fprintln(os.Stderr, "         tss init, pass --monikers to provide the correct values.")
 	}
 
 	parties := buildParties(*chainId, ips, peerIDs, monikers)

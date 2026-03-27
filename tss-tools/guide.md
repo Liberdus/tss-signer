@@ -444,6 +444,12 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
 #     --peer-ids "<party1-Id>,<party2-Id>,<party3-Id>,<party4-Id>,<party5-Id>"
 #
+#   If custom monikers were used during tss init (non-default), also pass:
+#     --monikers "<party1-moniker>,<party2-moniker>,...,<partyN-moniker>"
+#   Without this, the tool falls back to "party-N-chain-ID" for any vault it
+#   cannot read locally — which is correct for default setups but wrong for
+#   custom monikers. The tool will print a WARNING in that case.
+#
 # Step 3: Validate with a native sign test (optional but recommended)
 #   Run on at least threshold+1 machines simultaneously with the same channel/message:
 #
