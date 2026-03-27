@@ -5,6 +5,7 @@ import path from "path";
 import fs from "fs";
 import * as TransactionDB from "../shared/storage/transactiondb";
 import { chainConfigsRaw, getChainConfigById } from "../shared/config";
+import { normalizeTxId } from "../shared/utils/transformTxId";
 import { initMonitorState, monitorState, setSyncReady, syncReady } from "./monitor/state";
 import {
   monitorEthereumBridgeOutQueryFilter,
@@ -118,11 +119,23 @@ function parseIntQuery(value: unknown): number | undefined {
 
 app.get(["/transaction", "/transactions"], (req, res) => {
   try {
-    const txId = typeof req.query.txId === "string" ? req.query.txId : undefined;
-    const sender = typeof req.query.sender === "string" ? req.query.sender : undefined;
+    const txIdRaw = typeof req.query.txId === "string" ? req.query.txId : undefined;
+    const senderRaw = typeof req.query.sender === "string" ? req.query.sender : undefined;
     const type = parseIntQuery(req.query.type);
     const status = parseIntQuery(req.query.status);
     const page = Math.max(1, parseIntQuery(req.query.page) ?? 1);
+
+    const txId = txIdRaw
+      ? (() => {
+          try {
+            return normalizeTxId(txIdRaw);
+          } catch {
+            return txIdRaw.trim().toLowerCase();
+          }
+        })()
+      : undefined;
+
+    const sender = senderRaw ? senderRaw.trim().toLowerCase() : undefined;
 
     if (txId) {
       const tx = TransactionDB.getTransactionById(txId);
