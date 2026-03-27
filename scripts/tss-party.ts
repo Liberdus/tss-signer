@@ -498,7 +498,7 @@ function updateTxStatusInLocalDB(
   tssSender: string,
   nonce: number,
   failedReason = '',
-): void {
+): ReturnType<typeof TransactionDB.updateTransactionStatus> {
   try {
     const normalizedTxId = normalizeTxId(txId)
     const normalizedReceiptId = receiptId ? normalizeTxId(receiptId) : receiptId
@@ -525,9 +525,11 @@ function updateTxStatusInLocalDB(
     } else if (result === 'not_found') {
       console.error(`[updateTxStatus] Transaction ${normalizedTxId} not found in local DB`)
     }
+    return result
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     console.error(`[updateTxStatus] Error updating status for ${txId}: ${errorMessage}`)
+    return 'not_found'
   }
 }
 
@@ -1095,15 +1097,15 @@ async function processCoinToToken(
         const block = await chainRpcConfig.withChainHttpProvider(
           targetChainId, (provider) => provider.getBlock(cachedReceipt.blockNumber), { maxRetries: 3 })
         chainState.lastBridgeInTime = block.timestamp
-        updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
-        incrementLocalNonce(targetChainId, tssSender)
+        if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
         return 'completed'
       } else if (cachedReceipt?.status === 0) {
         console.log(`[nonce-guard] Cached tx reverted on ${targetChainName}: ${cached.txHash}`)
-        updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
-        incrementLocalNonce(targetChainId, tssSender)
+        if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
         return 'reverted'
       }
     } catch (e) {
@@ -1200,9 +1202,9 @@ async function processCoinToToken(
         { maxRetries: 3 },
       )
       chainState.lastBridgeInTime = block.timestamp
-      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
-      incrementLocalNonce(targetChainId, tssSender)
+      if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
       return 'completed'
     } else {
       console.log(
@@ -1210,9 +1212,9 @@ async function processCoinToToken(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
-      incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on revert
+      if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on revert
       return 'reverted'
     }
   } else {
@@ -1334,15 +1336,15 @@ async function processVaultBridge(
         const block = await chainRpcConfig.withChainHttpProvider(
           destinationChainId, (provider) => provider.getBlock(receipt.blockNumber), { maxRetries: 3 })
         destChainState.lastBridgeInTime = block.timestamp
-        updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
-        incrementLocalNonce(destinationChainId, tssSender)
+        if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
         return 'completed'
       } else if (receipt?.status === 0) {
         console.log(`[nonce-guard] Cached tx reverted on ${destChainName}: ${cached.txHash}`)
-        updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
-        incrementLocalNonce(destinationChainId, tssSender)
+        if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
         return 'reverted'
       }
     } catch (e) {
@@ -1448,9 +1450,9 @@ async function processVaultBridge(
         { maxRetries: 3 },
       )
       destChainState.lastBridgeInTime = block.timestamp
-      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
-      incrementLocalNonce(destinationChainId, tssSender)
+      if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
       return 'completed'
     } else {
       console.log(
@@ -1458,9 +1460,9 @@ async function processVaultBridge(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
-      incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on revert
+      if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on revert
       return 'reverted'
     }
   } else {
