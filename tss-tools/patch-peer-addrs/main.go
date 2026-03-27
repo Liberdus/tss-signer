@@ -8,10 +8,9 @@
 //	go run . \
 //	  --keystore-root <path-to-keystores-root> \
 //	  --chain-id 97 \
-//	  --password 1234567890
-//
-// The machine-to-IP mapping and peer IDs are hardcoded below for the
-// 5-party/chain-97 deployment.
+//	  --password 1234567890 \
+//	  --ips 1.2.3.4,5.6.7.8,... \
+//	  --peer-ids 12D3KooW...,12D3KooW...,...
 package main
 
 import (
@@ -166,7 +165,7 @@ func derivePort(chainId, partyIdx int) int {
 	return 40000 + (chainId%1000)*10 + partyIdx
 }
 
-func buildParties(chainId int, ips, peerIDs []string) []partyInfo {
+func buildParties(chainId int, ips, peerIDs, monikers []string) []partyInfo {
 	parties := make([]partyInfo, len(ips))
 	for i := range ips {
 		idx := i + 1
@@ -174,11 +173,37 @@ func buildParties(chainId int, ips, peerIDs []string) []partyInfo {
 			Idx:     idx,
 			IP:      ips[i],
 			Port:    derivePort(chainId, idx),
-			Moniker: fmt.Sprintf("party-%d-chain-%d", idx, chainId),
+			Moniker: monikers[i],
 			PeerID:  peerIDs[i],
 		}
 	}
 	return parties
+}
+
+// readMoniker decrypts the config.json at configPath and returns the Moniker
+// stored in the TssConfig blob. Returns ("", nil) if the field is absent.
+func readMoniker(configPath, passphrase string) (string, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", configPath, err)
+	}
+	var sc secretConfig
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		return "", fmt.Errorf("unmarshal secretConfig: %w", err)
+	}
+	if sc.Config == nil {
+		return "", fmt.Errorf("config.json has no encrypted 'config' field")
+	}
+	plainText, err := decrypt(*sc.Config, passphrase)
+	if err != nil {
+		return "", fmt.Errorf("decrypt: %w", err)
+	}
+	var tssConfig map[string]interface{}
+	if err := json.Unmarshal(plainText, &tssConfig); err != nil {
+		return "", fmt.Errorf("unmarshal TssConfig: %w", err)
+	}
+	moniker, _ := tssConfig["Moniker"].(string)
+	return moniker, nil
 }
 
 func multiAddr(p partyInfo) string {
@@ -268,15 +293,16 @@ func main() {
 	password := flag.String("password", "", "Vault password (BNB_TSS_PASSWORD)")
 	vaultName := flag.String("vault", "default", "Vault name (subdirectory within party home)")
 	ipsFlag := flag.String("ips", "", "Comma-separated list of party IPs in order (party-1 first), e.g. 1.2.3.4,5.6.7.8,...")
-	peerIDsFlag := flag.String("peer-ids", "", "Comma-separated list of libp2p peer IDs in order (party-1 first). Printed on startup: 'our bootstrapper info is: id: 12D3KooW...'")
+	peerIDsFlag := flag.String("peer-ids", "", "Comma-separated list of libp2p peer IDs in order (party-1 first). Obtain via: tss describe --home <vault-dir> --password <pass>")
 	flag.Parse()
 
 	if *keystoreRoot == "" || *password == "" || *chainId == 0 || *ipsFlag == "" || *peerIDsFlag == "" {
-		fmt.Fprintln(os.Stderr, "Usage: go run . --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...>")
+		fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  --ips       Comma-separated public IPs of each party machine, in party order (party-1 first)")
-		fmt.Fprintln(os.Stderr, "  --peer-ids  Comma-separated libp2p peer IDs, in party order. Found in tss-party logs:")
-		fmt.Fprintln(os.Stderr, "              'our bootstrapper info is: moniker: party-1-chain-97, id: 12D3KooW...'")
+		fmt.Fprintln(os.Stderr, "  --peer-ids  Comma-separated libp2p peer IDs, in party order.")
+		fmt.Fprintln(os.Stderr, "              Obtain via: tss describe --home <vault-dir> --password <pass>")
+		fmt.Fprintln(os.Stderr, "              Look for the 'Id' field in the output.")
 		os.Exit(1)
 	}
 
@@ -293,7 +319,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	parties := buildParties(*chainId, ips, peerIDs)
+	// Pre-pass: read each party's actual Moniker from their decrypted vault config.
+	// Falls back to synthesized "party-N-chain-ID" if the field is absent or the
+	// vault cannot be decrypted (e.g. file not present yet in a partial deployment).
+	monikers := make([]string, len(ips))
+	for i := range ips {
+		idx := i + 1
+		configPath := filepath.Join(
+			*keystoreRoot,
+			fmt.Sprintf("party-%d", idx),
+			fmt.Sprintf("chain-%d", *chainId),
+			*vaultName,
+			"config.json",
+		)
+		moniker, err := readMoniker(configPath, *password)
+		if err != nil || moniker == "" {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: could not read moniker for party-%d (%v); using synthesized name\n", idx, err)
+			}
+			monikers[i] = fmt.Sprintf("party-%d-chain-%d", idx, *chainId)
+		} else {
+			monikers[i] = moniker
+		}
+	}
+
+	parties := buildParties(*chainId, ips, peerIDs, monikers)
 
 	for _, p := range parties {
 		configPath := filepath.Join(
