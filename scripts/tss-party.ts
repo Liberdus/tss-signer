@@ -150,7 +150,7 @@ const chainConfigs: ChainConfigs = chainConfigsRaw
 let t = params.threshold
 let n = params.parties
 
-const BNB_SIGN_DISCOVERY_TIMEOUT_MS = 30 * 1000
+const BNB_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const BNB_SIGN_DISCOVERY_TIMEOUT = `${BNB_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const BNB_SIGN_PROCESS_TIMEOUT_MS = BNB_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
 
@@ -193,6 +193,8 @@ const dbPath = path.resolve(process.cwd(), 'db', `transactions-${ourParty.idx}.s
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
 const chainsToInit: ChainConfig[] = getConfiguredChains(chainConfigs)
 const chainRpcConfig = initializeChainRpcConfig(chainsToInit)
+// Give eth_sendRawTransaction a slightly longer budget than reads on public testnet RPCs.
+const TSS_PARTY_SEND_TX_TIMEOUT_MS = 15_000
 
 const chainStateByChainId: Map<number, ChainState> = new Map(
   chainsToInit.map((config) => [
@@ -348,7 +350,7 @@ const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const pendingTxQueueRemovalSet = new Set<string>()
 const txQueueProcessingInterval = 10000
 const TX_POLL_INTERVAL = 10 * 1000 // 10s
-const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes ( Including the bridgeInCooldown 1-minute)
+const TX_PROCESSING_TIMEOUT_MS = 3 * 60 * 1000 // 3 minutes ( Including the bridgeInCooldown 1-minute + signing timeout 1.5 minutes)
 
 const TX_CLEANUP_MAX_AGE = 60 * 60 * 1000 // 1 hour for all statuses
 
@@ -358,7 +360,6 @@ const MAX_CONCURRENT_TXS = 1
 const processingTransactionIds = new Map<string, TransactionQueueItem>()
 
 const delay_ms = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
 
 // Global HTTP agents with keep-alive enabled.
 // keepAlive:      reuse sockets across requests and lets the OS send TCP probes
@@ -964,17 +965,10 @@ async function injectEthereumTx(
     const txResponse = await chainRpcConfig.withChainHttpProvider(
       chainId,
       (provider) => provider.sendTransaction(signedTx),
-      {maxRetries: 1},
+      { maxRetries: 1, timeoutMs: TSS_PARTY_SEND_TX_TIMEOUT_MS },
     )
-    const receipt = await txResponse.wait()
-    console.log('Receipt', txHash, receipt)
-    if (receipt.status !== 1) throw new Error('Transaction failed')
-    // const balance = await providerToUse.getBalance(receipt.to!);
-    // const senderBalance = await providerToUse.getBalance(receipt.from);
-    // console.log("Recipient address balance:", ethers.utils.formatEther(balance));
-    // console.log("Sender address balance:", ethers.utils.formatEther(senderBalance));
     if (verboseLogs) {
-      console.log('BridgeIn transaction sent successfully!', receipt.transactionHash)
+      console.log('BridgeIn transaction sent successfully!', txResponse.hash)
     }
   } catch (e: any) {
     console.log('Error sending ethereum transaction:', txHash, e.message)
@@ -1094,9 +1088,6 @@ async function processCoinToToken(
       })
       const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
       if (cachedReceipt?.status === 1) {
-        const block = await chainRpcConfig.withChainHttpProvider(
-          targetChainId, (provider) => provider.getBlock(cachedReceipt.blockNumber), { maxRetries: 3 })
-        chainState.lastBridgeInTime = block.timestamp
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
@@ -1185,23 +1176,24 @@ async function processCoinToToken(
     await refreshBridgeStateOnRevert(reason, targetChainId)
   }
 
-  let receipt = await getChainTransactionReceipt(targetChainId, txHash)
-  if (!receipt) {
-    // Tx may have been broadcast but not yet mined — retry once after a short delay
-    await delay_ms(3000)
+  let receipt: ethers.providers.TransactionReceipt | null = null
+  try {
     receipt = await getChainTransactionReceipt(targetChainId, txHash)
+    if (!receipt) {
+      // Tx may have been broadcast but not yet mined — retry once after a short delay
+      await delay_ms(3000)
+      receipt = await getChainTransactionReceipt(targetChainId, txHash)
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.warn(`Failed to fetch receipt for ethereum transaction on ${targetChainName}: ${txHash}`, reason)
   }
   if (receipt) {
+    console.log(`[receipt] Found Ethereum receipt on ${targetChainName} for ${txHash}: status=${receipt.status} block=${receipt.blockNumber}`)
     if (receipt.status === 1) {
       console.log(
         `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
-      const block = await chainRpcConfig.withChainHttpProvider(
-        targetChainId,
-        (provider) => provider.getBlock(receipt.blockNumber),
-        { maxRetries: 3 },
-      )
-      chainState.lastBridgeInTime = block.timestamp
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
@@ -1333,9 +1325,6 @@ async function processVaultBridge(
       })
       const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
       if (receipt?.status === 1) {
-        const block = await chainRpcConfig.withChainHttpProvider(
-          destinationChainId, (provider) => provider.getBlock(receipt.blockNumber), { maxRetries: 3 })
-        destChainState.lastBridgeInTime = block.timestamp
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
@@ -1433,23 +1422,24 @@ async function processVaultBridge(
     await refreshBridgeStateOnRevert(reason, destinationChainId)
   }
 
-  let receipt = await getChainTransactionReceipt(destinationChainId, txHash)
-  if (!receipt) {
-    // Tx may have been broadcast but not yet mined — retry once after a short delay
-    await delay_ms(3000)
+  let receipt: ethers.providers.TransactionReceipt | null = null
+  try {
     receipt = await getChainTransactionReceipt(destinationChainId, txHash)
+    if (!receipt) {
+      // Tx may have been broadcast but not yet mined — retry once after a short delay
+      await delay_ms(3000)
+      receipt = await getChainTransactionReceipt(destinationChainId, txHash)
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.warn(`Failed to fetch receipt for EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
   }
   if (receipt) {
+    console.log(`[receipt] Found EVM-to-EVM receipt on ${destChainName} for ${txHash}: status=${receipt.status} block=${receipt.blockNumber}`)
     if (receipt.status === 1) {
       console.log(
         `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
-      const block = await chainRpcConfig.withChainHttpProvider(
-        destinationChainId,
-        (provider) => provider.getBlock(receipt.blockNumber),
-        { maxRetries: 3 },
-      )
-      destChainState.lastBridgeInTime = block.timestamp
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
@@ -1630,6 +1620,8 @@ async function retryOperation<T>(
         'INSUFFICIENT_FUNDS',
         // Liberdus: tx already accepted by the network, no need to retry
         'Transaction is already in queue',
+        // EVM tx already accepted by the mempool
+        'already known',
       ]
       return !nonRetryablePatterns.some((pattern) => msg.includes(pattern))
     },
@@ -2052,6 +2044,7 @@ async function main(): Promise<void> {
       if (outcome === 'completed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         pendingTxQueueRemovalSet.add(txId)
+        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.type === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : validTx.chainId)
         console.log('Transaction processed successfully:', validTx)
       } else if (outcome === 'reverted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
@@ -2089,7 +2082,7 @@ async function main(): Promise<void> {
       }
 
       // Check memory usage after successful transaction
-      checkPostTransactionMemory(validTx.txId, 'transaction-success')
+      checkPostTransactionMemory(validTx.txId, 'transaction-processing')
       
       // Force cleanup after successful transaction processing
       if (global.gc) {

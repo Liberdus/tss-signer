@@ -11,10 +11,29 @@ export interface GetProviderOptions {
 export interface WithRetryOptions extends GetProviderOptions {
   maxRetries?: number;
   logUrl?: boolean;
+  timeoutMs?: number;
 }
 
 export interface WithCachedRetryOptions extends WithRetryOptions {
   logCache?: boolean;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs?: number): Promise<T> {
+  if (timeoutMs == null || timeoutMs <= 0) return promise
+
+  let timeoutHandle: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`HTTP provider call timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle)
+  }
 }
 
 
@@ -54,7 +73,7 @@ export async function withHttpProviderRetry<T>(
     if (options.logUrl) console.log(`[httpProvider] URL: ${url}`);
 
     try {
-      return await fn(provider);
+      return await withTimeout(fn(provider), options.timeoutMs);
     } catch (error) {
       lastError = error;
       if (shouldBlacklistForError(error)) {
@@ -104,7 +123,7 @@ export async function withCachedHttpProvider<T>(
     }
 
     try {
-      return await fn(entry.provider);
+      return await withTimeout(fn(entry.provider), options.timeoutMs);
     } catch (error) {
       lastError = error;
       if (shouldBlacklistForError(error)) {
