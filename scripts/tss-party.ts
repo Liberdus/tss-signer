@@ -414,9 +414,7 @@ function cleanupOldTransactions() {
       processingTransactionIds.delete(txId)
       removedTxIds.add(txId)
       removedCount++
-      if (verboseLogs) {
-        console.log(`🗑️ Removed ${entry.status} transaction ${txId} (age: ${Math.round(txAge / 60000)}min)`)
-      }
+      console.log(`🗑️ Removed ${entry.status} transaction ${txId} (age: ${Math.round(txAge / 60000)}min)`)
     }
   }
 
@@ -543,9 +541,7 @@ function updateTxStatusInLocalDB(
     )
 
     if (result === 'ok') {
-      if (verboseLogs) {
-        console.log(`[updateTxStatus] Updated ${normalizedTxId} → status=${status}`)
-      }
+      console.log(`[updateTxStatus] Updated ${normalizedTxId} → status=${status}`)
     } else if (result === 'duplicate') {
       console.log(`[updateTxStatus] Duplicate status update ignored for ${normalizedTxId}`)
     } else if (result === 'no_downgrade') {
@@ -563,7 +559,7 @@ function updateTxStatusInLocalDB(
 
 
 async function pollPendingTransactionsFromLocalDB(): Promise<void> {
-  console.log('Polling pending transactions from local DB...', new Date().toISOString())
+  if (verboseLogs) console.log('Polling pending transactions from local DB...', new Date().toISOString())
   try {
     const dbTxs = TransactionDB.getTransactionsByPage(10, 0, { unprocessed: true })
     const transactions: Transaction[] = dbTxs
@@ -631,10 +627,8 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       } else {
         txQueueMap.set(tx.txId, { txTimestamp: tx.txTimestamp, status: 'pending' })
       }
-      if (verboseLogs) {
-        const chainName = getChainConfigById(chainConfigs, tx.chainId)?.name || 'Unknown'
-        console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from local DB (${chainName})`)
-      }
+      const chainName = getChainConfigById(chainConfigs, tx.chainId)?.name || 'Unknown'
+      console.log(`[poll] ${existingEntry ? 'Re-queued' : 'Added'} ${bridgeType} tx ${tx.txId} from local DB (${chainName})`)
       txAddedToQueue = true
     }
 
@@ -923,15 +917,13 @@ async function signEthereumTransaction(
     console.warn(`🚨 High memory increase during Ethereum signing: ${Math.round(memoryDelta / 1024 / 1024)} MB`)
   }
   
-  if (verboseLogs) {
-    console.log('Ethereum transaction signed successfully!', {
-      ...tx,
-      sign: {
-        owner: computeAddress,
-        sig: ethersUtils.joinSignature(signature),
-      },
-    })
-  }
+  console.log('Ethereum transaction signed successfully!', {
+    ...tx,
+    sign: {
+      owner: computeAddress,
+      sig: ethersUtils.joinSignature(signature),
+    },
+  })
   return signedTx
 }
 
@@ -979,9 +971,7 @@ async function signLiberdusTransaction(
     console.warn(`🚨 High memory increase during Liberdus signing: ${Math.round(memoryDelta / 1024 / 1024)} MB`)
   }
   
-  if (verboseLogs) {
-    console.log('Liberdus transaction signed successfully!', signedTx)
-  }
+  console.log('Liberdus transaction signed successfully!', signedTx)
   return signedTx
 }
 
@@ -996,9 +986,7 @@ async function injectEthereumTx(
       (provider) => provider.sendTransaction(signedTx),
       { maxRetries: 1, timeoutMs: TSS_PARTY_SEND_TX_TIMEOUT_MS },
     )
-    if (verboseLogs) {
-      console.log('BridgeIn transaction sent successfully!', txResponse.hash)
-    }
+    console.log('BridgeIn transaction sent successfully!', txResponse.hash)
   } catch (e: any) {
     console.log('Error sending ethereum transaction:', txHash, e.message)
     throw e
@@ -1020,9 +1008,7 @@ async function injectLiberdusTx(
     console.log('Liberdus tx inject response:', res.data)
     if (res.status !== 200 || res.data?.result?.success !== true)
       throw new Error(res.data?.result?.reason || 'Transaction injection failed')
-    if (verboseLogs) {
-      console.log('BridgeOut transaction sent successfully!', txId)
-    }
+    console.log('BridgeOut transaction sent successfully!', txId)
   } catch (e: any) {
     console.log('Error sending liberdus transaction:', txId, e.message)
     throw e
@@ -1570,12 +1556,10 @@ async function processTokenToCoin(
   tx.chatId = calculateChatId(tx.from, tx.to)
   const currentCycleRecord = await getLatestCycleRecord()
   tx.timestamp = deriveLocalFutureTimestamp(txId, txTimestampMs, currentCycleRecord)
-  if (verboseLogs) {
-    console.log('Current timestamp:', new Date(Date.now()))
-    console.log('Future timestamp confirmed:', new Date(tx.timestamp))
-    console.log('Wait time:', tx.timestamp - Date.now())
-    console.log('Transaction:', tx)
-  }
+  console.log(
+    `Current timestamp: ${new Date(Date.now())}, Future timestamp: ${new Date(tx.timestamp)}, Wait time: ${tx.timestamp - Date.now()}`,
+  )
+  console.log('Transaction:', tx)
   const hashMessage = crypto.hashObj(tx)
   let digest = ethersUtils.hashMessage(hashMessage)
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
@@ -1732,15 +1716,7 @@ function logMemoryUsage() {
   const usage = process.memoryUsage()
   const formatMB = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`
   
-  console.log('📊 Memory Usage:', {
-    rss: formatMB(usage.rss),
-    heapTotal: formatMB(usage.heapTotal),
-    heapUsed: formatMB(usage.heapUsed),
-    external: formatMB(usage.external),
-    txQueueMapSize: txQueueMap.size,
-    processingSize: processingTransactionIds.size,
-    pendingTxQueueLength: pendingTxQueue.length,
-  })
+  console.log(`📊 Memory Usage: {rss: ${formatMB(usage.rss)}, heapTotal: ${formatMB(usage.heapTotal)}, heapUsed: ${formatMB(usage.heapUsed)}, external: ${formatMB(usage.external)}, txQueueMapSize: ${txQueueMap.size}, processingSize: ${processingTransactionIds.size}, pendingTxQueueLength: ${pendingTxQueue.length}}`)
   
   // More aggressive memory management thresholds
   const heapUsedMB = usage.heapUsed / 1024 / 1024
@@ -2209,7 +2185,7 @@ async function main(): Promise<void> {
   }
 
   const handleTransactionQueue = () => {
-    console.log('Running handleTransactionQueue', new Date().toISOString())
+    if (verboseLogs) console.log('Running handleTransactionQueue', new Date().toISOString())
 
     // Drain the deferred removal set — remove entries that async
     // processing marked for removal. Backward iteration avoids index corruption.
