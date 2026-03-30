@@ -153,6 +153,7 @@ let n = params.parties
 const BNB_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const BNB_SIGN_DISCOVERY_TIMEOUT = `${BNB_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const BNB_SIGN_PROCESS_TIMEOUT_MS = BNB_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
+const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 // Shared bridge contract ABI for state reads and bridgeIn
@@ -218,7 +219,11 @@ for (const [chainId, chainState] of chainStateByChainId) {
 type FetchBridgeStateFields = 'all' | 'bridgeInCooldown' | 'maxBridgeInAmount' | 'lastBridgeInTime'
 
 // Fetch bridge contract state for a chain. Pass fields to limit which values are fetched.
-async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields = 'all'): Promise<void> {
+async function fetchBridgeState(
+  chainId: number,
+  fields: FetchBridgeStateFields = 'all',
+  options: {throwOnError?: boolean} = {},
+): Promise<void> {
   const chainState = chainStateByChainId.get(chainId)
   if (!chainState) return
 
@@ -283,6 +288,7 @@ async function fetchBridgeState(chainId: number, fields: FetchBridgeStateFields 
       console.log(`Bridge maxBridgeInAmount fetched for ${chainState.config.name}: ${maxAmountStr}`)
     }
   } catch (error) {
+    if (options.throwOnError) throw error
     console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
   }
 }
@@ -332,6 +338,25 @@ async function fetchStartupBridgeState(): Promise<void> {
   }
 }
 
+async function logStartupSignerBalances(): Promise<void> {
+  for (const chainId of getEffectiveChainIds(chainConfigs)) {
+    const config = getChainConfigById(chainConfigs, chainId)
+    if (!config?.tssSenderAddress) continue
+    try {
+      const signerBalance = await chainRpcConfig.withChainHttpProvider(
+        chainId,
+        (provider) => provider.getBalance(config.tssSenderAddress!),
+        { maxRetries: 3 },
+      )
+      console.log(
+        `Signer ${config.tssSenderAddress} balance on ${config.name}: ${ethersUtils.formatEther(signerBalance)} ETH`,
+      )
+    } catch (error) {
+      console.warn(`[startup] Failed to fetch signer balance for ${config.name} (${config.tssSenderAddress}):`, error)
+    }
+  }
+}
+
 const cryptoInitKey = process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRYPTO_HASH_KEY
 crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
@@ -350,7 +375,7 @@ const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const pendingTxQueueRemovalSet = new Set<string>()
 const txQueueProcessingInterval = 10000
 const TX_POLL_INTERVAL = 10 * 1000 // 10s
-const TX_PROCESSING_TIMEOUT_MS = 3 * 60 * 1000 // 3 minutes ( Including the bridgeInCooldown 1-minute + signing timeout 1.5 minutes)
+const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes total, covering the 1.5-minute signing timeout and the 1-minute bridge-in cooldown within the same window
 
 const TX_CLEANUP_MAX_AGE = 60 * 60 * 1000 // 1 hour for all statuses
 
@@ -639,15 +664,17 @@ async function refreshLastBridgeInTime(
   txId: string,
   txType: TransactionQueueItem['type'],
   chainId: number,
+  options: {throwOnError?: boolean} = {},
 ): Promise<void> {
   try {
     if (txType === 'coinToToken') {
-      await fetchBridgeState(chainId, 'lastBridgeInTime')
+      await fetchBridgeState(chainId, 'lastBridgeInTime', options)
     } else if (txType === 'vaultBridge' && chainConfigs.secondaryChainConfig?.chainId != null) {
-      await fetchBridgeState(chainConfigs.secondaryChainConfig.chainId, 'lastBridgeInTime')
+      await fetchBridgeState(chainConfigs.secondaryChainConfig.chainId, 'lastBridgeInTime', options)
     }
   } catch (error) {
     console.warn(`[bridge-state] Failed to refresh lastBridgeInTime for tx ${txId}`, error)
+    if (options.throwOnError) throw error
   }
 }
 
@@ -709,7 +736,7 @@ const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: numb
 // ---------------------------------------------------------------------------
 function reconcileTxStatusWithLocalDB(
   txId: string,
-  context: 'pre-process' | 'pre-sign',
+  context: 'pre-process' | 'pre-sign' | 'post-sign' | 'pre-submit',
 ): null | 'completed' | 'failed' | 'reverted' {
   if (DEBUG_SKIP_TX_STATUS_CHECK) return null
   try {
@@ -1039,8 +1066,6 @@ async function processCoinToToken(
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
     return 'failed'
   }
-  await waitForBridgeCooldown(chainState, targetChainName)
-
   // Fetch chain nonce and compare with local nonce manager
   const chainNonce = await getLatestChainNonce(targetChainId, tssSender)
   let localNonce = getLocalNonce(targetChainId, tssSender)
@@ -1081,6 +1106,13 @@ async function processCoinToToken(
   const cached = signedTxCache.get(normalizedTxId)
   if (cached && cached.nonce === senderNonce) {
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
+    await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId, {throwOnError: true})
+    await waitForBridgeCooldown(chainState, targetChainName)
+    const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
+    if (preSubmit != null) {
+      signedTxCache.delete(normalizedTxId)
+      return dbStatusToSkipOutcome(preSubmit)
+    }
     try {
       await retryOperation(() => injectEthereumTx(targetChainId, cached.txHash, cached.signedTx), {
         txId: cached.txHash,
@@ -1156,9 +1188,25 @@ async function processCoinToToken(
     return 'failed'
   }
 
-  // Cache signed tx + broadcast
   const txHash = ethersUtils.keccak256(signedTx as string)
+  // Cache signed tx early so retries can reuse it.
   signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce, cachedAt: Date.now() })
+
+  const postSign = reconcileTxStatusWithLocalDB(txId, 'post-sign')
+  if (postSign != null) {
+    signedTxCache.delete(normalizedTxId)
+    return dbStatusToSkipOutcome(postSign)
+  }
+
+  await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId, {throwOnError: true})
+  await waitForBridgeCooldown(chainState, targetChainName)
+  
+  const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
+  if (preSubmit != null) {
+    signedTxCache.delete(normalizedTxId)
+    return dbStatusToSkipOutcome(preSubmit)
+  }
+
   console.log(`Injecting ethereum transaction on ${targetChainName}`, txHash)
 
   let res: { success: boolean; reason?: string }
@@ -1275,8 +1323,6 @@ async function processVaultBridge(
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
     return 'failed'
   }
-  await waitForBridgeCooldown(destChainState, destChainName)
-
   // Fetch chain nonce and compare with local nonce manager
   const chainNonce = await getLatestChainNonce(destinationChainId, tssSender)
   let localNonce = getLocalNonce(destinationChainId, tssSender)
@@ -1318,6 +1364,13 @@ async function processVaultBridge(
   const cached = signedTxCache.get(normalizedTxId)
   if (cached && cached.nonce === senderNonce) {
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
+    await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId, {throwOnError: true})
+    await waitForBridgeCooldown(destChainState, destChainName)
+    const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
+    if (preSubmit != null) {
+      signedTxCache.delete(normalizedTxId)
+      return dbStatusToSkipOutcome(preSubmit)
+    }
     try {
       await retryOperation(() => injectEthereumTx(destinationChainId, cached.txHash, cached.signedTx), {
         txId: cached.txHash,
@@ -1384,7 +1437,7 @@ async function processVaultBridge(
   const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
   if (preSign != null) return dbStatusToSkipOutcome(preSign)
 
-  // Step 5: Sign via TSS (destination chain keystore)
+  // Sign via TSS (destination chain keystore)
   const signedTx = await signEthereumTransaction(tx, digest, destinationChainId, channelId, channelPassword)
   if (!signedTx) {
     console.log(`Failed to sign EVM-to-EVM transaction on ${destChainName}, skipping`, txId)
@@ -1393,16 +1446,25 @@ async function processVaultBridge(
     return 'failed'
   }
 
-  // Step 6: Cache signed tx + broadcast
   const txHash = ethersUtils.keccak256(signedTx as string)
+  // Cache signed tx early so retries can reuse it.
   signedTxCache.set(normalizedTxId, { signedTx: signedTx as string, txHash, nonce: senderNonce, cachedAt: Date.now() })
 
-  const signerBalance = await chainRpcConfig.withChainHttpProvider(
-    destinationChainId,
-    (provider) => provider.getBalance(tssSender),
-    { maxRetries: 3 },
-  )
-  console.log(`Signer ${tssSender} balance on ${destChainName}: ${ethersUtils.formatEther(signerBalance)} ETH`)
+  const postSign = reconcileTxStatusWithLocalDB(txId, 'post-sign')
+  if (postSign != null) {
+    signedTxCache.delete(normalizedTxId)
+    return dbStatusToSkipOutcome(postSign)
+  }
+
+  await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId, {throwOnError: true})
+  await waitForBridgeCooldown(destChainState, destChainName)
+
+  const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
+  if (preSubmit != null) {
+    signedTxCache.delete(normalizedTxId)
+    return dbStatusToSkipOutcome(preSubmit)
+  }
+
   console.log(`Injecting EVM-to-EVM transaction on ${destChainName}`, txHash)
   let res: { success: boolean; reason?: string }
 
@@ -1944,6 +2006,7 @@ async function main(): Promise<void> {
       console.warn(`[nonce-manager] Failed to initialize for chain ${chainId}:`, e)
     }
   }
+  await logStartupSignerBalances()
 
   await fetchStartupBridgeState()
 
@@ -2036,7 +2099,7 @@ async function main(): Promise<void> {
       }
       const failPromise = new Promise((resolve, reject) => {
         setTimeout(() => {
-          reject(new Error('Transaction processing timed out'))
+          reject(new Error(TX_PROCESSING_TIMEOUT_ERROR))
         }, TX_PROCESSING_TIMEOUT_MS)
       })
       // wait for either the transaction to be processed or the timeout
@@ -2055,7 +2118,7 @@ async function main(): Promise<void> {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         console.warn(`Transaction ${validTx.txId} reported failed outcome during processing`)
       } else if (outcome === 'skipped_db_completed') {
-        console.log(`Transaction ${validTx.txId} was already completed in local DB (pre-sign), skipping`)
+        console.log(`Transaction ${validTx.txId} was already completed in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         pendingTxQueueRemovalSet.add(txId)
         const tssSender = validTx.type === 'vaultBridge'
@@ -2064,20 +2127,20 @@ async function main(): Promise<void> {
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_reverted') {
-        console.log(`Transaction ${validTx.txId} was already reverted in local DB (pre-sign), skipping`)
+        console.log(`Transaction ${validTx.txId} was already reverted in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         pendingTxQueueRemovalSet.add(txId)
-        appendToFailedTxsLogs(validTx, 'already reverted in local DB before signing')
+        appendToFailedTxsLogs(validTx, 'already reverted in local DB during reconcile')
         const tssSender = validTx.type === 'vaultBridge'
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_failed') {
-        console.log(`Transaction ${validTx.txId} was already failed in local DB (pre-sign), skipping`)
+        console.log(`Transaction ${validTx.txId} was already failed in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         pendingTxQueueRemovalSet.add(txId)
-        appendToFailedTxsLogs(validTx, 'already failed in local DB before signing')
+        appendToFailedTxsLogs(validTx, 'already failed in local DB during reconcile')
         await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
 
@@ -2089,8 +2152,16 @@ async function main(): Promise<void> {
         tryGC()
       }
     } catch (error: any) {
-      if (error.message === bnbTss.SIGNING_TIMEOUT_ERROR) {
-        console.log('Transaction signing timed out', validTx.txId)
+      if (error.message === bnbTss.SIGNING_TIMEOUT_ERROR || error.message === TX_PROCESSING_TIMEOUT_ERROR) {
+        const isSigningTimeout = error.message === bnbTss.SIGNING_TIMEOUT_ERROR
+        const timeoutReason = isSigningTimeout ? bnbTss.SIGNING_TIMEOUT_ERROR : TX_PROCESSING_TIMEOUT_ERROR
+
+        if (isSigningTimeout) {
+          console.log('Transaction signing timed out', validTx.txId)
+        } else {
+          console.warn('Transaction processing timed out', validTx.txId)
+        }
+
         const finalStatus = checkTxStatusFromLocalDB(validTx.txId)
         if (finalStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
@@ -2106,24 +2177,13 @@ async function main(): Promise<void> {
               : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
             incrementLocalNonce(nonceCacheChainId, nonceTssSender)
           }
-          console.log(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} already COMPLETED in local DB`)
+          console.log(`[${timeoutReason}] ${validTx.txId} already COMPLETED in local DB`)
         } else {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-          appendToFailedTxsLogs(validTx, bnbTss.SIGNING_TIMEOUT_ERROR)
-          console.warn(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} not completed in local DB`)
+          appendToFailedTxsLogs(validTx, timeoutReason)
+          console.warn(`[${timeoutReason}] ${validTx.txId} not completed in local DB`)
         }
-        checkPostTransactionMemory(validTx.txId, bnbTss.SIGNING_TIMEOUT_ERROR)
-        if (global.gc) {
-          tryGC()
-        }
-      } else if (error.message === 'Transaction processing timed out') {
-        // Handle timeout errors more gracefully
-        console.warn('⏱️ Transaction timed out, marking as failed and cleaning up:', validTx.txId)
-        checkPostTransactionMemory(validTx.txId, 'timeout-error')
-        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        appendToFailedTxsLogs(validTx, 'timeout')
-        
-        // Force cleanup after timeout
+        checkPostTransactionMemory(validTx.txId, timeoutReason)
         if (global.gc) {
           tryGC()
         }
@@ -2138,7 +2198,6 @@ async function main(): Promise<void> {
           tryGC()
         }
       }
-      console.error('Error processing transaction:', error)
     } finally {
       // Remove from processing set when done (success or failure)
       const endTime = Date.now()
