@@ -126,8 +126,9 @@ export async function withCachedHttpProvider<T>(
       return await withTimeout(fn(entry.provider), options.timeoutMs);
     } catch (error) {
       lastError = error;
+      const errorMessage = (error as Error)?.message ?? String(error);
       if (shouldBlacklistForError(error)) {
-        const reason = (error as Error)?.message?.slice(0, 120) ?? String(error).slice(0, 120);
+        const reason = errorMessage.slice(0, 120);
         markUrlFailed(entry.url, undefined, reason);
       }
       providerCache.delete(chainId);
@@ -138,6 +139,11 @@ export async function withCachedHttpProvider<T>(
         );
       }
       if (attempt < maxRetries - 1) continue;
+      if (maxRetries > 1) {
+        console.warn(
+          `[httpProvider] Failed after ${attempt + 1}/${maxRetries} attempts`,
+        );
+      }
       throw error;
     }
   }

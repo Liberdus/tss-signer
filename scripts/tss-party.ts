@@ -294,7 +294,6 @@ async function fetchBridgeState(
 }
 
 async function waitForBridgeCooldown(chainState: ChainState, chainName: string): Promise<void> {
-  if (chainState.bridgeInCooldown <= 0 || chainState.lastBridgeInTime <= 0) return
   const latestBlock = await chainRpcConfig.withChainHttpProvider(
     chainState.config.chainId,
     (provider) => provider.getBlock('latest'),
@@ -302,15 +301,18 @@ async function waitForBridgeCooldown(chainState: ChainState, chainName: string):
   )
   const now = latestBlock.timestamp
   const cooldownEnd = chainState.lastBridgeInTime + chainState.bridgeInCooldown
-  if (now < cooldownEnd) {
-    const waitSec = cooldownEnd - now
-    console.log(
-      `Waiting ${waitSec}s for bridge-in cooldown on ${chainName}: ` +
-      `lastBridgeInTime=${new Date(chainState.lastBridgeInTime * 1000).toISOString()}, ` +
-      `cooldown=${chainState.bridgeInCooldown}s, ` +
-      `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
-      `chainNow=${new Date(now * 1000).toISOString()}`
-    )
+  const waitSec = Math.max(0, cooldownEnd - now)
+
+  console.log(
+    `Bridge-in cooldown check on ${chainName}: ` +
+    `wait=${waitSec}s, ` +
+    `lastBridgeInTime=${new Date(chainState.lastBridgeInTime * 1000).toISOString()}, ` +
+    `cooldown=${chainState.bridgeInCooldown}s, ` +
+    `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
+    `chainNow=${new Date(now * 1000).toISOString()}`
+  )
+
+  if (waitSec > 0) {
     await sleep(waitSec * 1000)
   }
 }

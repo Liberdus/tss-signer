@@ -1077,7 +1077,7 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
     signDiscoveryTimeout: options.signDiscoveryTimeout,
     extraArgs: options.extraArgs,
   });
-  console.log(`Running ${binary} ${args.join(' ')}`);
+  // console.log(`Running ${binary} ${args.join(' ')}`);
   const result: any = await runWithLiveLogs(binary, args, {
     cwd: tssRoot,
     env: {
