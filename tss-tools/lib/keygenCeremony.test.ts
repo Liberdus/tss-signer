@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import {
   detectPartyIndexFromIps,
   deriveDeterministicKeygenChannelId,
@@ -8,6 +11,7 @@ import {
   deriveKeygenThreshold,
   resolvePartyIndexFromCandidates,
   validateKeygenCeremonyConfig,
+  writeDerivedParamsConfig,
 } from './keygenCeremony'
 
 const config = validateKeygenCeremonyConfig({
@@ -105,6 +109,17 @@ function testDeterministicKeygenChannelCredentials(): void {
   assert.match(channelPassword, /^[0-9a-f]+$/)
 }
 
+function testWriteDerivedParamsConfig(): void {
+  const signerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-keygen-ceremony-'))
+  try {
+    const paramsPath = writeDerivedParamsConfig(signerRoot, {parties: 7, threshold: 3})
+    assert.equal(paramsPath, path.join(signerRoot, 'params.json'))
+    assert.equal(fs.readFileSync(paramsPath, 'utf8'), '{\n  "parties": 7,\n  "threshold": 3\n}\n')
+  } finally {
+    fs.rmSync(signerRoot, {recursive: true, force: true})
+  }
+}
+
 function main(): void {
   testValidateKeygenCeremonyConfigRejectsBadInput()
   testDeriveKeygenThreshold()
@@ -112,6 +127,7 @@ function main(): void {
   testResolvePartyIndexFromCandidates()
   testDeriveKeygenCeremonyConfig()
   testDeterministicKeygenChannelCredentials()
+  testWriteDerivedParamsConfig()
   console.log('keygen ceremony tests passed')
 }
 

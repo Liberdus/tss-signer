@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {spawnSync} from 'node:child_process'
+import * as path from 'node:path'
 import * as readlineSync from 'readline-sync'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import {resolveProjectRoot} from '../shared/utils/paths'
@@ -12,6 +13,7 @@ import {
   lookupExternalIpv4s,
   resolvePartyIndexFromCandidates,
   resolveKeygenCeremonyConfigPath,
+  writeDerivedParamsConfig,
 } from '../tss-tools/lib/keygenCeremony'
 
 type Options = {
@@ -123,10 +125,16 @@ async function main(): Promise<void> {
   const channelId = deriveDeterministicKeygenChannelId(config, options.nonce)
   const channelPassword = deriveDeterministicKeygenChannelPassword(config, options.nonce, channelId)
   const channelExpiryIso = new Date(Number.parseInt(channelId.slice(3), 16) * 1000).toISOString()
-  const params = bnbTss.readParams(signerRoot)
+  const derivedParams = {
+    parties: derived.parties,
+    threshold: derived.threshold,
+  }
+  const paramsPath = path.join(signerRoot, 'params.json')
 
   console.log('Resolved keygen configuration:')
   console.log(`  config: ${resolvedConfigPath}`)
+  console.log(`  params.json target: ${paramsPath}`)
+  console.log(`  params.json contents: ${JSON.stringify(derivedParams)}`)
   console.log(`  nonce: ${options.nonce}`)
   console.log(`  chain id: ${config.chainId}`)
   console.log(`  parties: ${derived.parties}`)
@@ -145,16 +153,10 @@ async function main(): Promise<void> {
   console.log(`  channel id: ${channelId}`)
   console.log(`  channel id expires at (UTC): ${channelExpiryIso}`)
   console.log(`  initialized home: ${initialized.home}`)
-  if (params.parties !== derived.parties || params.threshold !== derived.threshold) {
-    console.warn(
-      `WARNING: params.json is ${JSON.stringify(params)} but this ceremony resolves to ${JSON.stringify({
-        parties: derived.parties,
-        threshold: derived.threshold,
-      })}`,
-    )
-  }
 
   confirmProceed()
+  writeDerivedParamsConfig(signerRoot, derivedParams)
+  console.log(`Wrote params.json at ${paramsPath}`)
 
   const result = spawnSync(
     'npm',

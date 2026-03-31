@@ -133,7 +133,7 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file tx.json.exampl
 
 ### Assisted keygen wrapper
 
-For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for `BNB_TSS_PASSWORD`, verifies the password can unlock the initialized vault, then runs `tss-keygen` with those env vars scoped to that child process only. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen.
+For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for `BNB_TSS_PASSWORD`, verifies the password can unlock the initialized vault, overwrites `params.json` with the derived `{parties, threshold}`, then runs `tss-keygen` with those env vars scoped to that child process only. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen.
 
 Expected local config file:
 
