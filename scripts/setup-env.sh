@@ -23,7 +23,7 @@ fi
 # Check if customer user already exists
 if id "customer" &>/dev/null; then
     echo -e "${YELLOW}User 'customer' already exists.${NC}"
-    read -p "Do you want to continue with existing user? (y/n): " -n 1 -r
+    read -p "Do you want to continue with existing user? (y/n): " -n 1 -r < /dev/tty
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
@@ -39,9 +39,9 @@ if [ "$USER_EXISTS" = false ]; then
 
     # Ask for password
     while true; do
-        read -s -p "Enter password for 'customer' user: " PASSWORD
+        read -s -p "Enter password for 'customer' user: " PASSWORD < /dev/tty
         echo
-        read -s -p "Confirm password: " PASSWORD_CONFIRM
+        read -s -p "Confirm password: " PASSWORD_CONFIRM < /dev/tty
         echo
 
         if [ "$PASSWORD" = "$PASSWORD_CONFIRM" ]; then
@@ -61,6 +61,18 @@ if [ "$USER_EXISTS" = false ]; then
     usermod -aG sudo customer
 
     echo -e "${GREEN}User 'customer' created successfully!${NC}\n"
+fi
+
+AUTHORIZED_KEY="${CUSTOMER_SSH_AUTHORIZED_KEY:-}"
+
+if [ -n "$AUTHORIZED_KEY" ]; then
+    install -d -m 700 -o customer -g customer /home/customer/.ssh
+    touch /home/customer/.ssh/authorized_keys
+    chown customer:customer /home/customer/.ssh/authorized_keys
+    chmod 600 /home/customer/.ssh/authorized_keys
+
+    echo -e "${YELLOW}Adding provided SSH public key to customer authorized_keys...${NC}"
+    printf '%s\n' "$AUTHORIZED_KEY" >> /home/customer/.ssh/authorized_keys
 fi
 
 # Update package lists
