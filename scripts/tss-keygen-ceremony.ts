@@ -4,25 +4,23 @@ import * as readlineSync from 'readline-sync'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import {resolveProjectRoot} from '../shared/utils/paths'
 import {
-  detectPartyIndexFromIps,
   deriveDeterministicKeygenChannelId,
   deriveDeterministicKeygenChannelPassword,
   deriveKeygenCeremonyConfig,
   listLocalExternalIpv4s,
   loadKeygenCeremonyConfig,
+  lookupExternalIpv4s,
+  resolvePartyIndexFromCandidates,
   resolveKeygenCeremonyConfigPath,
 } from '../tss-tools/lib/keygenCeremony'
 
 type Options = {
   configPath?: string
   nonce: string
-  partyIdx?: number
 }
 
 function usage(exitCode = 1): never {
-  console.error(
-    'Usage: node scripts/tss-keygen-ceremony.js --nonce <value> [--config <path>] [--party <idx>]',
-  )
+  console.error('Usage: node scripts/tss-keygen-ceremony.js --nonce <value> [--config <path>]')
   process.exit(exitCode)
 }
 
@@ -40,10 +38,6 @@ function parseArgs(argv: string[]): Options {
         options.nonce = value
         i += 1
         break
-      case '--party':
-        options.partyIdx = Number.parseInt(value, 10)
-        i += 1
-        break
       case '-h':
       case '--help':
         usage(0)
@@ -55,9 +49,6 @@ function parseArgs(argv: string[]): Options {
   }
 
   if (!options.nonce || !`${options.nonce}`.trim()) {
-    usage()
-  }
-  if (options.partyIdx !== undefined && (!Number.isInteger(options.partyIdx) || options.partyIdx < 1)) {
     usage()
   }
 
@@ -99,13 +90,33 @@ function confirmProceed(): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2))
   const signerRoot = resolveProjectRoot()
   const resolvedConfigPath = resolveKeygenCeremonyConfigPath(options.configPath, signerRoot)
   const config = loadKeygenCeremonyConfig(options.configPath, signerRoot)
-  const detectedIps = listLocalExternalIpv4s()
-  const partyIdx = options.partyIdx ?? detectPartyIndexFromIps(config.partyIps, detectedIps)
+  const detectedLocalIps = listLocalExternalIpv4s()
+  let attemptedExternalLookup = false
+  let detectedExternalIps: string[] = []
+  let resolution
+
+  try {
+    resolution = resolvePartyIndexFromCandidates(config.partyIps, detectedLocalIps)
+  } catch (error) {
+    const localErrorMessage = error instanceof Error ? error.message : String(error)
+    attemptedExternalLookup = true
+    detectedExternalIps = await lookupExternalIpv4s()
+    if (detectedExternalIps.length === 0) {
+      console.warn('External IPv4 lookup did not return any usable IPv4 address.')
+    }
+    resolution = resolvePartyIndexFromCandidates(config.partyIps, detectedLocalIps, detectedExternalIps)
+    if (resolution.source === 'external') {
+      console.warn(`Local IPv4 auto-detection did not resolve the party index: ${localErrorMessage}`)
+      console.warn('Falling back to external IPv4 lookup results.')
+    }
+  }
+
+  const partyIdx = resolution.partyIdx
   const derived = deriveKeygenCeremonyConfig(config, partyIdx)
   const initialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId: config.chainId})
   const password = verifyVaultPassword(signerRoot, partyIdx, config.chainId)
@@ -121,7 +132,13 @@ function main(): void {
   console.log(`  parties: ${derived.parties}`)
   console.log(`  threshold: ${derived.threshold} (requires ${derived.threshold + 1} signers)`)
   console.log(`  party index: ${derived.partyIdx}`)
-  console.log(`  detected local IPv4s: ${detectedIps.length > 0 ? detectedIps.join(', ') : '(none detected)'}`)
+  console.log(`  detected local IPv4s: ${detectedLocalIps.length > 0 ? detectedLocalIps.join(', ') : '(none detected)'}`)
+  console.log(
+    `  detected external IPv4s: ${
+      detectedExternalIps.length > 0 ? detectedExternalIps.join(', ') : attemptedExternalLookup ? '(none resolved)' : '(not needed)'
+    }`,
+  )
+  console.log(`  party index source: ${resolution.source}`)
   console.log(`  matched party IP: ${derived.partyIp}`)
   console.log(`  listen addr: ${derived.listenAddr}`)
   console.log(`  peer addrs (${derived.peerAddrs.length}): ${derived.peerAddrs.join(',')}`)
@@ -175,9 +192,7 @@ function main(): void {
   }
 }
 
-try {
-  main()
-} catch (error) {
+main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error))
   process.exit(1)
-}
+})

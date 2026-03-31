@@ -245,16 +245,11 @@ The wrapper:
 - Prompts for `BNB_TSS_PASSWORD` and verifies it can unlock the already-initialized local vault before starting keygen.
 - Derives `parties` from the number of IPs in `keygen-config.json`.
 - Derives `threshold = floor(parties / 2)`.
-- Detects the local `partyIndex` by matching the machine's public IPv4 to the ordered IP list.
+- Detects the local `partyIndex` by matching the machine's local non-internal IPv4 addresses to the ordered IP list.
+- If that does not resolve uniquely, falls back to public IPv4 lookup services and retries the match.
 - Derives the correct `--peer-addrs` list automatically, excluding the local party's own address.
 - Derives deterministic keygen `channelId` and `channelPassword` from `chainId + ordered partyIps + nonce`.
 - Sets the channel id expiry to the next `00:00:00 UTC`, and prints that expiry before launching keygen.
-
-If local IP detection fails, pass the party index explicitly:
-
-```bash
-npm run tss-keygen-ceremony -- --nonce 1 --party <YOUR_PARTY_INDEX>
-```
 
 Use a fresh nonce for every retry:
 
