@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as bnbTss from './bnbTss'
 import {resolveProjectRoot} from '../../shared/utils/paths'
+import {type ParamsConfig} from '../../shared/config'
 
 const DEFAULT_CONFIG_NAME = 'keygen-config.json'
 const DEFAULT_EXTERNAL_IPV4_LOOKUP_URLS = ['https://api.ipify.org', 'https://ipv4.icanhazip.com/']
@@ -106,6 +107,15 @@ export function deriveKeygenThreshold(parties: number): number {
     throw new Error(`parties must be an integer >= 2, received ${parties}`)
   }
   return Math.floor(parties / 2)
+}
+
+export function writeDerivedParamsConfig(
+  signerRoot: string,
+  params: ParamsConfig,
+): string {
+  const paramsPath = path.join(signerRoot, 'params.json')
+  fs.writeFileSync(paramsPath, `${JSON.stringify(params, null, 2)}\n`, 'utf8')
+  return paramsPath
 }
 
 export function listLocalExternalIpv4s(): string[] {

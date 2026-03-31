@@ -215,13 +215,13 @@ export BNB_TSS_CHANNEL_PASSWORD=<agreed-channel-password>
 
 Keygen generates the distributed key shares. All 5 parties must run this step **at the same time**.
 
-Before running, make sure `params.json` in the repo root reflects the committee size you are about to use:
+For the assisted wrapper below, you do **not** need to edit `params.json` manually. The wrapper derives the committee from `keygen-config.json` and overwrites `params.json` just before keygen starts so the rest of the system stays in sync.
 
 ```json
 {"parties": 5, "threshold": 3}
 ```
 
-`--parties` and `--threshold` are optional for direct `tss-keygen`, but the long-lived `tss-party` process also reads `params.json` at startup, so the file must match the actual committee. Update it and recompile (`npm run compile`) if the values differ. The assisted wrapper in this step also warns if `params.json` does not match the derived committee.
+`--parties` and `--threshold` are optional for direct `tss-keygen`, but the long-lived `tss-party` process also reads `params.json` at startup, so the file must match the actual committee. The assisted wrapper handles that automatically; if you bypass it and run direct `tss-keygen`, you must manage `params.json` yourself.
 
 ### Recommended: assisted keygen wrapper
 
@@ -245,6 +245,7 @@ The wrapper:
 - Prompts for `BNB_TSS_PASSWORD` and verifies it can unlock the already-initialized local vault before starting keygen.
 - Derives `parties` from the number of IPs in `keygen-config.json`.
 - Derives `threshold = floor(parties / 2)`.
+- Overwrites `params.json` with the derived `{parties, threshold}` immediately before launching keygen.
 - Detects the local `partyIndex` by matching the machine's local non-internal IPv4 addresses to the ordered IP list.
 - If that does not resolve uniquely, falls back to public IPv4 lookup services and retries the match.
 - Derives the correct `--peer-addrs` list automatically, excluding the local party's own address.
