@@ -6,6 +6,7 @@ import {
   deriveKeygenCeremonyConfig,
   deriveNextUtcMidnightUnix,
   deriveKeygenThreshold,
+  resolvePartyIndexFromCandidates,
   validateKeygenCeremonyConfig,
 } from './keygenCeremony'
 
@@ -42,6 +43,32 @@ function testDeriveKeygenThreshold(): void {
 function testDetectPartyIndexFromIps(): void {
   assert.equal(detectPartyIndexFromIps(config.partyIps, ['10.0.0.2', '216.250.112.204']), 6)
   assert.throws(() => detectPartyIndexFromIps(config.partyIps, ['10.0.0.2']), /Unable to match/)
+}
+
+function testResolvePartyIndexFromCandidates(): void {
+  assert.deepEqual(resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2', '216.250.112.204']), {
+    partyIdx: 6,
+    source: 'local',
+  })
+  assert.deepEqual(resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2'], ['216.250.112.204']), {
+    partyIdx: 6,
+    source: 'external',
+  })
+  assert.deepEqual(
+    resolvePartyIndexFromCandidates(
+      config.partyIps,
+      ['89.167.95.133', '216.250.112.204'],
+      ['216.250.112.204'],
+    ),
+    {
+      partyIdx: 6,
+      source: 'external',
+    },
+  )
+  assert.throws(
+    () => resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2'], []),
+    /Unable to match any local IPv4 address/,
+  )
 }
 
 function testDeriveKeygenCeremonyConfig(): void {
@@ -82,6 +109,7 @@ function main(): void {
   testValidateKeygenCeremonyConfigRejectsBadInput()
   testDeriveKeygenThreshold()
   testDetectPartyIndexFromIps()
+  testResolvePartyIndexFromCandidates()
   testDeriveKeygenCeremonyConfig()
   testDeterministicKeygenChannelCredentials()
   console.log('keygen ceremony tests passed')

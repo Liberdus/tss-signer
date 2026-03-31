@@ -148,6 +148,12 @@ Channel credential derivation:
 - The last 8 hex characters are the next `00:00:00 UTC`, which keeps all operators on the same UTC day aligned without another shared argument.
 - `channelPassword` is `sha256(channelId + ceremony-material + ':channel-password')`, where `ceremony-material` is the JSON payload containing `chainId`, ordered `partyIps`, and `nonce`.
 
+Party index detection:
+
+- The wrapper first matches the machine's local non-internal IPv4 addresses against `partyIps`.
+- If that does not resolve uniquely, it falls back to public IPv4 lookup services and retries the match.
+- If the result is still ambiguous or unmatched, the wrapper stops and prints the detection failure.
+
 Avoid starting a ceremony right around `00:00 UTC`; if some servers compute the channel on one UTC date and others on the next, they will derive different channel ids.
 
 ## Native TSS Scripts

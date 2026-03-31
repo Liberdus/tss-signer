@@ -1,11 +1,13 @@
 import {createHash} from 'node:crypto'
 import * as fs from 'node:fs'
+import * as https from 'node:https'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as bnbTss from './bnbTss'
 import {resolveProjectRoot} from '../../shared/utils/paths'
 
 const DEFAULT_CONFIG_NAME = 'keygen-config.json'
+const DEFAULT_EXTERNAL_IPV4_LOOKUP_URLS = ['https://api.ipify.org', 'https://ipv4.icanhazip.com/']
 const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/
 
@@ -27,6 +29,11 @@ export interface KeygenCeremonyDerivedConfig {
   listenPort: number
   listenAddr: string
   peerAddrs: string[]
+}
+
+export interface PartyIndexResolution {
+  partyIdx: number
+  source: 'local' | 'external'
 }
 
 function normalizeNonce(nonce: string): string {
@@ -114,10 +121,18 @@ export function listLocalExternalIpv4s(): string[] {
   return Array.from(new Set(candidates)).sort()
 }
 
+function collectMatchingPartyIndexes(partyIps: string[], candidateIps: string[]): number[] {
+  return Array.from(
+    new Set(
+      candidateIps
+        .map((ip) => partyIps.indexOf(ip) + 1)
+        .filter((idx) => idx > 0),
+    ),
+  ).sort((left, right) => left - right)
+}
+
 export function detectPartyIndexFromIps(partyIps: string[], candidateIps: string[]): number {
-  const matches = candidateIps
-    .map((ip) => partyIps.indexOf(ip) + 1)
-    .filter((idx) => idx > 0)
+  const matches = collectMatchingPartyIndexes(partyIps, candidateIps)
 
   if (matches.length === 1) {
     return matches[0]
@@ -126,6 +141,78 @@ export function detectPartyIndexFromIps(partyIps: string[], candidateIps: string
     throw new Error(`Detected multiple matching party indexes from local IPs: ${matches.join(', ')}`)
   }
   throw new Error('Unable to match any local IPv4 address to partyIps')
+}
+
+export function resolvePartyIndexFromCandidates(
+  partyIps: string[],
+  localCandidateIps: string[],
+  externalCandidateIps: string[] = [],
+): PartyIndexResolution {
+  const localMatches = collectMatchingPartyIndexes(partyIps, localCandidateIps)
+  if (localMatches.length === 1) {
+    return {partyIdx: localMatches[0], source: 'local'}
+  }
+
+  const externalMatches = collectMatchingPartyIndexes(partyIps, externalCandidateIps)
+  if (localMatches.length === 0 && externalMatches.length === 1) {
+    return {partyIdx: externalMatches[0], source: 'external'}
+  }
+  if (localMatches.length > 1 && externalMatches.length === 1 && localMatches.includes(externalMatches[0])) {
+    return {partyIdx: externalMatches[0], source: 'external'}
+  }
+  if (localMatches.length > 1) {
+    throw new Error(`Detected multiple matching party indexes from local IPs: ${localMatches.join(', ')}`)
+  }
+  if (externalMatches.length > 1) {
+    throw new Error(`Detected multiple matching party indexes from external IPv4 lookups: ${externalMatches.join(', ')}`)
+  }
+  if (externalCandidateIps.length > 0) {
+    throw new Error('Unable to match any local or external IPv4 address to partyIps')
+  }
+  throw new Error('Unable to match any local IPv4 address to partyIps')
+}
+
+function fetchExternalIpv4(url: string, timeoutMs: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          'User-Agent': 'tss-keygen-ceremony/1.0',
+        },
+      },
+      (response) => {
+        if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+          response.resume()
+          resolve(null)
+          return
+        }
+
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', (chunk) => {
+          body += chunk
+        })
+        response.on('end', () => {
+          const candidate = body.trim()
+          resolve(IPV4_PATTERN.test(candidate) ? candidate : null)
+        })
+      },
+    )
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`IPv4 lookup timed out for ${url}`))
+    })
+    request.on('error', () => resolve(null))
+  })
+}
+
+export async function lookupExternalIpv4s(
+  lookupUrls = DEFAULT_EXTERNAL_IPV4_LOOKUP_URLS,
+  timeoutMs = 3000,
+): Promise<string[]> {
+  const results = await Promise.all(lookupUrls.map((url) => fetchExternalIpv4(url, timeoutMs)))
+  return Array.from(new Set(results.filter((value): value is string => Boolean(value)))).sort()
 }
 
 export function deriveKeygenCeremonyConfig(
