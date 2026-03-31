@@ -69,6 +69,24 @@ regroupPort = signingPort + 1000
 
 (e.g. for chain-97, party 1 regroup port = 41971)
 
+> You can calculate your port now using the formula above, or confirm the exact value from the `listen_addr` field after running `tss-init` in Step 1. Once you have the port, open it using the commands below.
+
+**To open a port using `ufw` (Ubuntu):**
+
+```bash
+sudo ufw allow <PORT>/tcp
+sudo ufw reload
+```
+
+For example, party 2 on chain-97:
+
+```bash
+sudo ufw allow 40972/tcp
+sudo ufw reload
+```
+
+If your VPS uses a cloud firewall (AWS Security Groups, GCP Firewall Rules, DigitalOcean Firewall, etc.), add the same inbound TCP rule there as well — `ufw` alone is not sufficient if a cloud-level firewall is in front of the machine.
+
 ### Environment Variables
 
 Set the required environment variables before running any party commands.
@@ -93,7 +111,11 @@ export BNB_TSS_PASSWORD=<your-own-vault-password>
 Additional env vars:
 
 - `BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD` — **shared session credentials** used only during keygen and regroup. Coordinated with the team; can be passed as flags or exported as env vars.
-- `SHARDUS_CRYPTO_HASH_KEY` — optional for `tss-party`. If set, every party must use the same value because signing channel passwords are derived from it.
+- `SHARDUS_CRYPTO_HASH_KEY` — **recommended for production.** Signing channel passwords are derived from this value, so every party must use the same key. Generate a strong random value for your deployment and share it with all operators:
+  ```bash
+  openssl rand -hex 32
+  ```
+  If not set, a default fallback is used — do not rely on the default in production.
 
 ---
 
@@ -113,7 +135,26 @@ For example:
 npm run tss-init -- --party 2 --chain-id 97
 ```
 
-This creates the vault directory at `keystores/bnbtss/party-<N>/chain-<CHAIN_ID>/default/` and writes the initial `node_key`. The expected signing port is shown in the JSON output.
+This creates the vault directory at `keystores/bnbtss/party-<N>/chain-<CHAIN_ID>/default/` and writes the initial `node_key`. On success, it prints a JSON summary including the port the party will listen on:
+
+```json
+{"party":2,"chainId":97,"home":"keystores/bnbtss/party-2/chain-97","vault":"default","listen_addr":"/ip4/0.0.0.0/tcp/40972","moniker":"tss_party-2-chain-97_default"}
+```
+
+The `listen_addr` port is derived from the formula `40000 + (chainId % 1000) * 10 + partyIndex`. Confirm this matches the port you opened in the firewall (see [Firewall / Port Requirements](#firewall--port-requirements)).
+
+To display only the listen address from the vault config at any time:
+
+```bash
+cat keystores/bnbtss/party-<YOUR_PARTY_INDEX>/chain-<CHAIN_ID>/default/config.json | grep '"listen"'
+```
+
+For example, party 2 on chain-97:
+
+```bash
+cat keystores/bnbtss/party-2/chain-97/default/config.json | grep '"listen"'
+# Output: "listen": "/ip4/0.0.0.0/tcp/40972",
+```
 
 ---
 
@@ -126,6 +167,7 @@ Keygen requires each party to know the real public IP of every other party befor
 **Each operator shares with the group:**
 - Their assigned party index
 - Their machine's public IP address
+- Their signing port (from the `listen_addr` in the `tss-init` output, or calculated as `40000 + (chainId % 1000) * 10 + partyIndex`)
 
 Once all 5 IPs are collected, each operator constructs their own `--peer-addrs` string: a comma-separated list of the **other 4 parties'** multiaddrs in the format `/ip4/<IP>/tcp/<PORT>`.
 
@@ -273,6 +315,30 @@ After the TSS address has been registered in the bridge contracts, it must be fu
 **Recommended starting balance:** enough to cover several hundred transactions. Monitor the balance over time and top it up as needed — if the TSS address runs out of gas funds, bridge transactions will fail.
 
 > The TSS address must have a non-zero balance on each chain before the parties are started. Parties will attempt to submit transactions immediately upon startup if pending work exists.
+
+---
+
+## Before Starting — Configure the Liberdus Proxy
+
+> **Role: Proxy admin**
+
+The Liberdus proxy server must be configured with the observer URL for each party before the bridge can route transactions. Open the proxy's `config.json` and update `observer_urls` with the real IP address (or hostname) of each party machine:
+
+```json
+"observer_urls": [
+    "http://<party-1-ip>:8101",
+    "http://<party-2-ip>:8102",
+    "http://<party-3-ip>:8103",
+    "http://<party-4-ip>:8104",
+    "http://<party-5-ip>:8105"
+]
+```
+
+Each observer binds to port `8100 + partyIndex` on its machine. If all parties run on the same machine, `127.0.0.1` works for all entries. For separate machines, use each party's actual public IP.
+
+If the proxy server is on a different machine from the party operators, each observer's HTTP port (8101–8105) must be reachable from the proxy — open those ports in the firewall on each party machine (see [Firewall / Port Requirements](#firewall--port-requirements)).
+
+Restart the Liberdus proxy after updating the config.
 
 ---
 
@@ -481,5 +547,6 @@ pm2 restart tss-party-<YOUR_PARTY_INDEX>
 | 5. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA addresses across all parties |
 | 6. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
 | 7. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
-| 8. Start observer + party | Each operator independently | TSS address must be registered and funded; both processes required |
+| 8. Configure proxy `observer_urls` | Proxy admin | Update `config.json` with each party's real IP + observer port; restart proxy |
+| 9. Start observer + party | Each operator independently | TSS address must be registered, funded, and proxy configured; both processes required |
 | Regroup (when needed) | Old + new members | Coordinate channel ID and per-party 8-addr lists; `threshold+1` old members required |
