@@ -106,6 +106,19 @@ fi
   env GOCACHE="${GOCACHE}" GOMODCACHE="${GOMODCACHE}" "${GO_BIN}" build -o "${DERIVE_BINARY_PATH}" ./.tooling/derive-pubkey/main.go
 )
 
+# On Linux the repo-bundled tbnbcli is a macOS Mach-O binary and won't run.
+# addToBnbcli only registers the key in the BNB Chain keystore, which is not
+# used for Ethereum/EVM signing. Replace it with a no-op stub so keygen
+# completes cleanly without panicking.
+OS="$(uname -s)"
+if [[ "${OS}" == "Linux" ]]; then
+  if [[ ! -f "${TBNBCLI_SOURCE_PATH}" ]] || ! file "${TBNBCLI_SOURCE_PATH}" 2>/dev/null | grep -q "ELF"; then
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${TBNBCLI_SOURCE_PATH}"
+    chmod +x "${TBNBCLI_SOURCE_PATH}"
+    echo "Created no-op tbnbcli stub at ${TBNBCLI_SOURCE_PATH}"
+  fi
+fi
+
 if [[ -f "${TBNBCLI_SOURCE_PATH}" ]]; then
   cp "${TBNBCLI_SOURCE_PATH}" "${TBNBCLI_TARGET_PATH}"
   chmod +x "${TBNBCLI_TARGET_PATH}"
