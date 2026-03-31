@@ -120,7 +120,7 @@ function txStatusLabel(status: TransactionStatus): string {
 const parsedIdx = process.argv[2]
 const operationFlag = process.argv[3]
 
-const verboseLogs = true
+const verboseLogs = false
 
 // Enable detailed logs for TSS signing flow (inputs, outputs, errors). Can be noisy, so toggle with care.
 const PRINT_TSS_SIGN_LOGS = false
