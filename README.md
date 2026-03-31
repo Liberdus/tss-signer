@@ -125,10 +125,30 @@ npm run tss-party
 # Native TSS operator helpers
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
+npm run tss-keygen-ceremony -- --nonce 1
 npm run tss-verify -- --party 1 --chain-id 97
 npm run tss-regroup -- --party 1 --chain-id 97 --is-old --new-threshold 3 --new-parties 5
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file tx.json.example
 ```
+
+### Assisted keygen wrapper
+
+For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for `BNB_TSS_PASSWORD`, verifies the password can unlock the initialized vault, then runs `tss-keygen` with those env vars scoped to that child process only. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen.
+
+Expected local config file:
+
+```json
+{"chainId":97,"partyIps":["198.51.100.11","198.51.100.12","198.51.100.13"]}
+```
+
+Channel credential derivation:
+
+- `channelId` is deterministic from `chainId + ordered partyIps + nonce`.
+- The first 3 digits come from a SHA-256 digest modulo `1000`.
+- The last 8 hex characters are the next `00:00:00 UTC`, which keeps all operators on the same UTC day aligned without another shared argument.
+- `channelPassword` is `sha256(channelId + ceremony-material + ':channel-password')`, where `ceremony-material` is the JSON payload containing `chainId`, ordered `partyIps`, and `nonce`.
+
+Avoid starting a ceremony right around `00:00 UTC`; if some servers compute the channel on one UTC date and others on the next, they will derive different channel ids.
 
 ## Native TSS Scripts
 

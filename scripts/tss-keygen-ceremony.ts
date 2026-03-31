@@ -1,0 +1,183 @@
+#!/usr/bin/env node
+import {spawnSync} from 'node:child_process'
+import * as readlineSync from 'readline-sync'
+import * as bnbTss from '../tss-tools/lib/bnbTss'
+import {resolveProjectRoot} from '../shared/utils/paths'
+import {
+  detectPartyIndexFromIps,
+  deriveDeterministicKeygenChannelId,
+  deriveDeterministicKeygenChannelPassword,
+  deriveKeygenCeremonyConfig,
+  listLocalExternalIpv4s,
+  loadKeygenCeremonyConfig,
+  resolveKeygenCeremonyConfigPath,
+} from '../tss-tools/lib/keygenCeremony'
+
+type Options = {
+  configPath?: string
+  nonce: string
+  partyIdx?: number
+}
+
+function usage(exitCode = 1): never {
+  console.error(
+    'Usage: node scripts/tss-keygen-ceremony.js --nonce <value> [--config <path>] [--party <idx>]',
+  )
+  process.exit(exitCode)
+}
+
+function parseArgs(argv: string[]): Options {
+  const options: Partial<Options> = {}
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    const value = argv[i + 1]
+    switch (arg) {
+      case '--config':
+        options.configPath = value
+        i += 1
+        break
+      case '--nonce':
+        options.nonce = value
+        i += 1
+        break
+      case '--party':
+        options.partyIdx = Number.parseInt(value, 10)
+        i += 1
+        break
+      case '-h':
+      case '--help':
+        usage(0)
+        break
+      default:
+        console.error(`Unknown argument: ${arg}`)
+        usage()
+    }
+  }
+
+  if (!options.nonce || !`${options.nonce}`.trim()) {
+    usage()
+  }
+  if (options.partyIdx !== undefined && (!Number.isInteger(options.partyIdx) || options.partyIdx < 1)) {
+    usage()
+  }
+
+  return options as Options
+}
+
+function promptForVaultPassword(): string {
+  while (true) {
+    const password = readlineSync.question('Enter BNB_TSS_PASSWORD for this vault: ', {
+      hideEchoBack: true,
+      mask: '',
+    })
+    if (password.length > 0) {
+      return password
+    }
+    console.error('BNB_TSS_PASSWORD cannot be empty')
+  }
+}
+
+function verifyVaultPassword(signerRoot: string, partyIdx: number, chainId: number): string {
+  while (true) {
+    const password = promptForVaultPassword()
+    try {
+      bnbTss.describeVault({signerRoot, partyIdx, chainId, password})
+      return password
+    } catch (error) {
+      console.error(
+        `Vault password did not unlock party ${partyIdx} chain ${chainId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    }
+  }
+}
+
+function confirmProceed(): void {
+  if (!readlineSync.keyInYNStrict('Proceed with keygen using these derived values?')) {
+    process.exit(1)
+  }
+}
+
+function main(): void {
+  const options = parseArgs(process.argv.slice(2))
+  const signerRoot = resolveProjectRoot()
+  const resolvedConfigPath = resolveKeygenCeremonyConfigPath(options.configPath, signerRoot)
+  const config = loadKeygenCeremonyConfig(options.configPath, signerRoot)
+  const detectedIps = listLocalExternalIpv4s()
+  const partyIdx = options.partyIdx ?? detectPartyIndexFromIps(config.partyIps, detectedIps)
+  const derived = deriveKeygenCeremonyConfig(config, partyIdx)
+  const initialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId: config.chainId})
+  const password = verifyVaultPassword(signerRoot, partyIdx, config.chainId)
+  const channelId = deriveDeterministicKeygenChannelId(config, options.nonce)
+  const channelPassword = deriveDeterministicKeygenChannelPassword(config, options.nonce, channelId)
+  const channelExpiryIso = new Date(Number.parseInt(channelId.slice(3), 16) * 1000).toISOString()
+  const params = bnbTss.readParams(signerRoot)
+
+  console.log('Resolved keygen configuration:')
+  console.log(`  config: ${resolvedConfigPath}`)
+  console.log(`  nonce: ${options.nonce}`)
+  console.log(`  chain id: ${config.chainId}`)
+  console.log(`  parties: ${derived.parties}`)
+  console.log(`  threshold: ${derived.threshold} (requires ${derived.threshold + 1} signers)`)
+  console.log(`  party index: ${derived.partyIdx}`)
+  console.log(`  detected local IPv4s: ${detectedIps.length > 0 ? detectedIps.join(', ') : '(none detected)'}`)
+  console.log(`  matched party IP: ${derived.partyIp}`)
+  console.log(`  listen addr: ${derived.listenAddr}`)
+  console.log(`  peer addrs (${derived.peerAddrs.length}): ${derived.peerAddrs.join(',')}`)
+  console.log(`  channel id: ${channelId}`)
+  console.log(`  channel id expires at (UTC): ${channelExpiryIso}`)
+  console.log(`  initialized home: ${initialized.home}`)
+  if (params.parties !== derived.parties || params.threshold !== derived.threshold) {
+    console.warn(
+      `WARNING: params.json is ${JSON.stringify(params)} but this ceremony resolves to ${JSON.stringify({
+        parties: derived.parties,
+        threshold: derived.threshold,
+      })}`,
+    )
+  }
+
+  confirmProceed()
+
+  const result = spawnSync(
+    'npm',
+    [
+      'run',
+      'tss-keygen',
+      '--',
+      '--party',
+      String(derived.partyIdx),
+      '--chain-id',
+      String(config.chainId),
+      '--parties',
+      String(derived.parties),
+      '--threshold',
+      String(derived.threshold),
+      '--peer-addrs',
+      derived.peerAddrs.join(','),
+      '--no-local-peer-addrs',
+    ],
+    {
+      cwd: signerRoot,
+      env: {
+        ...process.env,
+        BNB_TSS_PASSWORD: password,
+        BNB_TSS_CHANNEL_ID: channelId,
+        BNB_TSS_CHANNEL_PASSWORD: channelPassword,
+      },
+      encoding: 'utf8',
+      stdio: 'inherit',
+    },
+  )
+
+  if (result.status !== 0) {
+    process.exit(result.status || 1)
+  }
+}
+
+try {
+  main()
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error))
+  process.exit(1)
+}
