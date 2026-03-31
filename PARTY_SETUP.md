@@ -37,28 +37,54 @@ su - customer
 cd ~/tss-signer
 ```
 
-Set the required environment variables before running any party commands. Confirm the correct values with your team before proceeding:
+### Firewall / Port Requirements
+
+Each party needs one inbound TCP port open for P2P communication. The signing port formula is:
+
+```
+signingPort = 40000 + (chainId % 1000) * 10 + partyIndex
+```
+
+Examples:
+
+| Chain | Party 1 | Party 2 | Party 3 | Party 4 | Party 5 |
+|---|---|---|---|---|---|
+| BSC Testnet (97) | 40971 | 40972 | 40973 | 40974 | 40975 |
+| Polygon Amoy (80002) | 40022 | 40023 | 40024 | 40025 | 40026 |
+
+For **regroup** sessions, `--is-old` parties also need their regroup listen port open:
+
+```
+regroupPort = signingPort + 1000
+```
+
+(e.g. for chain-97, party 1 regroup port = 41971)
+
+### Environment Variables
+
+Set the required environment variables before running any party commands.
+
+**Shared team configuration — confirm these values with your team:**
 
 ```bash
 export COLLECTOR_HOST=http://<collector-ip>:3035
 export PROXY_SERVER_HOST=http://<proxy-ip>:3030
-export BNB_TSS_PASSWORD=<shared-vault-password>
 ```
 
 These can also be set in `chain-config.json` if you prefer not to use environment variables.
 
-BNB TSS env requirements:
-
-- `BNB_TSS_PASSWORD` is required for native vault access. It must be present for `tss-init`, `tss-keygen`, `tss-verify`, and `tss-party` startup validation.
-- `BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD` are required for manual native keygen/regroup/sign commands unless passed explicitly as flags.
-- `SHARDUS_CRYPTO_HASH_KEY` is optional for `tss-party`. If you override it, every party must use the same value because signing channel passwords are derived from it.
-
-Example shared native TSS variables for keygen/regroup:
+**Personal credential — set this yourself, never share it with other operators:**
 
 ```bash
-export BNB_TSS_CHANNEL_ID=<shared-channel-id>
-export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>
+export BNB_TSS_PASSWORD=<your-own-vault-password>
 ```
+
+`BNB_TSS_PASSWORD` encrypts your key share on disk. Choose a strong password, store it securely (e.g. a password manager), and keep it private. If you lose it, your vault cannot be decrypted and keygen must be repeated. All `tss-*` commands read it from this env var automatically — you do not need to pass `--password` on the command line.
+
+Additional env vars:
+
+- `BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD` — **shared session credentials** used only during keygen and regroup. Coordinated with the team; can be passed as flags or exported as env vars.
+- `SHARDUS_CRYPTO_HASH_KEY` — optional for `tss-party`. If set, every party must use the same value because signing channel passwords are derived from it.
 
 ---
 
@@ -78,37 +104,112 @@ For example:
 npm run tss-init -- --party 2 --chain-id 97
 ```
 
+This creates the vault directory at `keystores/bnbtss/party-<N>/chain-<CHAIN_ID>/default/` and writes the initial `node_key`. The expected signing port is shown in the JSON output.
+
 ---
 
-## Step 2 — Run Keygen
+## Step 2 — Share Peer Addresses
+
+> **Role: All party operators (coordination step)**
+
+Keygen requires each party to know the real public IP of every other party before starting. This coordination must happen before Step 4.
+
+**Each operator shares with the group:**
+- Their assigned party index
+- Their machine's public IP address
+
+Once all 5 IPs are collected, each operator constructs their own `--peer-addrs` string: a comma-separated list of the **other 4 parties'** multiaddrs in the format `/ip4/<IP>/tcp/<PORT>`.
+
+Example for party 2 on chain-97 (IPs 10.0.1.1–10.0.1.5):
+
+```
+/ip4/10.0.1.1/tcp/40971,/ip4/10.0.1.3/tcp/40973,/ip4/10.0.1.4/tcp/40974,/ip4/10.0.1.5/tcp/40975
+```
+
+> **You must exclude your own address from `--peer-addrs`** and pass exactly `Parties - 1` addresses (4 for a 5-party committee).
+>
+> The native TSS binary bypasses SSDP discovery and connects directly only when the number of provided addresses equals `Parties - 1`. Passing more (e.g. including your own) or fewer triggers SSDP fallback, which fails across different subnets and the internet.
+
+---
+
+## Step 3 — Generate a Channel ID
+
+> **Role: One designated operator (shared with all)**
+
+One operator (any party) generates a shared channel ID with a 30-minute expiry:
+
+```bash
+./tss/.tooling/bin/tss channel --channel_expire 30
+```
+
+Example output:
+```
+channel id: 82469B4FB12
+```
+
+Share the channel ID with all other operators. Also agree on a shared channel password (any alphanumeric string — the binary does not generate it, it is just a shared secret agreed out-of-band).
+
+All parties export these before running keygen:
+
+```bash
+export BNB_TSS_CHANNEL_ID=<channel-id-from-above>
+export BNB_TSS_CHANNEL_PASSWORD=<agreed-channel-password>
+```
+
+---
+
+## Step 4 — Run Keygen
 
 > **Role: All party operators (simultaneously)**
 
 Keygen generates the distributed key shares. All 5 parties must run this step **at the same time**.
 
-**Coordinate a start time with all 5 operators.** Once all 5 are ready:
+Before running, make sure `params.json` in the repo root reflects the committee size you are about to use:
 
-**Each operator runs on their own machine:**
-
-```bash
-npm run tss-keygen -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
+```json
+{"parties": 5, "threshold": 3}
 ```
 
-For example, operator 2 runs:
+`--parties` and `--threshold` are optional — the keygen command reads them from `params.json` by default. The long-lived `tss-party` process also reads `params.json` at startup, so the file must match the actual committee. Update it and recompile (`npm run compile`) if the values differ.
+
+**Coordinate a start time with all 5 operators.** Once all 5 are ready, each operator runs on their own machine:
 
 ```bash
-npm run tss-keygen -- --party 2 --chain-id 97
+npm run tss-keygen -- \
+  --party <YOUR_PARTY_INDEX> \
+  --chain-id <CHAIN_ID> \
+  --peer-addrs "<OTHER_4_PARTIES_MULTIADDRS>" \
+  --no-local-peer-addrs \
+  --channel-id <SHARED_CHANNEL_ID> \
+  --channel-password <SHARED_CHANNEL_PASSWORD>
 ```
+
+For example, operator 2 on chain-97 (parties at IPs 10.0.1.1–10.0.1.5):
+
+```bash
+npm run tss-keygen -- \
+  --party 2 \
+  --chain-id 97 \
+  --peer-addrs "/ip4/10.0.1.1/tcp/40971,/ip4/10.0.1.3/tcp/40973,/ip4/10.0.1.4/tcp/40974,/ip4/10.0.1.5/tcp/40975" \
+  --no-local-peer-addrs \
+  --channel-id 82469B4FB12 \
+  --channel-password mysharedpassword
+```
+
+> `BNB_TSS_PASSWORD` is picked up automatically — no `--password` flag needed.
 
 What to expect:
-- The process runs native TSS keygen for the requested chain and exits on success.
+- The process runs the native TSS keygen ceremony and exits on success.
 - Native vault files are written under `keystores/bnbtss/party-<idx>/chain-<chainId>/default/`.
+- On success, a JSON object is printed including `ethereum_address`. All parties should see the same address.
+
+> **Note:** Using real public IPs in `--peer-addrs` bakes the correct remote addresses directly into the vault. You will **not** need to run `patch-peer-addrs` before signing. (If keystores were generated locally with `127.0.0.1`, see `tss-tools/guide.md` section 20 for the patching workflow.)
 
 > If any party fails or exits early, all parties must restart keygen together from scratch. Partial keystores are invalid.
 
 ---
 
-## Step 3 — Verify Keystores
+## Step 5 — Verify Keystores
 
 > **Role: Party operators**
 
@@ -121,7 +222,7 @@ npm run tss-verify -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
 For example:
 
 ```bash
-npm run tss-verify -- --party 1 --chain-id 97
+npm run tss-verify -- --party 2 --chain-id 97
 ```
 
 What to check:
@@ -129,7 +230,7 @@ What to check:
 - The EOA address printed for each chain matches what the other operators see (all parties share the same public key / address).
 - Share the reported addresses with your team and verify they all match before proceeding.
 
-> If addresses differ between operators, keygen was corrupted. Delete all keystore files and re-run Step 2.
+> If addresses differ between operators, keygen was corrupted. Delete all keystore files and re-run Step 4.
 
 **Back up your keystores immediately after verification.** Once you have confirmed your addresses match the rest of the team, download the keystore files from the server to your local machine for safekeeping:
 
@@ -148,7 +249,7 @@ Each native vault contains your unique key share. If it is lost, your party can 
 
 Before the parties can submit signed transactions, the shared EOA address derived during keygen must be registered as the authorized `bridgeInCaller` in each bridge contract. This is a contract admin operation — whoever deployed the bridge contracts must perform it.
 
-Provide the contract admin with the verified EOA address from Step 3, and confirm it has been set on all supported chains before proceeding.
+Provide the contract admin with the verified EOA address from Step 5, and confirm it has been set on all supported chains before proceeding.
 
 > Until this is done, signed `bridgeIn` calls from the TSS parties will be rejected by the contract.
 
@@ -160,15 +261,13 @@ Provide the contract admin with the verified EOA address from Step 3, and confir
 
 After the TSS address has been registered in the bridge contracts, it must be funded with native gas tokens on each supported chain. The TSS parties submit on-chain transactions on behalf of the bridge, and each submission consumes gas.
 
-The contract admin is responsible for this. Send a sufficient amount of native token to the verified EOA address on every chain the bridge operates on before starting the parties.
-
 **Recommended starting balance:** enough to cover several hundred transactions. Monitor the balance over time and top it up as needed — if the TSS address runs out of gas funds, bridge transactions will fail.
 
 > The TSS address must have a non-zero balance on each chain before the parties are started. Parties will attempt to submit transactions immediately upon startup if pending work exists.
 
 ---
 
-## Step 4 — Start the Observer and TSS Party
+## Step 6 — Start the Observer and TSS Party
 
 > **Role: Party operators**
 
@@ -220,6 +319,12 @@ node dist/scripts/tss-party.js <YOUR_PARTY_INDEX>
 **Useful PM2 commands:**
 
 ```bash
+# Single-party machine — use process names directly
+pm2 restart observer-<N> tss-party-<N>
+pm2 stop observer-<N> tss-party-<N>
+pm2 logs observer-<N>
+pm2 logs tss-party-<N>
+
 # All-on-one-machine setup
 npm run status-tss              # check all process statuses
 npm run logs-tss                # stream combined logs
@@ -227,12 +332,6 @@ npm run restart-tss             # restart all 10 processes
 npm run restart-tss:observers   # restart observer-1..5
 npm run restart-tss:tss-parties # restart tss-party-1..5
 npm run stop-tss                # stop all processes
-
-# Single-party machine — use process names directly
-pm2 restart observer-<N> tss-party-<N>
-pm2 stop observer-<N> tss-party-<N>
-pm2 logs observer-<N>
-pm2 logs tss-party-<N>
 ```
 
 Log files are at:
@@ -241,13 +340,137 @@ Log files are at:
 
 ---
 
+## Regroup (Replacing a Party or Changing the Threshold)
+
+> **Role: Party operators (coordination required)**
+
+Regroup redistributes key shares to a new committee without changing the TSS Ethereum address. Use it when:
+- A party operator is leaving and needs to be replaced
+- The signing threshold needs to change
+- The committee size is expanding or shrinking
+
+Regroup requires at least `oldThreshold + 1` old participants.
+
+### Roles: old vs new
+
+Each participating party is either:
+- **`--is-old`** — existing committee member that also remains in the new committee
+- **`--is-new-member`** — newly added member that was **not** in the old committee
+
+A party that is leaving simply does not participate — it does not run any regroup command.
+
+### New-only members: init first
+
+Before the regroup session, new-only members must initialize their vault:
+
+```bash
+npm run tss-init -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
+```
+
+### Generate a regroup channel ID
+
+One operator generates a new channel ID (same process as Step 3) and shares it with all participants before starting.
+
+### Peer address structure for regroup
+
+Regroup uses `--new-peer-addrs` (not `--peer-addrs`). The number of addresses must be exactly:
+
+```
+n = OldThreshold + NewParties
+```
+
+For the standard 5-party / threshold-3 production committee (`5p/t3 → 5p/t3`, replacing one party): `n = 3 + 5 = 8` addresses per party.
+
+Each party's address list is built from three groups:
+
+| Group | Port | Who | `--is-old` count | `--is-new-member` count |
+|---|---|---|---|---|
+| Old committee participants (excl. self if `--is-old`) | Signing port | Parties in the old committee that are participating | `t` | `t+1` |
+| Carry-over members (in both old and new, incl. self if `--is-old`) | **Regroup port** (= signing port + 1000) | Parties in both old and new committee | `t+1` | `t+1` |
+| New-only members (excl. self if `--is-new-member`) | Signing port | Parties only in the new committee | `NewParties-(t+1)` | `NewParties-(t+1)-1` |
+
+Total for any party = `OldThreshold + NewParties` ✓
+
+> `--is-old` parties listen on their regroup port and must have it open in the firewall. The `regroup.ts` wrapper adds `--p2p.new_listen` automatically for these parties.
+
+> `--is-new-member` parties are contacted on their signing port and do not need a separate regroup listen port.
+
+### Example: 5p/t3 → 5p/t3, replacing party 5
+
+Setup:
+- Old committee: parties 1–5 (threshold 3), parties 1–4 are participating, party 5 is leaving
+- New committee: parties 1–4 (carry-over) + party 5 (new operator)
+- `n = 3 + 5 = 8` per party
+- IPs: party1=10.0.1.1, party2=10.0.1.2, party3=10.0.1.3, party4=10.0.1.4, party5(new)=10.0.1.5
+- Chain-97 signing ports: 40971–40975, regroup ports: 41971–41975
+
+**Per-party `--new-peer-addrs`:**
+
+| Party | Role | Addresses |
+|---|---|---|
+| 1 | `--is-old` | `10.0.1.2:40972, 10.0.1.3:40973, 10.0.1.4:40974` (old non-self, signing) + `10.0.1.1:41971, 10.0.1.2:41972, 10.0.1.3:41973, 10.0.1.4:41974` (carry-over incl. self, regroup) + `10.0.1.5:40975` (new-only, signing) |
+| 2 | `--is-old` | `10.0.1.1:40971, 10.0.1.3:40973, 10.0.1.4:40974` + `10.0.1.1:41971, 10.0.1.2:41972, 10.0.1.3:41973, 10.0.1.4:41974` + `10.0.1.5:40975` |
+| 3 | `--is-old` | `10.0.1.1:40971, 10.0.1.2:40972, 10.0.1.4:40974` + `10.0.1.1:41971, 10.0.1.2:41972, 10.0.1.3:41973, 10.0.1.4:41974` + `10.0.1.5:40975` |
+| 4 | `--is-old` | `10.0.1.1:40971, 10.0.1.2:40972, 10.0.1.3:40973` + `10.0.1.1:41971, 10.0.1.2:41972, 10.0.1.3:41973, 10.0.1.4:41974` + `10.0.1.5:40975` |
+| 5 | `--is-new-member` | `10.0.1.1:40971, 10.0.1.2:40972, 10.0.1.3:40973, 10.0.1.4:40974` (all old, signing) + `10.0.1.1:41971, 10.0.1.2:41972, 10.0.1.3:41973, 10.0.1.4:41974` (carry-over, regroup) |
+
+**Command for `--is-old` parties (parties 1–4):**
+
+```bash
+# Example for party 1
+npm run tss-regroup -- \
+  --party 1 \
+  --chain-id 97 \
+  --parties 5 \
+  --threshold 3 \
+  --new-parties 5 \
+  --new-threshold 3 \
+  --is-old \
+  --new-peer-addrs "/ip4/10.0.1.2/tcp/40972,/ip4/10.0.1.3/tcp/40973,/ip4/10.0.1.4/tcp/40974,/ip4/10.0.1.1/tcp/41971,/ip4/10.0.1.2/tcp/41972,/ip4/10.0.1.3/tcp/41973,/ip4/10.0.1.4/tcp/41974,/ip4/10.0.1.5/tcp/40975" \
+  --channel-id <SHARED_CHANNEL_ID> \
+  --channel-password <SHARED_CHANNEL_PASSWORD>
+```
+
+**Command for the new-only party (party 5):**
+
+```bash
+npm run tss-regroup -- \
+  --party 5 \
+  --chain-id 97 \
+  --parties 5 \
+  --threshold 3 \
+  --new-parties 5 \
+  --new-threshold 3 \
+  --is-new-member \
+  --new-peer-addrs "/ip4/10.0.1.1/tcp/40971,/ip4/10.0.1.2/tcp/40972,/ip4/10.0.1.3/tcp/40973,/ip4/10.0.1.4/tcp/40974,/ip4/10.0.1.1/tcp/41971,/ip4/10.0.1.2/tcp/41972,/ip4/10.0.1.3/tcp/41973,/ip4/10.0.1.4/tcp/41974" \
+  --channel-id <SHARED_CHANNEL_ID> \
+  --channel-password <SHARED_CHANNEL_PASSWORD>
+```
+
+After regroup completes successfully, verify the `ethereum_address` is unchanged across all parties:
+
+```bash
+npm run tss-verify -- --party <YOUR_PARTY_INDEX> --chain-id <CHAIN_ID>
+```
+
+Then restart your TSS party process:
+
+```bash
+pm2 restart tss-party-<YOUR_PARTY_INDEX>
+```
+
+---
+
 ## Summary
 
 | Step | Who | Coordination needed |
 |---|---|---|
-| 1. Init (`tss-init`) | Each party operator independently | No, but all required chains should be initialized before keygen |
-| 2. Keygen (`tss-keygen`) | All 5 simultaneously | Agree on start time |
-| 3. Verify (`tss-verify`) | Each party operator independently | Share and cross-check EOA addresses across all operators |
-| 4. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
-| 5. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
-| 6. Start observer + party | Each party operator independently | TSS address must be registered and funded; both observer and TSS party must run together |
+| 1. Init (`tss-init`) | Each operator independently | No, but complete for all chains before keygen |
+| 2. Share peer addresses | All party operators | Everyone shares their public IP + party index |
+| 3. Generate channel ID | One operator, shared with all | Share channel ID + password before keygen |
+| 4. Keygen (`tss-keygen`) | All 5 simultaneously | Agree on start time; use `--peer-addrs` with N-1 addrs (exclude self) |
+| 5. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA addresses across all parties |
+| 6. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
+| 7. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
+| 8. Start observer + party | Each operator independently | TSS address must be registered and funded; both processes required |
+| Regroup (when needed) | Old + new members | Coordinate channel ID and per-party 8-addr lists; `threshold+1` old members required |
