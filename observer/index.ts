@@ -5,7 +5,8 @@ import path from "path";
 import fs from "fs";
 import * as TransactionDB from "../shared/storage/transactiondb";
 import { chainConfigsRaw, getChainConfigById } from "../shared/config";
-import { normalizeTxId } from "../shared/utils/transformTxId";
+import { isEthereumAddress, toEthereumAddress } from "../shared/utils/transformAddress";
+import { isNormalizedTxId, normalizeTxId } from "../shared/utils/transformTxId";
 import { initMonitorState, monitorState, setSyncReady, syncReady } from "./monitor/state";
 import {
   monitorEthereumBridgeOutQueryFilter,
@@ -119,23 +120,60 @@ function parseIntQuery(value: unknown): number | undefined {
 
 app.get(["/transaction", "/transactions"], (req, res) => {
   try {
-    const txIdRaw = typeof req.query.txId === "string" ? req.query.txId : undefined;
-    const senderRaw = typeof req.query.sender === "string" ? req.query.sender : undefined;
-    const type = parseIntQuery(req.query.type);
-    const status = parseIntQuery(req.query.status);
-    const page = Math.max(1, parseIntQuery(req.query.page) ?? 1);
+    let txId = typeof req.query.txId === "string" ? req.query.txId.trim() : undefined;
+    let sender = typeof req.query.sender === "string" ? req.query.sender.trim() : undefined;
+    let type: TransactionDB.TransactionType | undefined;
+    let status: TransactionDB.TransactionStatus | undefined;
+    let page = parseIntQuery(req.query.page) ?? 1;
 
-    const txId = txIdRaw
-      ? (() => {
-          try {
-            return normalizeTxId(txIdRaw);
-          } catch {
-            return txIdRaw.trim().toLowerCase();
-          }
-        })()
-      : undefined;
+    if (
+      typeof req.query.page === "string" &&
+      (req.query.page.trim() === "" || !Number.isInteger(page) || page < 1)
+    ) {
+      return res.status(400).json({ Err: "Invalid page number" });
+    }
 
-    const sender = senderRaw ? senderRaw.trim().toLowerCase() : undefined;
+    if (txId) {
+      if (txId.length !== 64 && !(txId.startsWith("0x") && txId.length === 66)) {
+        return res.status(400).json({ Err: "Invalid txId" });
+      }
+      txId = normalizeTxId(txId);
+      if (!isNormalizedTxId(txId)) {
+        return res.status(400).json({ Err: "Invalid txId" });
+      }
+    }
+
+    if (sender !== undefined) {
+      if (sender === "") {
+        return res.status(400).json({ Err: "Invalid ethereum address format" });
+      }
+      sender = toEthereumAddress(sender);
+      if (!isEthereumAddress(sender)) {
+        return res.status(400).json({ Err: "Invalid ethereum address format" });
+      }
+    }
+
+    if (req.query.type !== undefined) {
+      if (typeof req.query.type !== "string" || req.query.type.trim() === "") {
+        return res.status(400).json({ Err: "Invalid type" });
+      }
+      const parsedType = parseInt(req.query.type, 10);
+      if (!TransactionDB.isTransactionType(parsedType)) {
+        return res.status(400).json({ Err: "Invalid type" });
+      }
+      type = parsedType;
+    }
+
+    if (req.query.status !== undefined) {
+      if (typeof req.query.status !== "string" || req.query.status.trim() === "") {
+        return res.status(400).json({ Err: "Invalid status" });
+      }
+      const parsedStatus = parseInt(req.query.status, 10);
+      if (!TransactionDB.isTransactionStatus(parsedStatus)) {
+        return res.status(400).json({ Err: "Invalid status" });
+      }
+      status = parsedStatus;
+    }
 
     if (txId) {
       const tx = TransactionDB.getTransactionById(txId);
@@ -150,8 +188,8 @@ app.get(["/transaction", "/transactions"], (req, res) => {
 
     const options: Parameters<typeof TransactionDB.getTransactionsByPage>[2] = {};
     if (sender) options.sender = sender;
-    if (TransactionDB.isTransactionType(type)) options.type = type;
-    if (TransactionDB.isTransactionStatus(status)) options.status = status;
+    if (type !== undefined) options.type = type;
+    if (status !== undefined) options.status = status;
 
     const total = TransactionDB.getTotalTransactions(options);
     const totalPages = Math.max(1, Math.ceil(total / TX_PAGE_SIZE));
