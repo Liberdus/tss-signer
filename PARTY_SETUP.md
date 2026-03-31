@@ -169,23 +169,23 @@ Keygen requires each party to know the real public IP of every other party befor
 - Their machine's public IP address
 - Their signing port (from the `listen_addr` in the `tss-init` output, or calculated as `40000 + (chainId % 1000) * 10 + partyIndex`)
 
-Once all 5 IPs are collected, each operator constructs their own `--peer-addrs` string: a comma-separated list of the **other 4 parties'** multiaddrs in the format `/ip4/<IP>/tcp/<PORT>`.
+Once all 5 IPs are collected, one operator should prepare the ordered party IP list (sorted by party index) that will be used for Step 4.
 
-Example for party 2 on chain-97 (IPs 10.0.1.1–10.0.1.5):
+Example ordered list for parties 1-5 on chain-97:
 
 ```
-/ip4/10.0.1.1/tcp/40971,/ip4/10.0.1.3/tcp/40973,/ip4/10.0.1.4/tcp/40974,/ip4/10.0.1.5/tcp/40975
+["10.0.1.1","10.0.1.2","10.0.1.3","10.0.1.4","10.0.1.5"]
 ```
 
-> **You must exclude your own address from `--peer-addrs`** and pass exactly `Parties - 1` addresses (4 for a 5-party committee).
->
-> The TSS binary connects directly to peers only when given the exact right number of addresses. Including your own or passing the wrong count causes it to fall back to local network discovery, which does not work across different machines on the internet.
+Each operator should receive the same one-liner to create `keygen-config.json` locally. The Step 4 wrapper derives the correct `--peer-addrs` automatically and excludes the local party's own address.
 
 ---
 
-## Step 3 — Generate a Channel ID
+## Step 3 — Manual Channel ID (Optional)
 
-> **Role: One designated operator (shared with all)**
+> **Role: One designated operator (shared with all, only for manual keygen/regroup)**
+
+If you use the assisted Step 4 wrapper (`npm run tss-keygen-ceremony`), skip this step. The wrapper derives deterministic keygen channel credentials from the shared IP list plus `--nonce`.
 
 One operator (any party) generates a shared channel ID with a 30-minute expiry:
 
@@ -221,33 +221,64 @@ Before running, make sure `params.json` in the repo root reflects the committee 
 {"parties": 5, "threshold": 3}
 ```
 
-`--parties` and `--threshold` are optional — the keygen command reads them from `params.json` by default. The long-lived `tss-party` process also reads `params.json` at startup, so the file must match the actual committee. Update it and recompile (`npm run compile`) if the values differ.
+`--parties` and `--threshold` are optional for direct `tss-keygen`, but the long-lived `tss-party` process also reads `params.json` at startup, so the file must match the actual committee. Update it and recompile (`npm run compile`) if the values differ. The assisted wrapper in this step also warns if `params.json` does not match the derived committee.
+
+### Recommended: assisted keygen wrapper
+
+One operator shares a one-liner that writes the same `keygen-config.json` on every machine. The file contains the chain id and the ordered party IP list.
+
+Example one-liner for chain-97:
+
+```bash
+cat > ~/tss-signer/keygen-config.json <<'EOF'
+{"chainId":97,"partyIps":["10.0.1.1","10.0.1.2","10.0.1.3","10.0.1.4","10.0.1.5"]}
+EOF
+```
 
 **Coordinate a start time with all 5 operators.** Once all 5 are ready, each operator runs on their own machine:
+
+```bash
+npm run tss-keygen-ceremony -- --nonce 1
+```
+
+The wrapper:
+- Prompts for `BNB_TSS_PASSWORD` and verifies it can unlock the already-initialized local vault before starting keygen.
+- Derives `parties` from the number of IPs in `keygen-config.json`.
+- Derives `threshold = floor(parties / 2)`.
+- Detects the local `partyIndex` by matching the machine's public IPv4 to the ordered IP list.
+- Derives the correct `--peer-addrs` list automatically, excluding the local party's own address.
+- Derives deterministic keygen `channelId` and `channelPassword` from `chainId + ordered partyIps + nonce`.
+- Sets the channel id expiry to the next `00:00:00 UTC`, and prints that expiry before launching keygen.
+
+If local IP detection fails, pass the party index explicitly:
+
+```bash
+npm run tss-keygen-ceremony -- --nonce 1 --party <YOUR_PARTY_INDEX>
+```
+
+Use a fresh nonce for every retry:
+
+```bash
+npm run tss-keygen-ceremony -- --nonce 2
+```
+
+> Avoid starting keygen right around `00:00 UTC`. If some servers compute the channel id on one UTC date and others on the next, they will derive different channel ids.
+
+### Fallback: direct manual `tss-keygen`
+
+If you need to run the native keygen command directly, follow Step 2 to build `--peer-addrs` yourself and Step 3 to coordinate `BNB_TSS_CHANNEL_ID` and `BNB_TSS_CHANNEL_PASSWORD`, then run:
 
 ```bash
 npm run tss-keygen -- \
   --party <YOUR_PARTY_INDEX> \
   --chain-id <CHAIN_ID> \
-  --peer-addrs "<OTHER_4_PARTIES_MULTIADDRS>" \
+  --peer-addrs "<OTHER_PARTIES_MULTIADDRS>" \
   --no-local-peer-addrs \
   --channel-id <SHARED_CHANNEL_ID> \
   --channel-password <SHARED_CHANNEL_PASSWORD>
 ```
 
-For example, operator 2 on chain-97 (parties at IPs 10.0.1.1–10.0.1.5):
-
-```bash
-npm run tss-keygen -- \
-  --party 2 \
-  --chain-id 97 \
-  --peer-addrs "/ip4/10.0.1.1/tcp/40971,/ip4/10.0.1.3/tcp/40973,/ip4/10.0.1.4/tcp/40974,/ip4/10.0.1.5/tcp/40975" \
-  --no-local-peer-addrs \
-  --channel-id 82469B4FB12 \
-  --channel-password mysharedpassword
-```
-
-> `BNB_TSS_PASSWORD` is picked up automatically — no `--password` flag needed.
+> `BNB_TSS_PASSWORD` is still picked up automatically in both flows — no `--password` flag needed.
 
 What to expect:
 - The process runs the native TSS keygen ceremony and exits on success.
@@ -541,9 +572,9 @@ pm2 restart tss-party-<YOUR_PARTY_INDEX>
 | Step | Who | Coordination needed |
 |---|---|---|
 | 1. Init (`tss-init`) | Each operator independently | No, but complete for all chains before keygen |
-| 2. Share peer addresses | All party operators | Everyone shares their public IP + party index |
-| 3. Generate channel ID | One operator, shared with all | Share channel ID + password before keygen |
-| 4. Keygen (`tss-keygen`) | All 5 simultaneously | Agree on start time; use `--peer-addrs` with N-1 addrs (exclude self) |
+| 2. Share peer addresses | All party operators | Everyone shares their public IP + party index; one operator prepares the ordered IP list |
+| 3. Manual channel ID (optional) | One operator, shared with all | Needed only for direct `tss-keygen` / regroup, not for `tss-keygen-ceremony` |
+| 4. Keygen (`tss-keygen-ceremony`) | All 5 simultaneously | Agree on start time; all operators use the same `keygen-config.json` and nonce |
 | 5. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA addresses across all parties |
 | 6. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
 | 7. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
