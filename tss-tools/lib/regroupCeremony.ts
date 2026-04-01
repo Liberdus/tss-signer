@@ -250,7 +250,7 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
     if (ip === committeePartyIp) {
       continue
     }
-    peerAddrs.push(getNewPeerAddr(ip, chainId))
+    peerAddrs.push(getOldPeerAddr(ip, chainId))
   }
 
   const expectedCount = oldThreshold + newParties
