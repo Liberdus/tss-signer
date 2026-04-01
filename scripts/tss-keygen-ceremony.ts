@@ -63,10 +63,10 @@ function promptForVaultPassword(): string {
       hideEchoBack: true,
       mask: '',
     })
-    if (password.length > 0) {
+    if (password.length > 8) {
       return password
     }
-    console.error('BNB_TSS_PASSWORD cannot be empty')
+    console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
   }
 }
 
@@ -120,8 +120,16 @@ async function main(): Promise<void> {
 
   const partyIdx = resolution.partyIdx
   const derived = deriveKeygenCeremonyConfig(config, partyIdx)
-  const initialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId: config.chainId})
-  const password = verifyVaultPassword(signerRoot, partyIdx, config.chainId)
+
+  let existingInitialized: ReturnType<typeof bnbTss.requireInitialized> | null = null
+  try {
+    existingInitialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId: config.chainId})
+  } catch {
+    // vault not yet initialized — will run tss-init automatically
+  }
+  const vaultIsNew = existingInitialized === null
+  const vaultHome = bnbTss.getPartyHome({signerRoot, partyIdx, chainId: config.chainId})
+
   const channelId = deriveDeterministicKeygenChannelId(config, options.nonce)
   const channelPassword = deriveDeterministicKeygenChannelPassword(config, options.nonce, channelId)
   const channelExpiryIso = new Date(Number.parseInt(channelId.slice(3), 16) * 1000).toISOString()
@@ -152,7 +160,17 @@ async function main(): Promise<void> {
   console.log(`  peer addrs (${derived.peerAddrs.length}): ${derived.peerAddrs.join(',')}`)
   console.log(`  channel id: ${channelId}`)
   console.log(`  channel id expires at (UTC): ${channelExpiryIso}`)
-  console.log(`  initialized home: ${initialized.home}`)
+  console.log(`  vault: ${vaultIsNew ? `will initialize (new) at ${vaultHome}` : `already initialized at ${vaultHome}`}`)
+
+  let password: string
+  if (vaultIsNew) {
+    password = promptForVaultPassword()
+    console.log(`Initializing vault for party ${partyIdx} chain ${config.chainId}...`)
+    await bnbTss.initParty({signerRoot, partyIdx, chainId: config.chainId, password})
+    console.log(`Vault initialized at ${vaultHome}`)
+  } else {
+    password = verifyVaultPassword(signerRoot, partyIdx, config.chainId)
+  }
 
   confirmProceed()
   writeDerivedParamsConfig(signerRoot, derivedParams)

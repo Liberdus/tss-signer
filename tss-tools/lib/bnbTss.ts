@@ -882,7 +882,7 @@ export function buildSignArgs({
   return args;
 }
 
-export function initParty(options: InitPartyOptions = {} as InitPartyOptions): InitializedParty {
+export async function initParty(options: InitPartyOptions = {} as InitPartyOptions): Promise<InitializedParty> {
   const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
@@ -894,7 +894,7 @@ export function initParty(options: InitPartyOptions = {} as InitPartyOptions): I
     return {home, vaultName, binary, tssRoot};
   }
   fs.mkdirSync(home, {recursive: true});
-  runOrThrow(
+  await runWithLiveLogs(
     binary,
     [
       'init',
