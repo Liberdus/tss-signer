@@ -981,9 +981,11 @@ export function requireInitialized(options: BasePartyOptions = {} as BasePartyOp
   const vaultName = getVaultName(options.vaultName);
   const configPath = getVaultConfigPath(home, vaultName);
   if (!fs.existsSync(configPath)) {
-    const partyIdx = getEffectivePartyIdx(options);
+    const initCommand = options.useDefaultSlotPath
+      ? `node tss-tools/init.js --chain-id ${options.chainId}`
+      : `node tss-tools/init.js --party ${getEffectivePartyIdx(options)} --chain-id ${options.chainId}`;
     throw new Error(
-      `Missing initialized party config at ${configPath}. Run node tss-tools/init.js --party ${partyIdx} --chain-id ${options.chainId} first.`,
+      `Missing initialized party config at ${configPath}. Run ${initCommand} first.`,
     );
   }
   return {home, vaultName, binary, tssRoot};
