@@ -8,10 +8,12 @@ import {
   deriveDeterministicKeygenChannelId,
   deriveDeterministicKeygenChannelPassword,
   deriveKeygenCeremonyConfig,
+  isValidVaultPassword,
   listLocalExternalIpv4s,
   loadKeygenCeremonyConfig,
   lookupExternalIpv4s,
   resolvePartyIndexFromCandidates,
+  resolveKeygenVaultPreparation,
   resolveKeygenCeremonyConfigPath,
   writeDerivedParamsConfig,
 } from '../tss-tools/lib/keygenCeremony'
@@ -63,7 +65,7 @@ function promptForVaultPassword(): string {
       hideEchoBack: true,
       mask: '',
     })
-    if (password.length > 8) {
+    if (isValidVaultPassword(password)) {
       return password
     }
     console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
@@ -120,15 +122,7 @@ async function main(): Promise<void> {
 
   const partyIdx = resolution.partyIdx
   const derived = deriveKeygenCeremonyConfig(config, partyIdx)
-
-  let existingInitialized: ReturnType<typeof bnbTss.requireInitialized> | null = null
-  try {
-    existingInitialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId: config.chainId})
-  } catch {
-    // vault not yet initialized — will run tss-init automatically
-  }
-  const vaultIsNew = existingInitialized === null
-  const vaultHome = bnbTss.getPartyHome({signerRoot, partyIdx, chainId: config.chainId})
+  const {vaultIsNew, vaultHome} = resolveKeygenVaultPreparation(signerRoot, partyIdx, config.chainId)
 
   const channelId = deriveDeterministicKeygenChannelId(config, options.nonce)
   const channelPassword = deriveDeterministicKeygenChannelPassword(config, options.nonce, channelId)

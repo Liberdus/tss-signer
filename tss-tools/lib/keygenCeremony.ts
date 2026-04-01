@@ -32,6 +32,11 @@ export interface KeygenCeremonyDerivedConfig {
   peerAddrs: string[]
 }
 
+export interface KeygenVaultPreparation {
+  vaultIsNew: boolean
+  vaultHome: string
+}
+
 export interface PartyIndexResolution {
   partyIdx: number
   source: 'local' | 'external'
@@ -107,6 +112,28 @@ export function deriveKeygenThreshold(parties: number): number {
     throw new Error(`parties must be an integer >= 2, received ${parties}`)
   }
   return Math.floor(parties / 2)
+}
+
+export function isValidVaultPassword(password: string): boolean {
+  return password.length > 8
+}
+
+export function resolveKeygenVaultPreparation(
+  signerRoot: string,
+  partyIdx: number,
+  chainId: number,
+): KeygenVaultPreparation {
+  let existingInitialized: ReturnType<typeof bnbTss.requireInitialized> | null = null
+  try {
+    existingInitialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId})
+  } catch {
+    // vault not yet initialized — caller may run tss-init automatically
+  }
+
+  return {
+    vaultIsNew: existingInitialized === null,
+    vaultHome: bnbTss.getPartyHome({signerRoot, partyIdx, chainId}),
+  }
 }
 
 export function writeDerivedParamsConfig(

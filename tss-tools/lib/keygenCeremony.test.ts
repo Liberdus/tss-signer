@@ -9,6 +9,8 @@ import {
   deriveKeygenCeremonyConfig,
   deriveNextUtcMidnightUnix,
   deriveKeygenThreshold,
+  isValidVaultPassword,
+  resolveKeygenVaultPreparation,
   resolvePartyIndexFromCandidates,
   validateKeygenCeremonyConfig,
   writeDerivedParamsConfig,
@@ -17,24 +19,24 @@ import {
 const config = validateKeygenCeremonyConfig({
   chainId: 97,
   partyIps: [
-    '89.167.95.133',
-    '187.124.118.138',
-    '23.239.29.227',
-    '57.131.48.75',
-    '195.35.2.41',
-    '216.250.112.204',
-    '187.124.247.126',
+    '138.197.201.44',
+    '64.23.154.91',
+    '146.190.88.173',
+    '165.227.120.58',
+    '159.89.207.131',
+    '157.245.62.204',
+    '134.209.33.76',
   ],
 })
 
 function testValidateKeygenCeremonyConfigRejectsBadInput(): void {
   assert.throws(() => validateKeygenCeremonyConfig(null), /JSON object/)
   assert.throws(
-    () => validateKeygenCeremonyConfig({chainId: 97, partyIps: ['216.250.112.204', '216.250.112.204']}),
+    () => validateKeygenCeremonyConfig({chainId: 97, partyIps: ['157.245.62.204', '157.245.62.204']}),
     /must not contain duplicates/,
   )
   assert.throws(
-    () => validateKeygenCeremonyConfig({chainId: 97, partyIps: ['216.250.112.204', 'not-an-ip']}),
+    () => validateKeygenCeremonyConfig({chainId: 97, partyIps: ['157.245.62.204', 'not-an-ip']}),
     /valid IPv4/,
   )
 }
@@ -44,25 +46,30 @@ function testDeriveKeygenThreshold(): void {
   assert.equal(deriveKeygenThreshold(6), 3)
 }
 
+function testIsValidVaultPassword(): void {
+  assert.equal(isValidVaultPassword('12345678'), false)
+  assert.equal(isValidVaultPassword('123456789'), true)
+}
+
 function testDetectPartyIndexFromIps(): void {
-  assert.equal(detectPartyIndexFromIps(config.partyIps, ['10.0.0.2', '216.250.112.204']), 6)
+  assert.equal(detectPartyIndexFromIps(config.partyIps, ['10.0.0.2', '157.245.62.204']), 6)
   assert.throws(() => detectPartyIndexFromIps(config.partyIps, ['10.0.0.2']), /Unable to match/)
 }
 
 function testResolvePartyIndexFromCandidates(): void {
-  assert.deepEqual(resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2', '216.250.112.204']), {
+  assert.deepEqual(resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2', '157.245.62.204']), {
     partyIdx: 6,
     source: 'local',
   })
-  assert.deepEqual(resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2'], ['216.250.112.204']), {
+  assert.deepEqual(resolvePartyIndexFromCandidates(config.partyIps, ['10.0.0.2'], ['157.245.62.204']), {
     partyIdx: 6,
     source: 'external',
   })
   assert.deepEqual(
     resolvePartyIndexFromCandidates(
       config.partyIps,
-      ['89.167.95.133', '216.250.112.204'],
-      ['216.250.112.204'],
+      ['138.197.201.44', '157.245.62.204'],
+      ['157.245.62.204'],
     ),
     {
       partyIdx: 6,
@@ -83,13 +90,48 @@ function testDeriveKeygenCeremonyConfig(): void {
   assert.equal(derived.listenPort, 40976)
   assert.equal(derived.listenAddr, '/ip4/0.0.0.0/tcp/40976')
   assert.deepEqual(derived.peerAddrs, [
-    '/ip4/89.167.95.133/tcp/40971',
-    '/ip4/187.124.118.138/tcp/40972',
-    '/ip4/23.239.29.227/tcp/40973',
-    '/ip4/57.131.48.75/tcp/40974',
-    '/ip4/195.35.2.41/tcp/40975',
-    '/ip4/187.124.247.126/tcp/40977',
+    '/ip4/138.197.201.44/tcp/40971',
+    '/ip4/64.23.154.91/tcp/40972',
+    '/ip4/146.190.88.173/tcp/40973',
+    '/ip4/165.227.120.58/tcp/40974',
+    '/ip4/159.89.207.131/tcp/40975',
+    '/ip4/134.209.33.76/tcp/40977',
   ])
+}
+
+function testResolveKeygenVaultPreparationForNewVault(): void {
+  const signerRoot = '/tmp/tss-keygen-test'
+  const originalRequireInitialized = require('./bnbTss').requireInitialized
+  try {
+    require('./bnbTss').requireInitialized = () => {
+      throw new Error('missing initialized party config')
+    }
+    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 6, 97), {
+      vaultIsNew: true,
+      vaultHome: `${signerRoot}/keystores/bnbtss/party-6/chain-97`,
+    })
+  } finally {
+    require('./bnbTss').requireInitialized = originalRequireInitialized
+  }
+}
+
+function testResolveKeygenVaultPreparationForExistingVault(): void {
+  const signerRoot = '/tmp/tss-keygen-test'
+  const originalRequireInitialized = require('./bnbTss').requireInitialized
+  try {
+    require('./bnbTss').requireInitialized = () => ({
+      home: `${signerRoot}/keystores/bnbtss/party-6/chain-97`,
+      vaultName: 'default',
+      binary: '/tmp/tss',
+      tssRoot: '/tmp/tss-root',
+    })
+    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 6, 97), {
+      vaultIsNew: false,
+      vaultHome: `${signerRoot}/keystores/bnbtss/party-6/chain-97`,
+    })
+  } finally {
+    require('./bnbTss').requireInitialized = originalRequireInitialized
+  }
 }
 
 function testDeterministicKeygenChannelCredentials(): void {
@@ -123,9 +165,12 @@ function testWriteDerivedParamsConfig(): void {
 function main(): void {
   testValidateKeygenCeremonyConfigRejectsBadInput()
   testDeriveKeygenThreshold()
+  testIsValidVaultPassword()
   testDetectPartyIndexFromIps()
   testResolvePartyIndexFromCandidates()
   testDeriveKeygenCeremonyConfig()
+  testResolveKeygenVaultPreparationForNewVault()
+  testResolveKeygenVaultPreparationForExistingVault()
   testDeterministicKeygenChannelCredentials()
   testWriteDerivedParamsConfig()
   console.log('keygen ceremony tests passed')
