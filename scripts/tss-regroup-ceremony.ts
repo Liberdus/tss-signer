@@ -95,11 +95,31 @@ async function main(): Promise<void> {
   const config = loadRegroupCeremonyConfig(options.configPath, signerRoot)
   const resolution = await resolveRegroupPartyIndex(config)
   const derived = deriveRegroupCeremonyConfig(config, resolution.partyIdx)
-  const initialized = bnbTss.requireInitialized({
+  const vaultHome = bnbTss.getPartyHome({
     signerRoot,
     chainId: config.chainId,
     useDefaultSlotPath: true,
   })
+  let vaultIsNew = false
+  try {
+    bnbTss.requireInitialized({
+      signerRoot,
+      chainId: config.chainId,
+      useDefaultSlotPath: true,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.toLowerCase().includes('missing initialized party config')) {
+      vaultIsNew = true
+    } else {
+      throw error
+    }
+  }
+  if (vaultIsNew && derived.isOld) {
+    throw new Error(
+      `Missing initialized old-member vault at ${vaultHome}. Old participants must already have their previous key share; run regroup only on the original old-member vault.`,
+    )
+  }
   const channelId = deriveDeterministicRegroupChannelId(config, options.nonce)
   const channelPassword = deriveDeterministicRegroupChannelPassword(config, options.nonce, channelId)
   const channelExpiryIso = new Date(Number.parseInt(channelId.slice(3), 16) * 1000).toISOString()
@@ -130,9 +150,24 @@ async function main(): Promise<void> {
   console.log(`  new peer addrs (${derived.newPeerAddrs.length}): ${derived.newPeerAddrs.join(',')}`)
   console.log(`  channel id: ${channelId}`)
   console.log(`  channel id expires at (UTC): ${channelExpiryIso}`)
-  console.log(`  vault: already initialized at ${initialized.home}`)
+  console.log(`  vault: ${vaultIsNew ? `will initialize (new) at ${vaultHome}` : `already initialized at ${vaultHome}`}`)
 
-  const password = verifyVaultPassword(signerRoot, config.chainId, initialized.home)
+  let password: string
+  if (vaultIsNew) {
+    password = promptForVaultPassword()
+    console.log(`Initializing vault for chain ${config.chainId}...`)
+    await bnbTss.initParty({
+      signerRoot,
+      chainId: config.chainId,
+      password,
+      moniker: bnbTss.getMoniker(derived.committeePosition, config.chainId),
+      homePath: vaultHome,
+      useDefaultSlotPath: true,
+    })
+    console.log(`Vault initialized at ${vaultHome}`)
+  } else {
+    password = verifyVaultPassword(signerRoot, config.chainId, vaultHome)
+  }
   confirmProceed()
 
   const args = [
@@ -140,7 +175,7 @@ async function main(): Promise<void> {
     'tss-regroup',
     '--',
     '--home-path',
-    initialized.home,
+    vaultHome,
     '--chain-id',
     String(config.chainId),
     '--threshold',
