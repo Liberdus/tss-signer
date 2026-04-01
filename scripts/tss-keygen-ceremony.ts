@@ -164,6 +164,7 @@ async function main(): Promise<void> {
       signerRoot,
       chainId: config.chainId,
       password,
+      moniker: bnbTss.getMoniker(derived.committeePosition, config.chainId),
       homePath: vaultHome,
       useDefaultSlotPath: true,
     })
