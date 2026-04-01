@@ -87,7 +87,45 @@ Rules:
 
 ---
 
-## Step 2 — Run Keygen Ceremony
+## Step 2 — Run Connectivity Check
+
+> **Role: All party operators (simultaneously)**
+
+Before running keygen, confirm that every party can reach every other party on the derived TSS listen port.
+
+Each operator runs on their own machine:
+
+```bash
+npm run tss-connectivity-check
+```
+
+The check:
+- Resolves the machine's committee position from `partyIps`
+- Derives the expected listen port from the chain ID
+- Listens on that port and checks inbound and outbound TCP connectivity to every other party
+- Prints one clear line for each successful connection in both directions
+- Times out with a short missing-party summary if any connection is blocked
+
+Wait for every operator to see:
+
+```text
+Connectivity check passed.
+```
+
+If any operator sees a timeout, stop and fix the reported connectivity issue before attempting keygen. Common causes are:
+- the wrong IP address in `keygen-config.json`
+- the required port is not open in `ufw`
+- the required port is blocked by a cloud firewall
+
+If needed, you can override the derived port:
+
+```bash
+npm run tss-connectivity-check -- --port <PORT>
+```
+
+---
+
+## Step 3 — Run Keygen Ceremony
 
 > **Role: All party operators (simultaneously)**
 
@@ -120,7 +158,7 @@ The ceremony prints the resolved `listen addr` before launching keygen. If it di
 
 ---
 
-## Step 3 — Verify Keystores
+## Step 4 — Verify Keystores
 
 > **Role: Party operators**
 
@@ -194,7 +232,7 @@ Restart the Liberdus proxy after updating the config.
 
 ---
 
-## Step 4 — Start the Observer and TSS Party
+## Step 5 — Start the Observer and TSS Party
 
 > **Role: Party operators**
 
@@ -317,12 +355,13 @@ pm2 restart tss-party
 | Step | Who | Coordination needed |
 |---|---|---|
 | 1. Create `keygen-config.json` | One operator prepares, all operators apply | Share exact one-liner; agree on party IP order |
-| 2. Keygen (`tss-keygen-ceremony`) | All 5 simultaneously | Agree on start time and nonce; same config on all machines |
-| 3. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA address across all parties |
+| 2. Connectivity check (`tss-connectivity-check`) | All 5 simultaneously | Same config on all machines; all parties must pass before keygen |
+| 3. Keygen (`tss-keygen-ceremony`) | All 5 simultaneously | Agree on start time and nonce; same config on all machines |
+| 4. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA address across all parties |
 | Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
 | Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
 | Configure proxy `observer_urls` | Proxy admin | Update `config.json` with each party's real IP + observer port; restart proxy |
-| 4. Start observer + party | Each operator independently | TSS address must be registered, funded, and proxy configured; both processes required |
+| 5. Start observer + party | Each operator independently | TSS address must be registered, funded, and proxy configured; both processes required |
 | Regroup (when needed) | Old + new members | Share `regroup-config.json`; `threshold+1` old members required |
 
 ---
@@ -344,3 +383,11 @@ sudo ufw reload
 ```
 
 If your VPS uses a cloud firewall (AWS Security Groups, GCP Firewall Rules, DigitalOcean Firewall, etc.), add the same inbound TCP rule there as well — `ufw` alone is not sufficient if a cloud-level firewall is in front of the machine.
+
+After opening the port, rerun:
+
+```bash
+npm run tss-connectivity-check
+```
+
+Do not proceed to keygen until every operator sees `Connectivity check passed.`
