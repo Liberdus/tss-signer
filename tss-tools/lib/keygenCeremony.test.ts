@@ -102,7 +102,7 @@ function testDeriveKeygenCeremonyConfig(): void {
 }
 
 function testResolveKeygenVaultPreparationForNewVault(): void {
-  const signerRoot = '/tmp/tss-keygen-test'
+  const signerRoot = path.join(os.tmpdir(), 'tss-keygen-test')
   const originalRequireInitialized = require('./bnbTss').requireInitialized
   try {
     require('./bnbTss').requireInitialized = () => {
@@ -110,7 +110,7 @@ function testResolveKeygenVaultPreparationForNewVault(): void {
     }
     assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 97), {
       vaultIsNew: true,
-      vaultHome: `${signerRoot}/keystores/bnbtss/chain-97`,
+      vaultHome: path.join(signerRoot, 'keystores', 'bnbtss', 'chain-97'),
     })
   } finally {
     require('./bnbTss').requireInitialized = originalRequireInitialized
@@ -118,18 +118,18 @@ function testResolveKeygenVaultPreparationForNewVault(): void {
 }
 
 function testResolveKeygenVaultPreparationForExistingVault(): void {
-  const signerRoot = '/tmp/tss-keygen-test'
+  const signerRoot = path.join(os.tmpdir(), 'tss-keygen-test')
   const originalRequireInitialized = require('./bnbTss').requireInitialized
   try {
     require('./bnbTss').requireInitialized = () => ({
-      home: `${signerRoot}/keystores/bnbtss/chain-97`,
+      home: path.join(signerRoot, 'keystores', 'bnbtss', 'chain-97'),
       vaultName: 'default',
-      binary: '/tmp/tss',
-      tssRoot: '/tmp/tss-root',
+      binary: path.join(os.tmpdir(), 'tss'),
+      tssRoot: path.join(os.tmpdir(), 'tss-root'),
     })
     assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 97), {
       vaultIsNew: false,
-      vaultHome: `${signerRoot}/keystores/bnbtss/chain-97`,
+      vaultHome: path.join(signerRoot, 'keystores', 'bnbtss', 'chain-97'),
     })
   } finally {
     require('./bnbTss').requireInitialized = originalRequireInitialized
@@ -137,22 +137,23 @@ function testResolveKeygenVaultPreparationForExistingVault(): void {
 }
 
 function testResolveKeygenVaultPreparationUsesInitializedHome(): void {
-  const signerRoot = '/tmp/tss-keygen-test'
+  const signerRoot = path.join(os.tmpdir(), 'tss-keygen-test')
   const originalRequireInitialized = require('./bnbTss').requireInitialized
   const originalGetPartyHome = require('./bnbTss').getPartyHome
   try {
+    const initializedHome = path.join(signerRoot, 'legacy', 'custom-home')
     require('./bnbTss').requireInitialized = () => ({
-      home: `${signerRoot}/legacy/custom-home`,
+      home: initializedHome,
       vaultName: 'default',
-      binary: '/tmp/tss',
-      tssRoot: '/tmp/tss-root',
+      binary: path.join(os.tmpdir(), 'tss'),
+      tssRoot: path.join(os.tmpdir(), 'tss-root'),
     })
     require('./bnbTss').getPartyHome = () => {
       throw new Error('should not compute home when initialized home exists')
     }
     assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 97), {
       vaultIsNew: false,
-      vaultHome: `${signerRoot}/legacy/custom-home`,
+      vaultHome: initializedHome,
     })
   } finally {
     require('./bnbTss').requireInitialized = originalRequireInitialized
