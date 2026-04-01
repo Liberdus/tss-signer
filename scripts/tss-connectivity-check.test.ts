@@ -8,6 +8,7 @@ import {
   buildPeers,
   ConnectivityTracker,
   formatParty,
+  logResolvedConnectivityCheck,
   parseHelloMessage,
   resolveConnectivityCheck,
 } from './tss-connectivity-check'
@@ -85,6 +86,7 @@ async function testResolveConnectivityCheckWithPortOverride(): Promise<void> {
     assert.equal(resolved.config.chainId, 101)
     assert.deepEqual(resolved.detectedLocalIps, ['10.0.0.2'])
     assert.equal(resolved.attemptedExternalLookup, false)
+    assert(['active', 'inactive', 'unknown'].includes(resolved.firewallState))
     assert.deepEqual(resolved.localParty, {
       partyIdx: 2,
       ip: '10.0.0.2',
@@ -143,12 +145,43 @@ async function testConnectivityTrackerTimeoutSummary(): Promise<void> {
   assert(logs.includes('You could not connect to these parties:'))
 }
 
+async function testResolvedConnectivityLogging(): Promise<void> {
+  const logs = await captureConsoleLogs(() => {
+    logResolvedConnectivityCheck({
+      resolvedConfigPath: '/tmp/keygen-config.json',
+      config: {
+        chainId: 101,
+        partyIps: ['10.0.0.1', '10.0.0.2'],
+      },
+      resolution: {
+        partyIdx: 1,
+        source: 'local',
+      },
+      detectedLocalIps: ['10.0.0.1'],
+      detectedExternalIps: [],
+      attemptedExternalLookup: false,
+      firewallState: 'inactive',
+      localParty: {
+        partyIdx: 1,
+        ip: '10.0.0.1',
+        port: 41011,
+      },
+      peers: [
+        {partyIdx: 2, ip: '10.0.0.2', port: 41011},
+      ],
+    })
+  })
+
+  assert(logs.includes('  firewall (ufw): inactive'))
+}
+
 async function main(): Promise<void> {
   testBuildPeers()
   testHelloMessageRoundTrip()
   await testResolveConnectivityCheckWithPortOverride()
   await testConnectivityTrackerSuccess()
   await testConnectivityTrackerTimeoutSummary()
+  await testResolvedConnectivityLogging()
   console.log('connectivity check tests passed')
 }
 
