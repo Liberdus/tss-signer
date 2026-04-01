@@ -102,9 +102,10 @@ npm run tss-connectivity-check
 The check:
 - Resolves the machine's committee position from `partyIps`
 - Derives the expected listen port from the chain ID
-- Listens on that port and checks inbound and outbound TCP connectivity to every other party
+- Runs one connectivity round against every other party on that port
 - Prints one clear line for each successful connection in both directions
-- Times out with a short missing-party summary if any connection is blocked
+- Prints a short missing-party summary if any connection is blocked
+- Prompts whether to exit or run another round
 
 Wait for every operator to see:
 

@@ -7,6 +7,7 @@ import {
   buildHelloMessage,
   buildPeers,
   ConnectivityTracker,
+  detectFirewallState,
   formatParty,
   logResolvedConnectivityCheck,
   parseHelloMessage,
@@ -115,10 +116,9 @@ async function testConnectivityTrackerSuccess(): Promise<void> {
     tracker.markOutbound(peers[0])
     tracker.markInbound(peers[1])
     tracker.markOutbound(peers[1])
-    assert.equal(await tracker.result, 0)
+    assert.equal(tracker.printRoundSummary(), 0)
   })
 
-  assert.equal(tracker.isFinished(), true)
   assert(logs.includes('Connectivity check passed.'))
   assert(logs.includes('  Outbound connections succeeded: 2/2'))
   assert(logs.includes('  Inbound connections received: 2/2'))
@@ -134,12 +134,10 @@ async function testConnectivityTrackerTimeoutSummary(): Promise<void> {
   const logs = await captureConsoleLogs(async () => {
     tracker.markInbound(peers[0])
     tracker.markOutbound(peers[0])
-    tracker.finishTimeout()
-    assert.equal(await tracker.result, 1)
+    assert.equal(tracker.printRoundSummary(), 1)
   })
 
-  assert.equal(tracker.isFinished(), true)
-  assert(logs.includes('Connectivity check timed out after 120 seconds.'))
+  assert(logs.includes('Connectivity check did not pass.'))
   assert(logs.includes('Still waiting for these parties to connect to you:'))
   assert(logs.includes(`  - ${formatParty(peers[1])}`))
   assert(logs.includes('You could not connect to these parties:'))
@@ -175,9 +173,14 @@ async function testResolvedConnectivityLogging(): Promise<void> {
   assert(logs.includes('  firewall (ufw): inactive'))
 }
 
+function testDetectFirewallStateReturnsKnownValue(): void {
+  assert(['active', 'inactive', 'unknown'].includes(detectFirewallState()))
+}
+
 async function main(): Promise<void> {
   testBuildPeers()
   testHelloMessageRoundTrip()
+  testDetectFirewallStateReturnsKnownValue()
   await testResolveConnectivityCheckWithPortOverride()
   await testConnectivityTrackerSuccess()
   await testConnectivityTrackerTimeoutSummary()
