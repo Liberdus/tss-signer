@@ -88,8 +88,12 @@ function buildCeremonyMaterial(config: RegroupCeremonyConfig, nonce: string): st
   })
 }
 
-function getPeerAddr(ip: string, chainId: number): string {
+function getOldPeerAddr(ip: string, chainId: number): string {
   return `/ip4/${ip}/tcp/${bnbTss.getDefaultSlotListenPort(chainId)}`
+}
+
+function getNewPeerAddr(ip: string, chainId: number): string {
+  return `/ip4/${ip}/tcp/${bnbTss.getDeterministicRegroupListenPort(chainId, bnbTss.DEFAULT_SLOT_PARTY_IDX)}`
 }
 
 function pushUniqueAddr(target: string[], addr: string): void {
@@ -226,30 +230,30 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
       if (isOld) {
         continue
       }
-      pushUniqueAddr(peerAddrs, getPeerAddr(ip, chainId))
+      peerAddrs.push(getOldPeerAddr(ip, chainId))
       continue
     }
-    pushUniqueAddr(peerAddrs, getPeerAddr(ip, chainId))
+    peerAddrs.push(getOldPeerAddr(ip, chainId))
   }
 
   for (const ip of oldAndNewIps) {
     if (ip === committeePartyIp) {
       if (isOld) {
-        pushUniqueAddr(peerAddrs, getPeerAddr(ip, chainId))
+        peerAddrs.push(getNewPeerAddr(ip, chainId))
       }
       continue
     }
-    pushUniqueAddr(peerAddrs, getPeerAddr(ip, chainId))
+    peerAddrs.push(getNewPeerAddr(ip, chainId))
   }
 
   for (const ip of newOnlyIps) {
     if (ip === committeePartyIp) {
       continue
     }
-    pushUniqueAddr(peerAddrs, getPeerAddr(ip, chainId))
+    peerAddrs.push(getNewPeerAddr(ip, chainId))
   }
 
-  const expectedCount = new Set([...oldParticipantIps, ...newPartyIps]).size - (isNewMember ? 1 : 0)
+  const expectedCount = oldThreshold + newParties
   if (peerAddrs.length !== expectedCount) {
     throw new Error(
       `Derived ${peerAddrs.length} ordered regroup peer addrs for party ${committeePosition}, expected ${expectedCount}.`,
@@ -302,8 +306,12 @@ export function deriveRegroupCeremonyConfig(
   const committeePartyIp = config.newPartyIps[committeePosition - 1]
   const isOld = config.oldPartyIps.includes(committeePartyIp)
   const isNewMember = !isOld
-  const newListenPort = isOld ? bnbTss.getDefaultSlotListenPort(config.chainId) : undefined
-  const newListenAddr = isOld ? bnbTss.getDefaultSlotListenAddr(config.chainId) : undefined
+  const newListenPort = isOld
+    ? bnbTss.getDeterministicRegroupListenPort(config.chainId, bnbTss.DEFAULT_SLOT_PARTY_IDX)
+    : undefined
+  const newListenAddr = isOld
+    ? bnbTss.getLocalRegroupListenAddr(config.chainId, bnbTss.DEFAULT_SLOT_PARTY_IDX)
+    : undefined
 
   return {
     chainId: config.chainId,

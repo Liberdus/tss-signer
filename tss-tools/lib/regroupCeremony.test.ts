@@ -72,15 +72,17 @@ function testDeriveRegroupCeremonyConfigForCarryOverMember(): void {
   assert.equal(derived.isOld, true)
   assert.equal(derived.isNewMember, false)
   assert.equal(derived.committeePartyIp, '145.223.74.11')
-  assert.equal(derived.newListenAddr, '/ip4/0.0.0.0/tcp/42011')
+  assert.equal(derived.newListenAddr, '/ip4/0.0.0.0/tcp/43011')
   assert.deepEqual(derived.newPeerAddrs, [
     '/ip4/104.238.181.92/tcp/42011',
     '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/66.228.53.24/tcp/42011',
-    '/ip4/198.74.61.203/tcp/42011',
+    '/ip4/145.223.74.11/tcp/43011',
+    '/ip4/104.238.181.92/tcp/43011',
+    '/ip4/172.232.45.137/tcp/43011',
+    '/ip4/66.228.53.24/tcp/43011',
+    '/ip4/198.74.61.203/tcp/43011',
   ])
-  assert.equal(derived.newPeerAddrs.length, 5)
+  assert.equal(derived.newPeerAddrs.length, 7)
 }
 
 function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
@@ -97,9 +99,11 @@ function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
   assert.deepEqual(peerAddrs, [
     '/ip4/104.238.181.92/tcp/42011',
     '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/66.228.53.24/tcp/42011',
-    '/ip4/198.74.61.203/tcp/42011',
+    '/ip4/145.223.74.11/tcp/43011',
+    '/ip4/104.238.181.92/tcp/43011',
+    '/ip4/172.232.45.137/tcp/43011',
+    '/ip4/66.228.53.24/tcp/43011',
+    '/ip4/198.74.61.203/tcp/43011',
   ])
 }
 
@@ -121,9 +125,12 @@ function testDeriveRegroupCeremonyConfigForNewOnlyMember(): void {
     '/ip4/145.223.74.11/tcp/42011',
     '/ip4/104.238.181.92/tcp/42011',
     '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/145.223.74.11/tcp/43011',
+    '/ip4/104.238.181.92/tcp/43011',
+    '/ip4/172.232.45.137/tcp/43011',
+    '/ip4/66.228.53.24/tcp/43011',
   ])
-  assert.equal(derived.newPeerAddrs.length, 4)
+  assert.equal(derived.newPeerAddrs.length, 7)
 }
 
 function testDeriveOrderedRegroupPeerAddrsForNewOnlyMember(): void {
@@ -141,7 +148,10 @@ function testDeriveOrderedRegroupPeerAddrsForNewOnlyMember(): void {
     '/ip4/145.223.74.11/tcp/42011',
     '/ip4/104.238.181.92/tcp/42011',
     '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/145.223.74.11/tcp/43011',
+    '/ip4/104.238.181.92/tcp/43011',
+    '/ip4/172.232.45.137/tcp/43011',
+    '/ip4/66.228.53.24/tcp/43011',
   ])
 }
 
