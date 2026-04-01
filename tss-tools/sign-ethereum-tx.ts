@@ -14,13 +14,14 @@ const SIGN_CHANNEL_TIME_BUCKET_MS = 30 * 60 * 1000
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/sign-ethereum-tx.js --party <idx>=1..N --chain-id <id> --tx-file <path> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--vault <name>] [--home-root <path>] [-- <extra sign args...>]',
+    'Usage: node tss-tools/sign-ethereum-tx.js --chain-id <id> [--party <idx>=1..N] --tx-file <path> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [-- <extra sign args...>]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {partyIdx: number; chainId: number; txFile: string; extraArgs: string[]} {
+function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {chainId: number; txFile: string; extraArgs: string[]} {
   const options: Partial<bnbTss.SignEthereumTxOptions> & {extraArgs: string[]} = {extraArgs: []};
+  let partyExplicit = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--') {
@@ -31,6 +32,7 @@ function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {partyIdx: nu
     switch (arg) {
       case '--party':
         options.partyIdx = Number.parseInt(value, 10);
+        partyExplicit = true;
         i += 1;
         break;
       case '--chain-id':
@@ -65,6 +67,13 @@ function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {partyIdx: nu
         options.homeRoot = value;
         i += 1;
         break;
+      case '--home-path':
+        options.homePath = value;
+        i += 1;
+        break;
+      case '--use-default-slot-path':
+        options.useDefaultSlotPath = true;
+        break;
       case '-h':
       case '--help':
         usage();
@@ -74,8 +83,12 @@ function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {partyIdx: nu
         usage();
     }
   }
-  if (!Number.isInteger(options.partyIdx) || options.partyIdx < 1 || !Number.isInteger(options.chainId) || !options.txFile) usage();
-  return options as bnbTss.SignEthereumTxOptions & {partyIdx: number; chainId: number; txFile: string; extraArgs: string[]};
+  if (!Number.isInteger(options.chainId) || !options.txFile) usage();
+  if (!partyExplicit) {
+    options.useDefaultSlotPath = true;
+  }
+  if (partyExplicit && (!Number.isInteger(options.partyIdx) || options.partyIdx < 1)) usage();
+  return options as bnbTss.SignEthereumTxOptions & {chainId: number; txFile: string; extraArgs: string[]};
 }
 
 async function main() {

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import {resolveMisePlatform} from './bnbTss';
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import {getMoniker, getPartyHome, resolveMisePlatform} from './bnbTss';
 
 function testResolveMisePlatformSupportsDarwinArm64(): void {
   assert.equal(resolveMisePlatform('darwin', 'arm64'), 'darwin-arm64');
@@ -24,11 +27,60 @@ function testResolveMisePlatformRejectsUnsupportedPlatforms(): void {
   );
 }
 
+function testGetPartyHomeUsesCleanDefaultPathWhenRequested(): void {
+  assert.equal(
+    getPartyHome({
+      signerRoot: '/tmp/tss',
+      chainId: 201,
+      useDefaultSlotPath: true,
+    }),
+    '/tmp/tss/keystores/bnbtss/chain-201',
+  )
+}
+
+function testGetPartyHomeFallsBackToLegacyPartyOnePath(): void {
+  const signerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-home-fallback-'))
+  try {
+    const legacyConfigPath = path.join(signerRoot, 'keystores', 'bnbtss', 'party-1', 'chain-201', 'default', 'config.json')
+    fs.mkdirSync(path.dirname(legacyConfigPath), {recursive: true})
+    fs.writeFileSync(legacyConfigPath, '{}', 'utf8')
+    assert.equal(
+      getPartyHome({
+        signerRoot,
+        chainId: 201,
+        useDefaultSlotPath: true,
+      }),
+      path.join(signerRoot, 'keystores', 'bnbtss', 'party-1', 'chain-201'),
+    )
+  } finally {
+    fs.rmSync(signerRoot, {recursive: true, force: true})
+  }
+}
+
+function testGetPartyHomeKeepsIndexedManualPath(): void {
+  assert.equal(
+    getPartyHome({
+      signerRoot: '/tmp/tss',
+      partyIdx: 4,
+      chainId: 201,
+    }),
+    '/tmp/tss/keystores/bnbtss/party-4/chain-201',
+  )
+}
+
+function testGetMonikerKeepsIndexedFormat(): void {
+  assert.equal(getMoniker(4, 201), 'party-4-chain-201')
+}
+
 function main(): void {
   testResolveMisePlatformSupportsDarwinArm64();
   testResolveMisePlatformSupportsLinuxX64();
   testResolveMisePlatformSupportsLinuxArm64();
   testResolveMisePlatformRejectsUnsupportedPlatforms();
+  testGetPartyHomeUsesCleanDefaultPathWhenRequested();
+  testGetPartyHomeFallsBackToLegacyPartyOnePath();
+  testGetPartyHomeKeepsIndexedManualPath();
+  testGetMonikerKeepsIndexedFormat();
   console.log('bnbTss tests passed');
 }
 

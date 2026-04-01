@@ -69,10 +69,20 @@ export BNB_TSS_CHANNEL_PASSWORD=1234567890
 
 
 # 8) Key storage layout used by tss-signer native mode
-# keystores/bnbtss/party-<idx>/chain-<chainId>/default/
+# Default single-bundle-per-machine flow:
+# keystores/bnbtss/chain-<chainId>/default/
 #
 # Example:
-# keystores/bnbtss/party-1/chain-97/default/
+# keystores/bnbtss/chain-97/default/
+#
+# Default deployment model:
+# - one machine runs one signer bundle
+# - keygen/regroup ceremony wrappers use the clean chain-scoped path by default
+# - `tss-party` also defaults to that path when no CLI party index is passed
+# - existing legacy vaults under `party-1/chain-<id>` are still accepted via fallback
+# - explicit `--party N` flows remain available for multi-party local testing and legacy indexed setups
+# - explicit indexed/manual flows still use:
+#   keystores/bnbtss/party-<idx>/chain-<chainId>/default/
 
 # Committee size defaults come from params.json.
 # Current file:
@@ -107,6 +117,12 @@ npm run tss-init -- --party 5 --chain-id 80002
 
 
 # 10) Run keygen in separate terminals
+# Preferred multi-machine flow:
+# - use `npm run tss-keygen-ceremony -- --nonce <n>`
+# - the wrapper auto-detects committee position from ordered IPs
+# - the local vault uses the clean chain-scoped default path
+# - all peers use the fixed slot-1 deterministic port for that chain
+#
 # This matches the known-good root tss flow: init all parties first, then keygen.
 # By default, tss-tools/keygen.ts uses params.json for:
 # - parties
@@ -148,7 +164,8 @@ npm run tss-keygen -- --party 5 --chain-id 80002
 # on every participating keygen command.
 
 # Expected result:
-# each command writes vault files under keystores/bnbtss/party-<idx>/chain-<chainId>/default/
+# default-flow commands write vault files under keystores/bnbtss/chain-<chainId>/default/
+# explicit indexed/manual commands still use keystores/bnbtss/party-<idx>/chain-<chainId>/default/
 # and prints JSON including:
 #   party
 #   chainId
@@ -298,6 +315,11 @@ node dist/tss-party.js 1
 # Or from source tooling:
 npm run tss-party -- 1
 
+# Default single-bundle-per-machine startup:
+# if no party index is passed, tss-party defaults to local slot 1
+node dist/tss-party.js
+npm run tss-party
+
 
 # 16) Important runtime requirements for native mode
 # - The patched binary must exist:
@@ -314,7 +336,9 @@ npm run tss-party -- 1
 #   tx hash plus the current 30-minute time bucket, and a derived channel
 #   password from channelId + SHARDUS_CRYPTO_HASH_KEY.
 # - Vaults must exist for each required chain under:
-#     keystores/bnbtss/party-<idx>/chain-<chainId>/default/
+#     keystores/bnbtss/chain-<chainId>/default/
+#   or legacy fallback:
+#     keystores/bnbtss/party-1/chain-<chainId>/default/
 # - Derived ethereum_address from the vault must match chain-config.json -> tssSenderAddress
 # - For local multi-party keygen/sign testing, run init for all parties before keygen/sign
 # - Normal committee size comes from params.json unless you explicitly override it

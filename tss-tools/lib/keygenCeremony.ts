@@ -25,8 +25,8 @@ export interface KeygenCeremonyConfig {
 export interface KeygenCeremonyDerivedConfig {
   parties: number
   threshold: number
-  partyIdx: number
-  partyIp: string
+  committeePosition: number
+  committeePartyIp: string
   listenPort: number
   listenAddr: string
   peerAddrs: string[]
@@ -120,19 +120,28 @@ export function isValidVaultPassword(password: string): boolean {
 
 export function resolveKeygenVaultPreparation(
   signerRoot: string,
-  partyIdx: number,
   chainId: number,
 ): KeygenVaultPreparation {
   let existingInitialized: ReturnType<typeof bnbTss.requireInitialized> | null = null
   try {
-    existingInitialized = bnbTss.requireInitialized({signerRoot, partyIdx, chainId})
+    existingInitialized = bnbTss.requireInitialized({
+      signerRoot,
+      chainId,
+      useDefaultSlotPath: true,
+    })
   } catch {
     // vault not yet initialized — caller may run tss-init automatically
   }
 
   return {
     vaultIsNew: existingInitialized === null,
-    vaultHome: bnbTss.getPartyHome({signerRoot, partyIdx, chainId}),
+    vaultHome:
+      existingInitialized?.home ||
+      bnbTss.getPartyHome({
+        signerRoot,
+        chainId,
+        useDefaultSlotPath: true,
+      }),
   }
 }
 
@@ -254,27 +263,26 @@ export async function lookupExternalIpv4s(
 
 export function deriveKeygenCeremonyConfig(
   config: KeygenCeremonyConfig,
-  partyIdx: number,
+  committeePosition: number,
 ): KeygenCeremonyDerivedConfig {
   const parties = config.partyIps.length
   const threshold = deriveKeygenThreshold(parties)
-  if (!Number.isInteger(partyIdx) || partyIdx < 1 || partyIdx > parties) {
-    throw new Error(`partyIdx must be within 1..${parties}, received ${partyIdx}`)
+  if (!Number.isInteger(committeePosition) || committeePosition < 1 || committeePosition > parties) {
+    throw new Error(`committeePosition must be within 1..${parties}, received ${committeePosition}`)
   }
 
-  const partyIp = config.partyIps[partyIdx - 1]
-  const listenPort = bnbTss.getDeterministicListenPort(config.chainId, partyIdx)
-  const listenAddr = `/ip4/0.0.0.0/tcp/${listenPort}`
+  const committeePartyIp = config.partyIps[committeePosition - 1]
+  const listenPort = bnbTss.getDefaultSlotListenPort(config.chainId)
+  const listenAddr = bnbTss.getDefaultSlotListenAddr(config.chainId)
   const peerAddrs = config.partyIps
-    .map((ip, index) => ({ip, partyIndex: index + 1}))
-    .filter(({partyIndex}) => partyIndex !== partyIdx)
-    .map(({ip, partyIndex}) => `/ip4/${ip}/tcp/${bnbTss.getDeterministicListenPort(config.chainId, partyIndex)}`)
+    .filter((ip) => ip !== committeePartyIp)
+    .map((ip) => `/ip4/${ip}/tcp/${bnbTss.getDefaultSlotListenPort(config.chainId)}`)
 
   return {
     parties,
     threshold,
-    partyIdx,
-    partyIp,
+    committeePosition,
+    committeePartyIp,
     listenPort,
     listenAddr,
     peerAddrs,

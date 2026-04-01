@@ -66,15 +66,15 @@ function promptForVaultPassword(): string {
   }
 }
 
-function verifyVaultPassword(signerRoot: string, partyIdx: number, chainId: number): string {
+function verifyVaultPassword(signerRoot: string, chainId: number, homePath?: string): string {
   while (true) {
     const password = promptForVaultPassword()
     try {
-      bnbTss.describeVault({signerRoot, partyIdx, chainId, password})
+      bnbTss.describeVault({signerRoot, chainId, password, homePath, useDefaultSlotPath: true})
       return password
     } catch (error) {
       console.error(
-        `Vault password did not unlock party ${partyIdx} chain ${chainId}: ${
+        `Vault password did not unlock chain ${chainId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       )
@@ -95,7 +95,11 @@ async function main(): Promise<void> {
   const config = loadRegroupCeremonyConfig(options.configPath, signerRoot)
   const resolution = await resolveRegroupPartyIndex(config)
   const derived = deriveRegroupCeremonyConfig(config, resolution.partyIdx)
-  const initialized = bnbTss.requireInitialized({signerRoot, partyIdx: derived.partyIdx, chainId: config.chainId})
+  const initialized = bnbTss.requireInitialized({
+    signerRoot,
+    chainId: config.chainId,
+    useDefaultSlotPath: true,
+  })
   const channelId = deriveDeterministicRegroupChannelId(config, options.nonce)
   const channelPassword = deriveDeterministicRegroupChannelPassword(config, options.nonce, channelId)
   const channelExpiryIso = new Date(Number.parseInt(channelId.slice(3), 16) * 1000).toISOString()
@@ -108,7 +112,7 @@ async function main(): Promise<void> {
   console.log(`  old threshold: ${derived.oldThreshold} (requires ${derived.oldThreshold + 1} old participants)`)
   console.log(`  new parties: ${derived.newParties}`)
   console.log(`  new threshold: ${derived.newThreshold} (requires ${derived.newThreshold + 1} signers)`)
-  console.log(`  party index: ${derived.partyIdx}`)
+  console.log(`  committee position: ${derived.committeePosition}`)
   console.log(`  detected local IPv4s: ${resolution.detectedLocalIps.length > 0 ? resolution.detectedLocalIps.join(', ') : '(none detected)'}`)
   console.log(
     `  detected external IPv4s: ${
@@ -120,7 +124,7 @@ async function main(): Promise<void> {
     }`,
   )
   console.log(`  party index source: ${resolution.source}`)
-  console.log(`  matched party IP: ${derived.partyIp}`)
+  console.log(`  matched party IP: ${derived.committeePartyIp}`)
   console.log(`  wrapper role: ${derived.isOld ? '--is-old' : '--is-new-member'}`)
   console.log(`  new listen addr: ${derived.newListenAddr || '(not used for new-only member)'}`)
   console.log(`  new peer addrs (${derived.newPeerAddrs.length}): ${derived.newPeerAddrs.join(',')}`)
@@ -128,15 +132,15 @@ async function main(): Promise<void> {
   console.log(`  channel id expires at (UTC): ${channelExpiryIso}`)
   console.log(`  vault: already initialized at ${initialized.home}`)
 
-  const password = verifyVaultPassword(signerRoot, derived.partyIdx, config.chainId)
+  const password = verifyVaultPassword(signerRoot, config.chainId, initialized.home)
   confirmProceed()
 
   const args = [
     'run',
     'tss-regroup',
     '--',
-    '--party',
-    String(derived.partyIdx),
+    '--home-path',
+    initialized.home,
     '--chain-id',
     String(config.chainId),
     '--threshold',

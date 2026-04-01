@@ -72,15 +72,15 @@ function promptForVaultPassword(): string {
   }
 }
 
-function verifyVaultPassword(signerRoot: string, partyIdx: number, chainId: number): string {
+function verifyVaultPassword(signerRoot: string, chainId: number, homePath?: string): string {
   while (true) {
     const password = promptForVaultPassword()
     try {
-      bnbTss.describeVault({signerRoot, partyIdx, chainId, password})
+      bnbTss.describeVault({signerRoot, chainId, password, homePath, useDefaultSlotPath: true})
       return password
     } catch (error) {
       console.error(
-        `Vault password did not unlock party ${partyIdx} chain ${chainId}: ${
+        `Vault password did not unlock chain ${chainId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       )
@@ -120,9 +120,9 @@ async function main(): Promise<void> {
     }
   }
 
-  const partyIdx = resolution.partyIdx
-  const derived = deriveKeygenCeremonyConfig(config, partyIdx)
-  const {vaultIsNew, vaultHome} = resolveKeygenVaultPreparation(signerRoot, partyIdx, config.chainId)
+  const committeePosition = resolution.partyIdx
+  const derived = deriveKeygenCeremonyConfig(config, committeePosition)
+  const {vaultIsNew, vaultHome} = resolveKeygenVaultPreparation(signerRoot, config.chainId)
 
   const channelId = deriveDeterministicKeygenChannelId(config, options.nonce)
   const channelPassword = deriveDeterministicKeygenChannelPassword(config, options.nonce, channelId)
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
   console.log(`  chain id: ${config.chainId}`)
   console.log(`  parties: ${derived.parties}`)
   console.log(`  threshold: ${derived.threshold} (requires ${derived.threshold + 1} signers)`)
-  console.log(`  party index: ${derived.partyIdx}`)
+  console.log(`  committee position: ${derived.committeePosition}`)
   console.log(`  detected local IPv4s: ${detectedLocalIps.length > 0 ? detectedLocalIps.join(', ') : '(none detected)'}`)
   console.log(
     `  detected external IPv4s: ${
@@ -149,7 +149,7 @@ async function main(): Promise<void> {
     }`,
   )
   console.log(`  party index source: ${resolution.source}`)
-  console.log(`  matched party IP: ${derived.partyIp}`)
+  console.log(`  matched party IP: ${derived.committeePartyIp}`)
   console.log(`  listen addr: ${derived.listenAddr}`)
   console.log(`  peer addrs (${derived.peerAddrs.length}): ${derived.peerAddrs.join(',')}`)
   console.log(`  channel id: ${channelId}`)
@@ -159,11 +159,17 @@ async function main(): Promise<void> {
   let password: string
   if (vaultIsNew) {
     password = promptForVaultPassword()
-    console.log(`Initializing vault for party ${partyIdx} chain ${config.chainId}...`)
-    await bnbTss.initParty({signerRoot, partyIdx, chainId: config.chainId, password})
+    console.log(`Initializing vault for chain ${config.chainId}...`)
+    await bnbTss.initParty({
+      signerRoot,
+      chainId: config.chainId,
+      password,
+      homePath: vaultHome,
+      useDefaultSlotPath: true,
+    })
     console.log(`Vault initialized at ${vaultHome}`)
   } else {
-    password = verifyVaultPassword(signerRoot, partyIdx, config.chainId)
+    password = verifyVaultPassword(signerRoot, config.chainId, vaultHome)
   }
 
   confirmProceed()
@@ -176,8 +182,8 @@ async function main(): Promise<void> {
       'run',
       'tss-keygen',
       '--',
-      '--party',
-      String(derived.partyIdx),
+      '--home-path',
+      vaultHome,
       '--chain-id',
       String(config.chainId),
       '--parties',

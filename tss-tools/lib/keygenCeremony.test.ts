@@ -87,15 +87,17 @@ function testDeriveKeygenCeremonyConfig(): void {
 
   assert.equal(derived.parties, 7)
   assert.equal(derived.threshold, 3)
-  assert.equal(derived.listenPort, 40976)
-  assert.equal(derived.listenAddr, '/ip4/0.0.0.0/tcp/40976')
+  assert.equal(derived.committeePosition, 6)
+  assert.equal(derived.committeePartyIp, '157.245.62.204')
+  assert.equal(derived.listenPort, 40971)
+  assert.equal(derived.listenAddr, '/ip4/0.0.0.0/tcp/40971')
   assert.deepEqual(derived.peerAddrs, [
     '/ip4/138.197.201.44/tcp/40971',
-    '/ip4/64.23.154.91/tcp/40972',
-    '/ip4/146.190.88.173/tcp/40973',
-    '/ip4/165.227.120.58/tcp/40974',
-    '/ip4/159.89.207.131/tcp/40975',
-    '/ip4/134.209.33.76/tcp/40977',
+    '/ip4/64.23.154.91/tcp/40971',
+    '/ip4/146.190.88.173/tcp/40971',
+    '/ip4/165.227.120.58/tcp/40971',
+    '/ip4/159.89.207.131/tcp/40971',
+    '/ip4/134.209.33.76/tcp/40971',
   ])
 }
 
@@ -106,9 +108,9 @@ function testResolveKeygenVaultPreparationForNewVault(): void {
     require('./bnbTss').requireInitialized = () => {
       throw new Error('missing initialized party config')
     }
-    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 6, 97), {
+    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 97), {
       vaultIsNew: true,
-      vaultHome: `${signerRoot}/keystores/bnbtss/party-6/chain-97`,
+      vaultHome: `${signerRoot}/keystores/bnbtss/chain-97`,
     })
   } finally {
     require('./bnbTss').requireInitialized = originalRequireInitialized
@@ -120,17 +122,41 @@ function testResolveKeygenVaultPreparationForExistingVault(): void {
   const originalRequireInitialized = require('./bnbTss').requireInitialized
   try {
     require('./bnbTss').requireInitialized = () => ({
-      home: `${signerRoot}/keystores/bnbtss/party-6/chain-97`,
+      home: `${signerRoot}/keystores/bnbtss/chain-97`,
       vaultName: 'default',
       binary: '/tmp/tss',
       tssRoot: '/tmp/tss-root',
     })
-    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 6, 97), {
+    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 97), {
       vaultIsNew: false,
-      vaultHome: `${signerRoot}/keystores/bnbtss/party-6/chain-97`,
+      vaultHome: `${signerRoot}/keystores/bnbtss/chain-97`,
     })
   } finally {
     require('./bnbTss').requireInitialized = originalRequireInitialized
+  }
+}
+
+function testResolveKeygenVaultPreparationUsesInitializedHome(): void {
+  const signerRoot = '/tmp/tss-keygen-test'
+  const originalRequireInitialized = require('./bnbTss').requireInitialized
+  const originalGetPartyHome = require('./bnbTss').getPartyHome
+  try {
+    require('./bnbTss').requireInitialized = () => ({
+      home: `${signerRoot}/legacy/custom-home`,
+      vaultName: 'default',
+      binary: '/tmp/tss',
+      tssRoot: '/tmp/tss-root',
+    })
+    require('./bnbTss').getPartyHome = () => {
+      throw new Error('should not compute home when initialized home exists')
+    }
+    assert.deepEqual(resolveKeygenVaultPreparation(signerRoot, 97), {
+      vaultIsNew: false,
+      vaultHome: `${signerRoot}/legacy/custom-home`,
+    })
+  } finally {
+    require('./bnbTss').requireInitialized = originalRequireInitialized
+    require('./bnbTss').getPartyHome = originalGetPartyHome
   }
 }
 
@@ -171,6 +197,7 @@ function main(): void {
   testDeriveKeygenCeremonyConfig()
   testResolveKeygenVaultPreparationForNewVault()
   testResolveKeygenVaultPreparationForExistingVault()
+  testResolveKeygenVaultPreparationUsesInitializedHome()
   testDeterministicKeygenChannelCredentials()
   testWriteDerivedParamsConfig()
   console.log('keygen ceremony tests passed')

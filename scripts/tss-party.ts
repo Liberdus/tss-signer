@@ -7,7 +7,6 @@ import axios, {AxiosResponse} from 'axios'
 import http from 'http'
 import https from 'https'
 import * as crypto from '@shardus/crypto-utils'
-import * as readline from 'readline-sync'
 import {
   ChainConfig,
   ChainConfigs,
@@ -26,6 +25,7 @@ import {isNormalizedTxId, normalizeTxId} from '../shared/utils/transformTxId'
 import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
 import {initializeChainRpcConfig} from '../shared/chainRpc'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
+import {deriveObserverUrl, deriveTransactionsDbPath, resolveRuntimePartyIdx} from '../tss-tools/lib/tssPartyDefaults'
 import * as TransactionDB from '../shared/storage/transactiondb'
 import {Transaction, TransactionStatus, TransactionType, ExecutionHistoryEntry} from '../shared/storage/transactiondb'
 
@@ -117,8 +117,10 @@ function txStatusLabel(status: TransactionStatus): string {
   }
 }
 
-const parsedIdx = process.argv[2]
-const operationFlag = process.argv[3]
+const argv2 = process.argv[2]
+const parsedIdx = argv2 != null && /^\d+$/.test(`${argv2}`.trim()) ? argv2 : undefined
+const useDefaultSlotPath = parsedIdx == null || `${parsedIdx}`.trim() === ''
+const operationFlag = parsedIdx == null ? argv2 : process.argv[3]
 
 const verboseLogs = false
 
@@ -184,12 +186,10 @@ function tryGC(): void {
 
 // Observer URL and DB path — derived from party index (set after ourParty is initialized below)
 
-const tssPartyIdx =
-  parsedIdx == null ? readline.question('Enter the party index (1 to 5): ') : parsedIdx
-const ourParty: PartyInfo = {idx: parseInt(tssPartyIdx)}
+const ourParty: PartyInfo = {idx: resolveRuntimePartyIdx(parsedIdx)}
 
-const observerUrl = `http://127.0.0.1:${8100 + ourParty.idx}`
-const dbPath = path.resolve(process.cwd(), 'db', `transactions-${ourParty.idx}.sqlite`)
+const observerUrl = deriveObserverUrl(ourParty.idx)
+const dbPath = deriveTransactionsDbPath(process.cwd(), ourParty.idx)
 
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
 const chainsToInit: ChainConfig[] = getConfiguredChains(chainConfigs)
@@ -855,11 +855,12 @@ async function validateBnbTssSetup(): Promise<void> {
     throw new Error('No chains configured for BNB TSS vault validation')
   }
   const results = bnbTss.validatePartyVaults({
-    partyIdx: ourParty.idx,
+    ...(useDefaultSlotPath ? {} : {partyIdx: ourParty.idx}),
     chainIds,
     expectedAddressesByChainId,
+    useDefaultSlotPath,
   })
-  console.log(`Validated BNB TSS vaults for party ${ourParty.idx}:`)
+  console.log(`Validated BNB TSS vaults${useDefaultSlotPath ? '' : ` for party ${ourParty.idx}`}:`)
   for (const result of results) {
     console.log(
       `  chain ${result.chainId}: ${result.ethereum_address} (${result.home})`,
@@ -870,8 +871,9 @@ async function validateBnbTssSetup(): Promise<void> {
 function signDigestWithBnbTss(chainId: number, digest: string, channelId: string, channelPassword: string) {
   console.log('Signing digest with BNB TSS', chainId, digest, channelId)
   return bnbTss.signDigest({
-    partyIdx: ourParty.idx,
+    ...(useDefaultSlotPath ? {} : {partyIdx: ourParty.idx}),
     chainId,
+    useDefaultSlotPath,
     digest,
     channelId,
     channelPassword,
@@ -1938,9 +1940,12 @@ function calculateChatId(from: string, to: string): string {
 
 async function main(): Promise<void> {
   console.log('Signing backend: BNB TSS')
+  if (useDefaultSlotPath) {
+    console.warn('No party index provided. Defaulting to slot-1 runtime semantics for observer/db and default-slot vault lookup.')
+  }
 
   if (!operationFlag) {
-    console.log('\nUsage: ts-node scripts/tss-party.ts <party_index>')
+    console.log('\nUsage: ts-node scripts/tss-party.ts [party_index]')
     console.log('\nStart the party with existing native TSS state.')
     console.log('')
   }

@@ -68,19 +68,19 @@ function testValidateRegroupCeremonyConfigRejectsBadInput(): void {
 function testDeriveRegroupCeremonyConfigForCarryOverMember(): void {
   const derived = deriveRegroupCeremonyConfig(config, 1)
 
+  assert.equal(derived.committeePosition, 1)
   assert.equal(derived.isOld, true)
   assert.equal(derived.isNewMember, false)
+  assert.equal(derived.committeePartyIp, '145.223.74.11')
   assert.equal(derived.newListenAddr, '/ip4/0.0.0.0/tcp/42011')
   assert.deepEqual(derived.newPeerAddrs, [
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
+    '/ip4/104.238.181.92/tcp/42011',
+    '/ip4/172.232.45.137/tcp/42011',
     '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
-    '/ip4/66.228.53.24/tcp/42014',
-    '/ip4/198.74.61.203/tcp/42015',
+    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/198.74.61.203/tcp/42011',
   ])
-  assert.equal(derived.newPeerAddrs.length, 7)
+  assert.equal(derived.newPeerAddrs.length, 5)
 }
 
 function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
@@ -89,19 +89,17 @@ function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
     oldPartyIps: config.oldPartyIps,
     newPartyIps: config.newPartyIps,
     oldThreshold: 2,
-    partyIdx: 1,
-    partyIp: '145.223.74.11',
+    committeePosition: 1,
+    committeePartyIp: '145.223.74.11',
     isOld: true,
   })
 
   assert.deepEqual(peerAddrs, [
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
+    '/ip4/104.238.181.92/tcp/42011',
+    '/ip4/172.232.45.137/tcp/42011',
     '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
-    '/ip4/66.228.53.24/tcp/42014',
-    '/ip4/198.74.61.203/tcp/42015',
+    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/198.74.61.203/tcp/42011',
   ])
 }
 
@@ -115,19 +113,17 @@ function testDeriveRegroupCeremonyConfigForNewOnlyMember(): void {
   })
   const derived = deriveRegroupCeremonyConfig(changedConfig, 5)
 
+  assert.equal(derived.committeePosition, 5)
   assert.equal(derived.isOld, false)
   assert.equal(derived.isNewMember, true)
   assert.equal(derived.newListenAddr, undefined)
   assert.deepEqual(derived.newPeerAddrs, [
     '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
-    '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
-    '/ip4/66.228.53.24/tcp/42014',
+    '/ip4/104.238.181.92/tcp/42011',
+    '/ip4/172.232.45.137/tcp/42011',
+    '/ip4/66.228.53.24/tcp/42011',
   ])
-  assert.equal(derived.newPeerAddrs.length, 7)
+  assert.equal(derived.newPeerAddrs.length, 4)
 }
 
 function testDeriveOrderedRegroupPeerAddrsForNewOnlyMember(): void {
@@ -136,19 +132,16 @@ function testDeriveOrderedRegroupPeerAddrsForNewOnlyMember(): void {
     oldPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137'],
     newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
     oldThreshold: 2,
-    partyIdx: 5,
-    partyIp: '198.74.61.203',
+    committeePosition: 5,
+    committeePartyIp: '198.74.61.203',
     isNewMember: true,
   })
 
   assert.deepEqual(peerAddrs, [
     '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
-    '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42012',
-    '/ip4/172.232.45.137/tcp/42013',
-    '/ip4/66.228.53.24/tcp/42014',
+    '/ip4/104.238.181.92/tcp/42011',
+    '/ip4/172.232.45.137/tcp/42011',
+    '/ip4/66.228.53.24/tcp/42011',
   ])
 }
 
@@ -162,7 +155,8 @@ function testDeriveRegroupCeremonyConfigSupportsDifferentNewOrder(): void {
   })
   const derived = deriveRegroupCeremonyConfig(changedConfig, 1)
 
-  assert.equal(derived.partyIp, '66.228.53.24')
+  assert.equal(derived.committeePosition, 1)
+  assert.equal(derived.committeePartyIp, '66.228.53.24')
   assert.equal(derived.newListenAddr, undefined)
   assert.equal(derived.isNewMember, true)
 }

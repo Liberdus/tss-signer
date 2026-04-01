@@ -48,7 +48,7 @@ type DerivedPubkeyAll = {
 export type DerivePubkeyFormat = 'compressed' | 'ethereum-pubkey' | 'ethereum-address' | 'all'
 
 export type BasePartyOptions = {
-  partyIdx: number
+  partyIdx?: number
   chainId: number
   password?: string
   logLevel?: string
@@ -58,7 +58,10 @@ export type BasePartyOptions = {
   binary?: string
   signerRoot?: string
   tssRoot?: string
+  useDefaultSlotPath?: boolean
 }
+
+export const DEFAULT_SLOT_PARTY_IDX = 1;
 
 export type InitPartyOptions = BasePartyOptions & {
   moniker?: string
@@ -567,13 +570,47 @@ function getHomeRoot(signerRoot = resolveProjectRoot(), explicitHomeRoot?: strin
   return path.resolve(explicitHomeRoot || process.env.BNB_TSS_HOME_ROOT || path.join(signerRoot, 'keystores', 'bnbtss'));
 }
 
+function getIndexedPartyHomePath(homeRoot: string, partyIdx: number, chainId: number): string {
+  return path.join(homeRoot, `party-${partyIdx}`, `chain-${chainId}`)
+}
+
+function getDefaultSlotHomePath(homeRoot: string, chainId: number): string {
+  return path.join(homeRoot, `chain-${chainId}`)
+}
+
+function getVaultConfigPath(home: string, vaultName: string): string {
+  return path.join(home, vaultName, 'config.json')
+}
+
+function getEffectivePartyIdx(options: BasePartyOptions): number {
+  if (Number.isInteger(options.partyIdx) && Number(options.partyIdx) >= 1) {
+    return Number(options.partyIdx);
+  }
+  if (options.useDefaultSlotPath) {
+    return DEFAULT_SLOT_PARTY_IDX;
+  }
+  throw new Error('partyIdx is required unless useDefaultSlotPath is enabled');
+}
+
 export function getPartyHome(options: any): string {
   if (options.homePath) {
     return path.resolve(options.homePath);
   }
   const signerRoot = options.signerRoot || resolveProjectRoot();
   const homeRoot = getHomeRoot(signerRoot, options.homeRoot);
-  return path.join(homeRoot, `party-${options.partyIdx}`, `chain-${options.chainId}`);
+  if (!options.useDefaultSlotPath) {
+    return getIndexedPartyHomePath(homeRoot, getEffectivePartyIdx(options), options.chainId);
+  }
+  const vaultName = getVaultName(options.vaultName);
+  const defaultSlotHome = getDefaultSlotHomePath(homeRoot, options.chainId);
+  const legacySlotHome = getIndexedPartyHomePath(homeRoot, 1, options.chainId);
+  if (fs.existsSync(getVaultConfigPath(defaultSlotHome, vaultName))) {
+    return defaultSlotHome;
+  }
+  if (fs.existsSync(getVaultConfigPath(legacySlotHome, vaultName))) {
+    return legacySlotHome;
+  }
+  return defaultSlotHome;
 }
 
 export function getVaultDir(options: any): string {
@@ -584,6 +621,10 @@ export function getMoniker(partyIdx: number, chainId: number): string {
   return `party-${partyIdx}-chain-${chainId}`;
 }
 
+function getDefaultSlotMoniker(chainId: number, home: string): string {
+  return `default-chain-${chainId}`;
+}
+
 export function getDeterministicListenPort(chainId: number, partyIdx: number): number {
   if (!Number.isInteger(chainId) || !Number.isInteger(partyIdx) || partyIdx < 1) {
     throw new Error(`Invalid deterministic listen port inputs: chainId=${chainId}, partyIdx=${partyIdx}`);
@@ -591,12 +632,24 @@ export function getDeterministicListenPort(chainId: number, partyIdx: number): n
   return 40000 + (Math.abs(chainId) % 1000) * 10 + partyIdx;
 }
 
+export function getDefaultSlotListenPort(chainId: number): number {
+  return getDeterministicListenPort(chainId, DEFAULT_SLOT_PARTY_IDX);
+}
+
 export function getLocalListenAddr(chainId: number, partyIdx: number): string {
   return `/ip4/0.0.0.0/tcp/${getDeterministicListenPort(chainId, partyIdx)}`;
 }
 
+export function getDefaultSlotListenAddr(chainId: number): string {
+  return `/ip4/0.0.0.0/tcp/${getDefaultSlotListenPort(chainId)}`;
+}
+
 export function getLocalPeerAddr(chainId: number, partyIdx: number): string {
   return `/ip4/127.0.0.1/tcp/${getDeterministicListenPort(chainId, partyIdx)}`;
+}
+
+export function getDefaultSlotPeerAddr(chainId: number): string {
+  return `/ip4/127.0.0.1/tcp/${getDefaultSlotListenPort(chainId)}`;
 }
 
 export function getDeterministicRegroupListenPort(chainId: number, partyIdx: number): number {
@@ -888,8 +941,9 @@ export async function initParty(options: InitPartyOptions = {} as InitPartyOptio
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const home = getPartyHome({...options, signerRoot});
   const vaultName = getVaultName(options.vaultName);
+  const partyIdx = getEffectivePartyIdx(options);
   const vaultPassword = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
-  const configPath = path.join(home, vaultName, 'config.json');
+  const configPath = getVaultConfigPath(home, vaultName);
   if (fs.existsSync(configPath)) {
     return {home, vaultName, binary, tssRoot};
   }
@@ -903,13 +957,13 @@ export async function initParty(options: InitPartyOptions = {} as InitPartyOptio
       '--vault_name',
       vaultName,
       '--moniker',
-      options.moniker || getMoniker(options.partyIdx, options.chainId),
+      options.moniker || (options.useDefaultSlotPath ? getDefaultSlotMoniker(options.chainId, home) : getMoniker(partyIdx, options.chainId)),
       '--password',
       vaultPassword,
       '--log_level',
       options.logLevel || 'debug',
       '--p2p.listen',
-      options.listenAddr || getLocalListenAddr(options.chainId, options.partyIdx),
+      options.listenAddr || getLocalListenAddr(options.chainId, partyIdx),
     ],
     {
       cwd: tssRoot,
@@ -925,10 +979,11 @@ export function requireInitialized(options: BasePartyOptions = {} as BasePartyOp
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const home = getPartyHome({...options, signerRoot});
   const vaultName = getVaultName(options.vaultName);
-  const configPath = path.join(home, vaultName, 'config.json');
+  const configPath = getVaultConfigPath(home, vaultName);
   if (!fs.existsSync(configPath)) {
+    const partyIdx = getEffectivePartyIdx(options);
     throw new Error(
-      `Missing initialized party config at ${configPath}. Run node tss-tools/init.js --party ${options.partyIdx} --chain-id ${options.chainId} first.`,
+      `Missing initialized party config at ${configPath}. Run node tss-tools/init.js --party ${partyIdx} --chain-id ${options.chainId} first.`,
     );
   }
   return {home, vaultName, binary, tssRoot};
@@ -1008,13 +1063,14 @@ export function getCommitteeTopology(options: BasePartyOptions & {describeOutput
 export function validatePartyVaults(options: Omit<BasePartyOptions, 'chainId'> & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>} = {} as Omit<BasePartyOptions, 'chainId'> & {chainIds?: number[]; expectedAddressesByChainId?: Record<number, string>}): Array<DerivedPubkeyAll & {chainId: number; home: string; vaultDir: string}> {
   const results = [];
   const chainIds = options.chainIds || [];
+  const partyIdx = getEffectivePartyIdx({partyIdx: options.partyIdx, useDefaultSlotPath: options.useDefaultSlotPath, chainId: 1});
   for (const chainId of chainIds) {
     const home = getPartyHome({...options, chainId});
     const vaultDir = getVaultDir({...options, chainId});
     const pkPath = path.join(vaultDir, 'pk.json');
     const skPath = path.join(vaultDir, 'sk.json');
     if (!fs.existsSync(pkPath) || !fs.existsSync(skPath)) {
-      throw new Error(`Missing BNB TSS vault files for party ${options.partyIdx} chain ${chainId} at ${vaultDir}`);
+      throw new Error(`Missing BNB TSS vault files for party ${partyIdx} chain ${chainId} at ${vaultDir}`);
     }
     const derived = derivePubkey({...options, chainId, format: 'all'}) as DerivedPubkeyAll;
     const expectedAddress = options.expectedAddressesByChainId?.[chainId];

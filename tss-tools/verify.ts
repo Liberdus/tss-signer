@@ -4,19 +4,21 @@ import * as bnbTss from './lib/bnbTss'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/verify.js --party <idx>=1..N --chain-id <id> [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--format compressed|ethereum-pubkey|ethereum-address|all]',
+    'Usage: node tss-tools/verify.js --chain-id <id> [--party <idx>=1..N] [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [--format compressed|ethereum-pubkey|ethereum-address|all]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv: string[]): bnbTss.VerifyOptions & {partyIdx: number; chainId: number; format: bnbTss.DerivePubkeyFormat} {
+function parseArgs(argv: string[]): bnbTss.VerifyOptions & {chainId: number; format: bnbTss.DerivePubkeyFormat} {
   const options: Partial<bnbTss.VerifyOptions> & {format: bnbTss.DerivePubkeyFormat} = {format: 'all'};
+  let partyExplicit = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = argv[i + 1];
     switch (arg) {
       case '--party':
         options.partyIdx = Number.parseInt(value, 10);
+        partyExplicit = true;
         i += 1;
         break;
       case '--chain-id':
@@ -39,6 +41,9 @@ function parseArgs(argv: string[]): bnbTss.VerifyOptions & {partyIdx: number; ch
         options.homePath = value;
         i += 1;
         break;
+      case '--use-default-slot-path':
+        options.useDefaultSlotPath = true;
+        break;
       case '--format':
         options.format = value as bnbTss.DerivePubkeyFormat;
         i += 1;
@@ -52,8 +57,12 @@ function parseArgs(argv: string[]): bnbTss.VerifyOptions & {partyIdx: number; ch
         usage();
     }
   }
-  if (!Number.isInteger(options.partyIdx) || options.partyIdx < 1 || !Number.isInteger(options.chainId)) usage();
-  return options as bnbTss.VerifyOptions & {partyIdx: number; chainId: number; format: bnbTss.DerivePubkeyFormat};
+  if (!Number.isInteger(options.chainId)) usage();
+  if (!partyExplicit) {
+    options.useDefaultSlotPath = true;
+  }
+  if (partyExplicit && (!Number.isInteger(options.partyIdx) || options.partyIdx < 1)) usage();
+  return options as bnbTss.VerifyOptions & {chainId: number; format: bnbTss.DerivePubkeyFormat};
 }
 
 try {

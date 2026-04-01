@@ -6,13 +6,14 @@ import {resolveProjectRoot} from '../shared/utils/paths'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/regroup.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--new-threshold <n>] [--new-parties <n>] [--new-peer-addrs <addr1,addr2>] [--new-listen-addr <multiaddr>] (--is-old | --is-new-member) [--pubkey <hex>] [--vault <name>] [--home-root <path>] [--binary <path>] [-- <extra regroup args...>]',
+    'Usage: node tss-tools/regroup.js --chain-id <id> [--party <idx>=1..N] [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--new-threshold <n>] [--new-parties <n>] [--new-peer-addrs <addr1,addr2>] [--new-listen-addr <multiaddr>] (--is-old | --is-new-member) [--pubkey <hex>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [--binary <path>] [-- <extra regroup args...>]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; chainId: number; extraArgs: string[]} {
+function parseArgs(argv: string[]): bnbTss.RegroupOptions & {chainId: number; extraArgs: string[]} {
   const options: Partial<bnbTss.RegroupOptions> & {extraArgs: string[]} = {extraArgs: []};
+  let partyExplicit = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--') {
@@ -23,6 +24,7 @@ function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; c
     switch (arg) {
       case '--party':
         options.partyIdx = Number.parseInt(value, 10);
+        partyExplicit = true;
         i += 1;
         break;
       case '--chain-id':
@@ -84,6 +86,13 @@ function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; c
         options.homeRoot = value;
         i += 1;
         break;
+      case '--home-path':
+        options.homePath = value;
+        i += 1;
+        break;
+      case '--use-default-slot-path':
+        options.useDefaultSlotPath = true;
+        break;
       case '--binary':
         options.binary = value;
         i += 1;
@@ -103,10 +112,16 @@ function parseArgs(argv: string[]): bnbTss.RegroupOptions & {partyIdx: number; c
         usage();
     }
   }
-  if (!Number.isInteger(options.partyIdx) || options.partyIdx < 1 || !Number.isInteger(options.chainId)) {
+  if (!Number.isInteger(options.chainId)) {
     usage();
   }
-  return options as bnbTss.RegroupOptions & {partyIdx: number; chainId: number; extraArgs: string[]};
+  if (!partyExplicit) {
+    options.useDefaultSlotPath = true;
+  }
+  if (partyExplicit && (!Number.isInteger(options.partyIdx) || options.partyIdx < 1)) {
+    usage();
+  }
+  return options as bnbTss.RegroupOptions & {chainId: number; extraArgs: string[]};
 }
 
 function hasExtraFlag(extraArgs: string[], flag: string): boolean {
@@ -147,7 +162,7 @@ function main() {
           parties,
           threshold,
           newParties,
-          partyIdx: options.partyIdx,
+          partyIdx: options.partyIdx ?? bnbTss.DEFAULT_SLOT_PARTY_IDX,
           isOld: options.isOld,
           isNewMember: options.isNewMember,
         })
@@ -172,7 +187,10 @@ function main() {
     String(parties),
   ];
   if (!hasExplicitNewListenAddr && options.isOld) {
-    args.push('--p2p.new_listen', options.newListenAddr || bnbTss.getLocalRegroupListenAddr(options.chainId, options.partyIdx));
+    args.push(
+      '--p2p.new_listen',
+      options.newListenAddr || bnbTss.getLocalRegroupListenAddr(options.chainId, options.partyIdx ?? bnbTss.DEFAULT_SLOT_PARTY_IDX),
+    );
   }
   if (Number.isInteger(options.newThreshold)) {
     args.push('--new_threshold', String(options.newThreshold));
@@ -212,7 +230,7 @@ function main() {
   };
   process.stdout.write(
     `${JSON.stringify({
-      party: options.partyIdx,
+      ...(options.partyIdx ? {party: options.partyIdx} : {}),
       chainId: options.chainId,
       home: initialized.home,
       vault: initialized.vaultName,

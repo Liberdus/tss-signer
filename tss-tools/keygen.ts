@@ -6,13 +6,14 @@ import {resolveProjectRoot} from '../shared/utils/paths'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/keygen.js --party <idx>=1..N --chain-id <id> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--peer-addrs <addr1,addr2>] [--no-local-peer-addrs] [--vault <name>] [--home-root <path>] [--home-path <path>] [--binary <path>]',
+    'Usage: node tss-tools/keygen.js --chain-id <id> [--party <idx>=1..N] [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--threshold <n>] [--parties <n>] [--peer-addrs <addr1,addr2>] [--no-local-peer-addrs] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [--binary <path>]',
   );
   process.exit(1);
 }
 
-function parseArgs(argv: string[]): bnbTss.KeygenOptions & {partyIdx: number; chainId: number; extraArgs: string[]; useLocalPeerAddrs: boolean} {
+function parseArgs(argv: string[]): bnbTss.KeygenOptions & {chainId: number; extraArgs: string[]; useLocalPeerAddrs: boolean} {
   const options: Partial<bnbTss.KeygenOptions> & {extraArgs: string[]; useLocalPeerAddrs: boolean} = {extraArgs: [], useLocalPeerAddrs: true};
+  let partyExplicit = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--') {
@@ -23,6 +24,7 @@ function parseArgs(argv: string[]): bnbTss.KeygenOptions & {partyIdx: number; ch
     switch (arg) {
       case '--party':
         options.partyIdx = Number.parseInt(value, 10);
+        partyExplicit = true;
         i += 1;
         break;
       case '--chain-id':
@@ -75,6 +77,9 @@ function parseArgs(argv: string[]): bnbTss.KeygenOptions & {partyIdx: number; ch
         options.homePath = value;
         i += 1;
         break;
+      case '--use-default-slot-path':
+        options.useDefaultSlotPath = true;
+        break;
       case '--binary':
         options.binary = value;
         i += 1;
@@ -88,10 +93,16 @@ function parseArgs(argv: string[]): bnbTss.KeygenOptions & {partyIdx: number; ch
         usage();
     }
   }
-  if (!Number.isInteger(options.partyIdx) || options.partyIdx < 1 || !Number.isInteger(options.chainId)) {
+  if (!Number.isInteger(options.chainId)) {
     usage();
   }
-  return options as bnbTss.KeygenOptions & {partyIdx: number; chainId: number; extraArgs: string[]; useLocalPeerAddrs: boolean};
+  if (!partyExplicit) {
+    options.useDefaultSlotPath = true;
+  }
+  if (partyExplicit && (!Number.isInteger(options.partyIdx) || options.partyIdx < 1)) {
+    usage();
+  }
+  return options as bnbTss.KeygenOptions & {chainId: number; extraArgs: string[]; useLocalPeerAddrs: boolean};
 }
 
 function main() {
@@ -115,7 +126,7 @@ function main() {
       ? bnbTss.deriveLocalPeerAddrs({
           chainId: options.chainId,
           parties,
-          partyIdx: options.partyIdx,
+          partyIdx: options.partyIdx ?? bnbTss.DEFAULT_SLOT_PARTY_IDX,
         })
       : []);
   const args = bnbTss.buildKeygenArgs({
@@ -146,7 +157,7 @@ function main() {
   };
   process.stdout.write(
     `${JSON.stringify({
-      party: options.partyIdx,
+      ...(options.partyIdx ? {party: options.partyIdx} : {}),
       chainId: options.chainId,
       home: initialized.home,
       vault: initialized.vaultName,
