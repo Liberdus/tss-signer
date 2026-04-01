@@ -72,6 +72,27 @@ function promptForVaultPassword(): string {
   }
 }
 
+function promptForNewVaultPassword(): string {
+  while (true) {
+    const password = readlineSync.question('Enter BNB_TSS_PASSWORD for this vault: ', {
+      hideEchoBack: true,
+      mask: '',
+    })
+    if (!isValidVaultPassword(password)) {
+      console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
+      continue
+    }
+    const confirm = readlineSync.question('Confirm BNB_TSS_PASSWORD: ', {
+      hideEchoBack: true,
+      mask: '',
+    })
+    if (password === confirm) {
+      return password
+    }
+    console.error('Passwords do not match, try again')
+  }
+}
+
 function verifyVaultPassword(signerRoot: string, chainId: number, homePath?: string): string {
   while (true) {
     const password = promptForVaultPassword()
@@ -158,7 +179,7 @@ async function main(): Promise<void> {
 
   let password: string
   if (vaultIsNew) {
-    password = promptForVaultPassword()
+    password = promptForNewVaultPassword()
     console.log(`Initializing vault for chain ${config.chainId}...`)
     await bnbTss.initParty({
       signerRoot,
@@ -211,6 +232,9 @@ async function main(): Promise<void> {
   if (result.status !== 0) {
     process.exit(result.status || 1)
   }
+
+  console.log('\nKeygen complete. Set your vault password for this session:')
+  console.log("  export BNB_TSS_PASSWORD='<your-vault-password>'")
 }
 
 main().catch((error) => {
