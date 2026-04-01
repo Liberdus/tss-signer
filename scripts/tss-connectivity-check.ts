@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {spawnSync} from 'node:child_process'
 import net from 'node:net'
 import * as keygenCeremony from '../tss-tools/lib/keygenCeremony'
 import {resolveProjectRoot} from '../shared/utils/paths'
@@ -13,6 +14,8 @@ type ConnectivityParty = {
   ip: string
   port: number
 }
+
+type FirewallState = 'active' | 'inactive' | 'unknown'
 
 type HelloMessage = {
   type: 'hello' | 'hello-ack'
@@ -29,6 +32,7 @@ type ResolvedConnectivityCheck = {
   detectedLocalIps: string[]
   detectedExternalIps: string[]
   attemptedExternalLookup: boolean
+  firewallState: FirewallState
   localParty: ConnectivityParty
   peers: ConnectivityParty[]
 }
@@ -79,6 +83,43 @@ export function parseArgs(argv: string[]): Options {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function readCommandOutput(command: string, args: string[]): string | null {
+  const result = spawnSync(command, args, {encoding: 'utf8'})
+  if (result.error) {
+    return null
+  }
+  return `${result.stdout}${result.stderr}`.trim().toLowerCase()
+}
+
+export function detectFirewallState(): FirewallState {
+  if (process.platform !== 'linux') {
+    return 'unknown'
+  }
+
+  const systemctlStatus = readCommandOutput('systemctl', ['is-active', 'ufw'])
+  if (systemctlStatus === 'active' || systemctlStatus === 'activating' || systemctlStatus === 'reloading') {
+    return 'active'
+  }
+  if (
+    systemctlStatus === 'inactive' ||
+    systemctlStatus === 'failed' ||
+    systemctlStatus === 'deactivating' ||
+    systemctlStatus === 'unknown'
+  ) {
+    return 'inactive'
+  }
+
+  const ufwStatus = readCommandOutput('ufw', ['status'])
+  if (ufwStatus?.includes('status: active')) {
+    return 'active'
+  }
+  if (ufwStatus?.includes('status: inactive')) {
+    return 'inactive'
+  }
+
+  return 'unknown'
 }
 
 function readFirstLine(buffer: string): string | null {
@@ -246,6 +287,7 @@ export async function resolveConnectivityCheck(options: Options): Promise<Resolv
     detectedLocalIps,
     detectedExternalIps,
     attemptedExternalLookup,
+    firewallState: detectFirewallState(),
     localParty,
     peers: buildPeers(config.partyIps, derived.committeePosition, listenPort),
   }
@@ -268,6 +310,7 @@ export function logResolvedConnectivityCheck(check: ResolvedConnectivityCheck): 
           : '(not needed)'
     }`,
   )
+  console.log(`  firewall (ufw): ${check.firewallState}`)
   console.log(`  party index source: ${check.resolution.source}`)
   console.log(`  matched party IP: ${check.localParty.ip}`)
   console.log(`  listen port: ${check.localParty.port}`)
