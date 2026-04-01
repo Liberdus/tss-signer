@@ -171,6 +171,7 @@ async function main(): Promise<void> {
   )
   console.log(`  party index source: ${resolution.source}`)
   console.log(`  matched party IP: ${derived.committeePartyIp}`)
+  console.log(`  listen port: ${derived.listenPort}`)
   console.log(`  listen addr: ${derived.listenAddr}`)
   console.log(`  peer addrs (${derived.peerAddrs.length}): ${derived.peerAddrs.join(',')}`)
   console.log(`  channel id: ${channelId}`)
