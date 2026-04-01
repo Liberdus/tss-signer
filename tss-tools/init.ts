@@ -77,12 +77,12 @@ function parseArgs(argv: string[]): bnbTss.InitPartyOptions & {partyIdx: number;
   return options as bnbTss.InitPartyOptions & {partyIdx: number; chainId: number};
 }
 
-try {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.listenAddr && Number.isInteger(options.listenPort)) {
     options.listenAddr = `/ip4/0.0.0.0/tcp/${options.listenPort}`;
   }
-  const initialized = bnbTss.initParty(options);
+  const initialized = await bnbTss.initParty(options);
   process.stdout.write(
     `${JSON.stringify({
       party: options.partyIdx,
@@ -93,7 +93,9 @@ try {
       moniker: options.moniker || bnbTss.getMoniker(options.partyIdx, options.chainId),
     })}\n`,
   );
-} catch (error) {
+}
+
+main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
-}
+});
