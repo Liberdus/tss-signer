@@ -202,11 +202,11 @@ Once all operators have verified their keystores and the TSS address has been re
 
 Each party index runs **two** paired processes: an **observer** (on-chain monitor) and a **TSS party** (signer). Both must be running for the bridge to operate.
 
-Start your observer and TSS party using `ecosystem.config.js` with `--only`. This picks up all memory limits, node args, and env vars from the config automatically.
+Start both processes using the remote config:
 
 ```bash
-pm2 start ecosystem.config.js --only observer-1
-pm2 start ecosystem.config.js --only tss-party-1
+pm2 start ecosystem.remote.config.js --only observer
+pm2 start ecosystem.remote.config.js --only tss-party
 ```
 
 Save the PM2 process list so it restarts on reboot:
@@ -223,21 +223,21 @@ pm2 startup
 PARTY_INDEX=1 node dist/observer/index.js
 
 # In another terminal: start the TSS party
-node dist/scripts/tss-party.js 1
+node dist/scripts/tss-party.js
 ```
 
 **Useful PM2 commands:**
 
 ```bash
-pm2 restart observer-1 tss-party-1
-pm2 stop observer-1 tss-party-1
-pm2 logs observer-1
-pm2 logs tss-party-1
+pm2 restart observer tss-party
+pm2 stop observer tss-party
+pm2 logs observer
+pm2 logs tss-party
 ```
 
 Log files are at:
-- `logs/observer-1-combined.log`
-- `logs/tss-party-1-combined.log`
+- `logs/observer-combined.log`
+- `logs/tss-party-combined.log`
 
 ---
 
@@ -307,7 +307,7 @@ npm run tss-verify -- --chain-id <CHAIN_ID>
 Then restart your TSS party process:
 
 ```bash
-pm2 restart tss-party-1
+pm2 restart tss-party
 ```
 
 ---
