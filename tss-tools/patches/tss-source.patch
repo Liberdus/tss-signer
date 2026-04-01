@@ -21,6 +21,38 @@ index 35ca66f..f7d234d 100644
  			messageWrapper.IsBroadcast)
  		if !ok && err != nil {
  			common.Panic(fmt.Errorf("[%s] error updating local party state: %v", client.config.Moniker, err))
+diff --git a/cmd/bootstrapping.go b/cmd/bootstrapping.go
+index b913748..78b9c7a 100644
+--- a/cmd/bootstrapping.go
++++ b/cmd/bootstrapping.go
+@@ -5,6 +5,7 @@ import (
+ 	"encoding/binary"
+ 	"encoding/json"
+ 	"fmt"
++	"io"
+ 	"net"
+ 	"os"
+ 	"strings"
+@@ -228,15 +229,14 @@ func readBootstrapMessage(conn net.Conn, b *common.Bootstrapper) {
+ 		return
+ 	}
+ 	payload := make([]byte, messageLength)
+-	n, err := conn.Read(payload)
+-
+-	if int32(n) != messageLength {
+-		return
+-	}
++	n, err := io.ReadFull(conn, payload)
+ 	if err != nil {
+ 		common.SkipTcpClosePanic(fmt.Errorf("failed to read bootstrap message: %v", err))
+ 		return
+ 	}
++	if int32(n) != messageLength {
++		return
++	}
+ 	var peerMsg common.BootstrapMessage
+ 	err = proto.Unmarshal(payload, &peerMsg)
+ 	if err != nil {
 diff --git a/cmd/root.go b/cmd/root.go
 index 181efd3..eadcfc2 100644
 --- a/cmd/root.go
@@ -264,7 +296,7 @@ index 10b69c5..5955ce7 100644
  
  func NewBootstrapMessage(channelId, channelPassword, addr string, param PeerParam) (*BootstrapMessage, error) {
 diff --git a/p2p/p2p_transporter.go b/p2p/p2p_transporter.go
-index bdf475b..fe6a6d5 100644
+index bdf475b..677643f 100644
 --- a/p2p/p2p_transporter.go
 +++ b/p2p/p2p_transporter.go
 @@ -171,8 +171,11 @@ func NewP2PTransporter(
@@ -347,6 +379,15 @@ index bdf475b..fe6a6d5 100644
  		}); err == nil {
  		payload, err := proto.Marshal(msg)
  		if err != nil {
+@@ -374,7 +402,7 @@ func (t *p2pTransporter) readDataRoutine(pid string, stream network.Stream) {
+ 			if err != nil {
+ 				common.Panic(fmt.Errorf("failed to read protobuf message: %v, from: %s", err, pid))
+ 			} else {
+-				payloadWithTypePrefix = append(payloadWithTypePrefix, buf...)
++				payloadWithTypePrefix = append(payloadWithTypePrefix, buf[:readLength]...)
+ 			}
+ 			readBytes += readLength
+ 		}
 @@ -522,6 +550,7 @@ func (t *p2pTransporter) initBootstrapConnection(dht *libp2pdht.IpfsDHT) {
  			time.Sleep(time.Second)
  		}
