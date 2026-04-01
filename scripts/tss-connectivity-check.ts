@@ -38,7 +38,6 @@ type ResolvedConnectivityCheck = {
   peers: ConnectivityParty[]
 }
 
-const DEFAULT_TOTAL_TIMEOUT_MS = 120_000
 const CONNECT_TIMEOUT_MS = 5_000
 const ROUND_START_DELAY_MS = 5_000
 const ROUND_WINDOW_MS = 10_000
