@@ -76,8 +76,8 @@ function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember(): void {
   });
 
   assert.deepEqual(peerAddrs, [
-    '/ip4/127.0.0.1/tcp/43381',
     '/ip4/127.0.0.1/tcp/43382',
+    '/ip4/127.0.0.1/tcp/44381',
     '/ip4/127.0.0.1/tcp/44382',
     '/ip4/127.0.0.1/tcp/43383',
   ]);
