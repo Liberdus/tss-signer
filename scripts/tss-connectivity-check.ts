@@ -39,7 +39,6 @@ type ResolvedConnectivityCheck = {
 }
 
 const CONNECT_TIMEOUT_MS = 5_000
-const ROUND_START_DELAY_MS = 5_000
 const ROUND_WINDOW_MS = 20_000
 
 function usage(exitCode = 1): never {
@@ -163,15 +162,42 @@ export function buildPeers(partyIps: string[], localPartyIdx: number, port: numb
   })
 }
 
-function summarizeMissing(heading: string, peers: ConnectivityParty[], connected: Set<number>): void {
-  const missing = peers.filter((peer) => !connected.has(peer.partyIdx))
-  if (missing.length === 0) {
-    return
-  }
+function formatStatusMark(connected: boolean): string {
+  return connected ? '✓' : 'X'
+}
 
-  console.log(heading)
-  for (const peer of missing) {
-    console.log(`  - ${formatParty(peer)}`)
+function buildStatusTable(peers: ConnectivityParty[], inboundConnected: Set<number>, outboundConnected: Set<number>): string[] {
+  const rows = peers.map((peer) => {
+    const inbound = inboundConnected.has(peer.partyIdx)
+    const outbound = outboundConnected.has(peer.partyIdx)
+    return [
+      String(peer.partyIdx),
+      `${peer.ip}:${peer.port}`,
+      formatStatusMark(inbound),
+      formatStatusMark(outbound),
+      formatStatusMark(inbound && outbound),
+    ]
+  })
+
+  const headers = ['Party', 'Address', 'In', 'Out', 'Ready']
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index].length)),
+  )
+
+  const formatRow = (row: string[]): string => row.map((cell, index) => cell.padEnd(widths[index])).join('  ')
+  const separator = widths.map((width) => '-'.repeat(width)).join('  ')
+
+  return [
+    formatRow(headers),
+    separator,
+    ...rows.map((row) => formatRow(row)),
+  ]
+}
+
+async function waitForRoundWindow(tracker: ConnectivityTracker, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now()
+  while (!tracker.hasPassed() && Date.now() - startedAt < timeoutMs) {
+    await delay(100)
   }
 }
 
@@ -203,20 +229,20 @@ export class ConnectivityTracker {
   }
 
   printRoundSummary(): number {
-    if (this.hasPassed()) {
-      console.log('Connectivity check passed.')
-    } else {
-      console.log('Connectivity check did not pass.')
+    console.log('Connectivity status:')
+    for (const line of buildStatusTable(this.peers, this.inboundConnected, this.outboundConnected)) {
+      console.log(`  ${line}`)
     }
-    this.printSummary()
-    summarizeMissing('Still waiting for these parties to connect to you:', this.peers, this.inboundConnected)
-    summarizeMissing('You could not connect to these parties:', this.peers, this.outboundConnected)
+    console.log(
+      `Overall: ${formatStatusMark(this.hasPassed())} ${this.readyCount()}/${this.peers.length} peers ready`,
+    )
     return this.hasPassed() ? 0 : 1
   }
 
-  private printSummary(): void {
-    console.log(`  Outbound connections succeeded: ${this.outboundConnected.size}/${this.peers.length}`)
-    console.log(`  Inbound connections received: ${this.inboundConnected.size}/${this.peers.length}`)
+  private readyCount(): number {
+    return this.peers.filter(
+      (peer) => this.inboundConnected.has(peer.partyIdx) && this.outboundConnected.has(peer.partyIdx),
+    ).length
   }
 }
 
@@ -288,7 +314,7 @@ export function logResolvedConnectivityCheck(check: ResolvedConnectivityCheck): 
   console.log(`  party index source: ${check.resolution.source}`)
   console.log(`  matched party IP: ${check.localParty.ip}`)
   console.log(`  listen port: ${check.localParty.port}`)
-  console.log(`  round window: ${Math.floor(ROUND_WINDOW_MS / 1000)} seconds`)
+  console.log(`  check window: ${Math.floor(ROUND_WINDOW_MS / 1000)} seconds`)
   console.log(`  peers to check (${check.peers.length}):`)
   for (const peer of check.peers) {
     console.log(`    party ${peer.partyIdx}: ${peer.ip}:${peer.port}`)
@@ -453,9 +479,10 @@ async function connectOnce(
   }
 }
 
-export async function runConnectivityRound(check: ResolvedConnectivityCheck): Promise<number> {
-  const tracker = new ConnectivityTracker(check.peers)
-  const peersByPartyIdx = new Map(check.peers.map((peer) => [peer.partyIdx, peer]))
+export async function runConnectivityRound(
+  check: ResolvedConnectivityCheck,
+  tracker: ConnectivityTracker,
+): Promise<number> {
   const localHello: HelloMessage = {
     type: 'hello',
     chainId: check.config.chainId,
@@ -464,25 +491,13 @@ export async function runConnectivityRound(check: ResolvedConnectivityCheck): Pr
     port: check.localParty.port,
   }
 
-  const server = createInboundServer(check.config.chainId, check.localParty, peersByPartyIdx, tracker)
-  await waitForServerListening(server, check.localParty.port)
-
-  console.log(`Listening on 0.0.0.0:${check.localParty.port}`)
-  console.log(`Waiting up to ${Math.floor(ROUND_WINDOW_MS / 1000)} seconds for this round.`)
-
-  const roundStartedAt = Date.now()
-  await delay(ROUND_START_DELAY_MS)
-  const outboundTasks = check.peers.map((peer) => connectOnce(peer, localHello, check.config.chainId, tracker))
+  console.log(`Checking peers for up to ${Math.floor(ROUND_WINDOW_MS / 1000)} seconds.`)
+  const startedAt = Date.now()
+  const outboundTasks = check.peers
+    .filter((peer) => !tracker.outboundConnected.has(peer.partyIdx))
+    .map((peer) => connectOnce(peer, localHello, check.config.chainId, tracker))
   await Promise.allSettled(outboundTasks)
-
-  if (!tracker.hasPassed()) {
-    const remainingMs = Math.max(0, ROUND_WINDOW_MS - (Date.now() - roundStartedAt))
-    if (remainingMs > 0) {
-      await delay(remainingMs)
-    }
-  }
-
-  await closeServer(server)
+  await waitForRoundWindow(tracker, Math.max(0, ROUND_WINDOW_MS - (Date.now() - startedAt)))
   return tracker.printRoundSummary()
 }
 
@@ -503,22 +518,35 @@ async function promptToRunAgain(): Promise<boolean> {
 export async function main(): Promise<void> {
   const check = await resolveConnectivityCheck(parseArgs(process.argv.slice(2)))
   logResolvedConnectivityCheck(check)
+  const tracker = new ConnectivityTracker(check.peers)
+  const peersByPartyIdx = new Map(check.peers.map((peer) => [peer.partyIdx, peer]))
+  const server = createInboundServer(check.config.chainId, check.localParty, peersByPartyIdx, tracker)
+  await waitForServerListening(server, check.localParty.port)
+
+  console.log(`Listening on 0.0.0.0:${check.localParty.port}`)
+  console.log('The listener stays open until you exit.')
 
   let exitCode = 1
   let roundNumber = 1
 
-  while (true) {
-    if (roundNumber > 1) {
-      console.log(`Starting connectivity check round ${roundNumber}.`)
-    }
+  try {
+    while (true) {
+      if (roundNumber > 1) {
+        console.log(`Checking again (round ${roundNumber}).`)
+      }
 
-    exitCode = await runConnectivityRound(check)
-    roundNumber += 1
+      exitCode = await runConnectivityRound(check, tracker)
+      roundNumber += 1
 
-    if (!(await promptToRunAgain())) {
-      process.exit(exitCode)
+      if (!(await promptToRunAgain())) {
+        break
+      }
     }
+  } finally {
+    await closeServer(server)
   }
+
+  process.exitCode = exitCode
 }
 
 if (require.main === module) {

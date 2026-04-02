@@ -102,20 +102,21 @@ npm run tss-connectivity-check
 The check:
 - Resolves the machine's committee position from `partyIps`
 - Derives the expected listen port from the chain ID
-- Runs one connectivity round against every other party on that port
+- Opens a listener on that port and keeps it running until you exit
+- Runs one outbound connectivity pass against every other party on that port
 - Prints one clear line for each successful connection in both directions
-- Prints a short missing-party summary if any connection is blocked
-- Prompts whether to exit or run another round
+- Prints a compact status table with inbound, outbound, and ready columns
+- Prompts whether to exit or run another round while leaving the listener open
 
-Each round stays open briefly so operators who start a little late still have time to connect.
+If one operator starts early and another starts later, the early operator can leave the script running, then choose to run the check again after the later operator connects.
 
 Wait for every operator to see:
 
 ```text
-Connectivity check passed.
+Overall: ✓ <N>/<N> peers ready
 ```
 
-If any operator sees a timeout, stop and fix the reported connectivity issue before attempting keygen. Common causes are:
+If any operator still sees `X` values in the status table, stop and fix the reported connectivity issue before attempting keygen. Common causes are:
 - the wrong IP address in `keygen-config.json`
 - the required port is not open in `ufw`
 - the required port is blocked by a cloud firewall
