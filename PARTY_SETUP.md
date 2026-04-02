@@ -345,7 +345,7 @@ Use a fresh nonce for every retry.
 Verify the EOA address is unchanged across all parties:
 
 ```bash
-npm run tss-verify
+npm run tss-verify -- --chain-id <CHAIN_ID>
 ```
 
 Then restart your TSS party process:
