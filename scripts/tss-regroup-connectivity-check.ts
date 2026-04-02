@@ -12,6 +12,7 @@ type Options = {
 
 type FirewallState = 'active' | 'inactive' | 'unknown'
 type EndpointKind = 'base' | 'regroup'
+type DirectionKind = 'inbound' | 'outbound'
 
 type RegroupConnectivityParty = {
   partyIdx: number
@@ -28,12 +29,14 @@ type HelloMessage = {
   endpoint: EndpointKind
 }
 
+type EndpointConnectivitySnapshot = {
+  inbound?: boolean
+  outbound?: boolean
+}
+
 type PeerConnectivitySnapshot = {
   party: RegroupConnectivityParty
-  baseInbound: boolean
-  baseOutbound: boolean
-  regroupInbound?: boolean
-  regroupOutbound?: boolean
+  endpoints: Record<EndpointKind, EndpointConnectivitySnapshot>
   ready: boolean
 }
 
@@ -60,6 +63,7 @@ const ANSI_RESET = '\u001b[0m'
 const ANSI_GREEN = '\u001b[32m'
 const ANSI_RED = '\u001b[31m'
 const ANSI_GRAY = '\u001b[90m'
+const ENDPOINT_KINDS: EndpointKind[] = ['base', 'regroup']
 
 function usage(exitCode = 1): never {
   console.error('Usage: node scripts/tss-regroup-connectivity-check.js [--config <path>] [--port <number>]')
@@ -183,11 +187,23 @@ function getRegroupPort(basePort: number): number {
   return basePort + REGROUP_PORT_OFFSET
 }
 
+function getEndpointPort(party: RegroupConnectivityParty, endpoint: EndpointKind): number | undefined {
+  return endpoint === 'base' ? party.basePort : party.regroupPort
+}
+
+function localEndpointKinds(localParty: RegroupConnectivityParty): EndpointKind[] {
+  return ENDPOINT_KINDS.filter((endpoint) => getEndpointPort(localParty, endpoint) !== undefined)
+}
+
+function peerEndpointKinds(party: RegroupConnectivityParty): EndpointKind[] {
+  return ENDPOINT_KINDS.filter((endpoint) => getEndpointPort(party, endpoint) !== undefined)
+}
+
 function buildPeerPortsLabel(party: RegroupConnectivityParty): string {
-  if (party.regroupPort === undefined) {
-    return `${party.basePort}`
-  }
-  return `${party.basePort},${party.regroupPort}`
+  return peerEndpointKinds(party)
+    .map((endpoint) => getEndpointPort(party, endpoint))
+    .filter((port): port is number => port !== undefined)
+    .join(',')
 }
 
 function endpointKey(partyIdx: number, endpoint: EndpointKind): string {
@@ -231,11 +247,10 @@ function formatStatusMark(connected?: boolean): string {
   return connected ? 'OK' : 'X'
 }
 
-function colorForStatus(connected?: boolean): string | null {
-  if (connected === undefined) {
-    return ANSI_GRAY
-  }
-  return connected ? ANSI_GREEN : ANSI_RED
+function renderStatusCell(value: boolean | undefined, width: number, useColor: boolean): string {
+  const cell = formatStatusMark(value).padEnd(width)
+  const color = value === undefined ? ANSI_GRAY : value ? ANSI_GREEN : ANSI_RED
+  return colorize(cell, color, useColor)
 }
 
 function buildStatusTable(
@@ -244,31 +259,27 @@ function buildStatusTable(
   regroupPort: number,
   useColor: boolean,
 ): string[] {
-  const rows = snapshot.map(({party, baseInbound, baseOutbound, regroupInbound, regroupOutbound, ready}) => ({
+  const endpointLabels = {base: basePort, regroup: regroupPort}
+  const statusColumns = ENDPOINT_KINDS.flatMap((endpoint) =>
+    (['inbound', 'outbound'] as const).map((direction) => ({
+      header: `${endpointLabels[endpoint]} ${direction === 'inbound' ? 'In' : 'Out'}`,
+      pickStatus: (entry: PeerConnectivitySnapshot) => entry.endpoints[endpoint][direction],
+    })),
+  )
+
+  const rows = snapshot.map((entry) => ({
     raw: [
-      String(party.partyIdx),
-      party.ip,
-      buildPeerPortsLabel(party),
-      formatStatusMark(baseInbound),
-      formatStatusMark(baseOutbound),
-      formatStatusMark(regroupInbound),
-      formatStatusMark(regroupOutbound),
-      formatStatusMark(ready),
+      String(entry.party.partyIdx),
+      entry.party.ip,
+      buildPeerPortsLabel(entry.party),
+      ...statusColumns.map(({pickStatus}) => formatStatusMark(pickStatus(entry))),
+      formatStatusMark(entry.ready),
     ],
-    statuses: [baseInbound, baseOutbound, regroupInbound, regroupOutbound, ready],
-    ready,
+    statuses: [...statusColumns.map(({pickStatus}) => pickStatus(entry)), entry.ready],
+    ready: entry.ready,
   }))
 
-  const headers = [
-    'Party',
-    'Address',
-    'Ports',
-    `${basePort} In`,
-    `${basePort} Out`,
-    `${regroupPort} In`,
-    `${regroupPort} Out`,
-    'Ready',
-  ]
+  const headers = ['Party', 'Address', 'Ports', ...statusColumns.map(({header}) => header), 'Ready']
   const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row.raw[index].length)))
 
   const formatRow = (row: (typeof rows)[number]): string => {
@@ -276,14 +287,9 @@ function buildStatusTable(
     if (row.ready) {
       return colorize(padded.join('  '), ANSI_GREEN, useColor)
     }
-    const rendered = padded.map((cell, index) => {
-      if (index < 3) {
-        return cell
-      }
-      const status = row.statuses[index - 3]
-      const color = colorForStatus(status)
-      return color ? colorize(cell, color, useColor) : cell
-    })
+    const rendered = padded.map((cell, index) =>
+      index < 3 ? cell : renderStatusCell(row.statuses[index - 3], widths[index], useColor),
+    )
     return rendered.join('  ')
   }
   const separator = widths.map((width) => '-'.repeat(width)).join('  ')
@@ -355,26 +361,24 @@ export class RegroupConnectivityTracker {
 
   getSnapshot(): PeerConnectivitySnapshot[] {
     return this.peers.map((party) => {
-      const baseInbound = this.hasFreshInbound(endpointKey(party.partyIdx, 'base'))
-      const baseOutbound = this.outboundConnected.has(endpointKey(party.partyIdx, 'base'))
-      const regroupInbound = this.localParty.isActiveOld
-        ? this.hasFreshInbound(endpointKey(party.partyIdx, 'regroup'))
-        : undefined
-      const regroupOutbound = party.isActiveOld
-        ? this.outboundConnected.has(endpointKey(party.partyIdx, 'regroup'))
-        : undefined
-      const ready =
-        baseInbound &&
-        baseOutbound &&
-        (regroupInbound === undefined || regroupInbound) &&
-        (regroupOutbound === undefined || regroupOutbound)
+      const endpoints = ENDPOINT_KINDS.reduce(
+        (accumulator, endpoint) => ({
+          ...accumulator,
+          [endpoint]: {
+            inbound: this.getStatus(party, endpoint, 'inbound'),
+            outbound: this.getStatus(party, endpoint, 'outbound'),
+          },
+        }),
+        {} as Record<EndpointKind, EndpointConnectivitySnapshot>,
+      )
+      const ready = ENDPOINT_KINDS.every((endpoint) => {
+        const {inbound, outbound} = endpoints[endpoint]
+        return (inbound === undefined || inbound) && (outbound === undefined || outbound)
+      })
 
       return {
         party,
-        baseInbound,
-        baseOutbound,
-        regroupInbound,
-        regroupOutbound,
+        endpoints,
         ready,
       }
     })
@@ -392,8 +396,8 @@ export class RegroupConnectivityTracker {
     return {
       basePort: this.localParty.basePort,
       regroupPort:
-        this.localParty.regroupPort ??
-        this.peers.find((party) => party.regroupPort !== undefined)?.regroupPort ??
+        getEndpointPort(this.localParty, 'regroup') ??
+        this.peers.find((party) => getEndpointPort(party, 'regroup') !== undefined)?.regroupPort ??
         getRegroupPort(this.localParty.basePort),
     }
   }
@@ -408,6 +412,26 @@ export class RegroupConnectivityTracker {
   private hasFreshInbound(key: string): boolean {
     const lastSeenAt = this.lastInboundAt.get(key)
     return lastSeenAt !== undefined && this.now() - lastSeenAt <= this.inboundStaleMs
+  }
+
+  private isEndpointRequired(party: RegroupConnectivityParty, endpoint: EndpointKind, direction: DirectionKind): boolean {
+    if (endpoint === 'base') {
+      return true
+    }
+    return direction === 'inbound' ? this.localParty.isActiveOld : party.isActiveOld
+  }
+
+  private getStatus(
+    party: RegroupConnectivityParty,
+    endpoint: EndpointKind,
+    direction: DirectionKind,
+  ): boolean | undefined {
+    if (!this.isEndpointRequired(party, endpoint, direction)) {
+      return undefined
+    }
+
+    const key = endpointKey(party.partyIdx, endpoint)
+    return direction === 'inbound' ? this.hasFreshInbound(key) : this.outboundConnected.has(key)
   }
 }
 
@@ -505,34 +529,35 @@ export async function resolveRegroupConnectivityCheck(options: Options): Promise
 }
 
 export function logResolvedRegroupConnectivityCheck(check: ResolvedRegroupConnectivityCheck): void {
-  console.log('Resolved regroup connectivity check:')
-  console.log(`  config: ${check.resolvedConfigPath}`)
-  console.log(`  chain id: ${check.config.chainId}`)
-  console.log(`  active old participants: ${check.activeOldPartyIps.length}`)
-  console.log(`  old threshold: ${check.config.oldThreshold} (requires ${check.config.oldThreshold + 1} old participants)`)
-  console.log(`  new parties: ${check.config.newPartyIps.length}`)
-  console.log(`  new threshold: ${check.config.newThreshold} (requires ${check.config.newThreshold + 1} signers)`)
-  console.log(`  committee position: ${check.localParty.partyIdx}`)
-  console.log(
+  const externalIps =
+    check.detectedExternalIps.length > 0
+      ? check.detectedExternalIps.join(', ')
+      : check.attemptedExternalLookup
+        ? '(none resolved)'
+        : '(not needed)'
+  const lines = [
+    'Resolved regroup connectivity check:',
+    `  config: ${check.resolvedConfigPath}`,
+    `  chain id: ${check.config.chainId}`,
+    `  active old participants: ${check.activeOldPartyIps.length}`,
+    `  old threshold: ${check.config.oldThreshold} (requires ${check.config.oldThreshold + 1} old participants)`,
+    `  new parties: ${check.config.newPartyIps.length}`,
+    `  new threshold: ${check.config.newThreshold} (requires ${check.config.newThreshold + 1} signers)`,
+    `  committee position: ${check.localParty.partyIdx}`,
     `  detected local IPv4s: ${check.detectedLocalIps.length > 0 ? check.detectedLocalIps.join(', ') : '(none detected)'}`,
-  )
-  console.log(
-    `  detected external IPv4s: ${
-      check.detectedExternalIps.length > 0
-        ? check.detectedExternalIps.join(', ')
-        : check.attemptedExternalLookup
-          ? '(none resolved)'
-          : '(not needed)'
-    }`,
-  )
-  console.log(`  firewall (ufw): ${check.firewallState}`)
-  console.log(`  party index source: ${check.resolution.source}`)
-  console.log(`  matched party IP: ${check.localParty.ip}`)
-  console.log(`  wrapper role: ${check.localParty.isActiveOld ? 'carry-over old member' : 'new-only member'}`)
-  console.log(`  base listen port: ${check.basePort}`)
-  console.log(`  regroup (+1000) listen port: ${check.localParty.regroupPort ?? '(not used on this machine)'}`)
-  console.log(`  check interval: ${Math.floor(CHECK_INTERVAL_MS / 1000)} seconds`)
-  console.log(`  peers to check (${check.peers.length}):`)
+    `  detected external IPv4s: ${externalIps}`,
+    `  firewall (ufw): ${check.firewallState}`,
+    `  party index source: ${check.resolution.source}`,
+    `  matched party IP: ${check.localParty.ip}`,
+    `  wrapper role: ${check.localParty.isActiveOld ? 'carry-over old member' : 'new-only member'}`,
+    `  base listen port: ${check.basePort}`,
+    `  regroup (+1000) listen port: ${check.localParty.regroupPort ?? '(not used on this machine)'}`,
+    `  check interval: ${Math.floor(CHECK_INTERVAL_MS / 1000)} seconds`,
+    `  peers to check (${check.peers.length}):`,
+  ]
+  for (const line of lines) {
+    console.log(line)
+  }
   for (const peer of check.peers) {
     console.log(
       `    party ${peer.partyIdx}: ${peer.ip} | ports: ${buildPeerPortsLabel(peer)}${peer.isActiveOld ? ' (base + regroup)' : ' (base only)'}`,
@@ -784,14 +809,9 @@ export async function runRegroupConnectivityCycle(
   onStateChange: () => void,
   signal?: AbortSignal,
 ): Promise<number> {
-  const outboundTasks: Promise<void>[] = []
-
-  for (const peer of check.peers) {
-    outboundTasks.push(connectOnce(peer, 'base', check, tracker, onStateChange, signal))
-    if (peer.isActiveOld) {
-      outboundTasks.push(connectOnce(peer, 'regroup', check, tracker, onStateChange, signal))
-    }
-  }
+  const outboundTasks = check.peers.flatMap((peer) =>
+    peerEndpointKinds(peer).map((endpoint) => connectOnce(peer, endpoint, check, tracker, onStateChange, signal)),
+  )
 
   await Promise.allSettled(outboundTasks)
   return tracker.hasPassed() ? 0 : 1
@@ -811,7 +831,7 @@ export async function main(): Promise<void> {
     renderer.requestRender(buildStatusLine())
   }
 
-  const servers: InboundServer[] = [
+  const servers = localEndpointKinds(check.localParty).map((endpoint) =>
     createInboundServer(
       check.config.chainId,
       check.localParty,
@@ -819,25 +839,10 @@ export async function main(): Promise<void> {
       tracker,
       sockets,
       requestRender,
-      'base',
-      check.basePort,
+      endpoint,
+      getEndpointPort(check.localParty, endpoint)!,
     ),
-  ]
-
-  if (check.localParty.isActiveOld && check.localParty.regroupPort !== undefined) {
-    servers.push(
-      createInboundServer(
-        check.config.chainId,
-        check.localParty,
-        peersByPartyIdx,
-        tracker,
-        sockets,
-        requestRender,
-        'regroup',
-        check.localParty.regroupPort,
-      ),
-    )
-  }
+  )
 
   const requestStop = () => {
     if (stopRequested) {
@@ -875,11 +880,7 @@ export async function main(): Promise<void> {
     throw error
   }
 
-  if (check.localParty.isActiveOld && check.localParty.regroupPort !== undefined) {
-    console.log(`Listening on 0.0.0.0:${check.basePort} and 0.0.0.0:${check.localParty.regroupPort}`)
-  } else {
-    console.log(`Listening on 0.0.0.0:${check.basePort}`)
-  }
+  console.log(`Listening on ${localEndpointKinds(check.localParty).map((endpoint) => `0.0.0.0:${getEndpointPort(check.localParty, endpoint)!}`).join(' and ')}`)
   console.log('This regroup connectivity check keeps running until you stop it.')
   console.log(`Rechecking every ${Math.floor(CHECK_INTERVAL_MS / 1000)} seconds.`)
   console.log('Press Ctrl+C to stop.')

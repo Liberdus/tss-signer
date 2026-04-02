@@ -231,10 +231,10 @@ function testTrackerForCarryOverLocalMember(): void {
 
   const snapshot = tracker.getSnapshot()
   assert.equal(snapshot[0].ready, true)
-  assert.equal(snapshot[1].baseInbound, true)
-  assert.equal(snapshot[1].baseOutbound, true)
-  assert.equal(snapshot[1].regroupInbound, true)
-  assert.equal(snapshot[1].regroupOutbound, undefined)
+  assert.equal(snapshot[1].endpoints.base.inbound, true)
+  assert.equal(snapshot[1].endpoints.base.outbound, true)
+  assert.equal(snapshot[1].endpoints.regroup.inbound, true)
+  assert.equal(snapshot[1].endpoints.regroup.outbound, undefined)
   assert.equal(snapshot[1].ready, true)
 }
 
@@ -249,8 +249,8 @@ function testTrackerForNewOnlyLocalMember(): void {
 
   tracker.markOutbound(oldPeer, 'regroup')
   const snapshot = tracker.getSnapshot()[0]
-  assert.equal(snapshot.regroupInbound, undefined)
-  assert.equal(snapshot.regroupOutbound, true)
+  assert.equal(snapshot.endpoints.regroup.inbound, undefined)
+  assert.equal(snapshot.endpoints.regroup.outbound, true)
   assert.equal(snapshot.ready, true)
 }
 
