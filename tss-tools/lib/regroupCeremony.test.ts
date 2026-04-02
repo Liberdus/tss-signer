@@ -79,8 +79,8 @@ function testDeriveRegroupCeremonyConfigForCarryOverMember(): void {
     '/ip4/145.223.74.11/tcp/43011',
     '/ip4/104.238.181.92/tcp/43011',
     '/ip4/172.232.45.137/tcp/43011',
-    '/ip4/66.228.53.24/tcp/43011',
-    '/ip4/198.74.61.203/tcp/43011',
+    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/198.74.61.203/tcp/42011',
   ])
   assert.equal(derived.newPeerAddrs.length, 7)
 }
@@ -102,8 +102,8 @@ function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
     '/ip4/145.223.74.11/tcp/43011',
     '/ip4/104.238.181.92/tcp/43011',
     '/ip4/172.232.45.137/tcp/43011',
-    '/ip4/66.228.53.24/tcp/43011',
-    '/ip4/198.74.61.203/tcp/43011',
+    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/198.74.61.203/tcp/42011',
   ])
 }
 
