@@ -348,6 +348,8 @@ Verify the EOA address is unchanged across all parties:
 npm run tss-verify -- --chain-id <CHAIN_ID>
 ```
 
+`tss-verify` reads `chainId` from the shared `keygen-config.json` if `--chain-id` is omitted.
+
 Then restart your TSS party process:
 
 ```bash
