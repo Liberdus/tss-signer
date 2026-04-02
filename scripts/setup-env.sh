@@ -174,15 +174,19 @@ if [ -d "$REPO_DIR" ]; then
         exit 1
     fi
 
-    # Find a backup name tss_signer_backup_1, _2, ... that does not exist
-    i=1
-    while true; do
-        BACKUP_DIR="$HOME/tss_signer_backup_$i"
-        if [ ! -e "$BACKUP_DIR" ]; then
-            break
-        fi
-        i=$((i + 1))
-    done
+    # Find a backup name with a timestamp in seconds (and fallback if collision)
+    BACKUP_DIR="$HOME/tss_signer_backup_$(date +%s)"
+    if [ -e "$BACKUP_DIR" ]; then
+        # Extremely unlikely, but fallback to sequence if the timestamp already exists.
+        i=1
+        while true; do
+            BACKUP_DIR="$HOME/tss_signer_backup_$(date +%s)_$i"
+            if [ ! -e "$BACKUP_DIR" ]; then
+                break
+            fi
+            i=$((i + 1))
+        done
+    fi
 
     echo -e "${YELLOW}Renaming existing $REPO_DIR to $BACKUP_DIR...${NC}"
     mv "$REPO_DIR" "$BACKUP_DIR"
