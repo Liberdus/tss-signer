@@ -74,7 +74,7 @@ function promptForVaultPassword(): string {
 
 function promptForNewVaultPassword(): string {
   while (true) {
-    const password = readlineSync.question('Enter BNB_TSS_PASSWORD for this vault: ', {
+    const password = readlineSync.question('Select BNB_TSS_PASSWORD for this vault: ', {
       hideEchoBack: true,
       mask: '',
     })
