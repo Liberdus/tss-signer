@@ -143,16 +143,34 @@ echo -e "\n${YELLOW}Installing PM2...${NC}"
 npm install -g pm2
 echo -e "${GREEN}PM2 installed!${NC}"
 
-# Clone and build TSS signer
-echo -e "\n${YELLOW}Cloning and building TSS signer...${NC}"
-git clone https://github.com/Liberdus/tss-signer.git
-cd tss-signer
+# Refresh the TSS signer repo in the user's home directory
+REPO_DIR="$HOME/tss-signer"
+REPO_URL="https://github.com/Liberdus/tss-signer.git"
+
+if [ -d "$REPO_DIR" ]; then
+    BACKUP_DIR="${REPO_DIR}.bak.$(date +%Y-%m-%d_%H-%M-%S)"
+    echo -e "\n${YELLOW}Existing $REPO_DIR found. Renaming it to $BACKUP_DIR...${NC}"
+    mv "$REPO_DIR" "$BACKUP_DIR"
+fi
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+    echo -e "\n${YELLOW}Cloning TSS signer into $REPO_DIR...${NC}"
+    git clone "$REPO_URL" "$REPO_DIR"
+fi
+
+echo -e "\n${YELLOW}Pulling latest TSS signer changes...${NC}"
+cd "$REPO_DIR"
+git pull --ff-only
+
+# Build TSS signer
+echo -e "\n${YELLOW}Installing dependencies and compiling TSS signer...${NC}"
 npm install
 npm run compile
 echo -e "${GREEN}TSS signer TypeScript compiled successfully!${NC}"
 
 # Fetch the upstream tss submodule
 echo -e "\n${YELLOW}Fetching native TSS submodule...${NC}"
+git submodule sync --recursive
 git submodule update --init --recursive
 
 # Bootstrap vendored Go toolchain if system go is missing or wrong version
