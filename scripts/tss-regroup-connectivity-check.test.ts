@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
+import net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as regroupCeremony from '../tss-tools/lib/regroupCeremony'
@@ -8,6 +9,7 @@ import {
   buildRegroupParties,
   detectFirewallState,
   logResolvedRegroupConnectivityCheck,
+  main as runRegroupConnectivityCheckMain,
   parseHelloMessage,
   RegroupConnectivityTracker,
   resolveRegroupConnectivityCheck,
@@ -18,8 +20,12 @@ type ConsoleMethod = (...args: any[]) => void
 async function captureConsoleLogs(fn: () => void | Promise<void>): Promise<string[]> {
   const logs: string[] = []
   const originalLog = console.log
+  const originalError = console.error
 
   console.log = ((...args: any[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '))
+  }) as ConsoleMethod
+  console.error = ((...args: any[]) => {
     logs.push(args.map((arg) => String(arg)).join(' '))
   }) as ConsoleMethod
 
@@ -27,9 +33,93 @@ async function captureConsoleLogs(fn: () => void | Promise<void>): Promise<strin
     await fn()
   } finally {
     console.log = originalLog
+    console.error = originalError
   }
 
   return logs
+}
+
+async function captureOutput(fn: () => void | Promise<void>): Promise<string> {
+  let output = ''
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout)
+  const originalStderrWrite = process.stderr.write.bind(process.stderr)
+
+  const captureWrite = (chunk: any, encoding?: BufferEncoding | ((error?: Error | null) => void), cb?: (error?: Error | null) => void) => {
+    output += String(chunk)
+    const callback = typeof encoding === 'function' ? encoding : cb
+    callback?.()
+    return true
+  }
+
+  ;(process.stdout.write as any) = captureWrite
+  ;(process.stderr.write as any) = captureWrite
+
+  try {
+    await fn()
+  } finally {
+    ;(process.stdout.write as any) = originalStdoutWrite
+    ;(process.stderr.write as any) = originalStderrWrite
+  }
+
+  return output
+}
+
+async function listenOnPort(server: net.Server, port: number): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.off('error', onError)
+      resolve()
+    }
+
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, '0.0.0.0')
+  })
+
+  return (server.address() as net.AddressInfo).port
+}
+
+async function closeServer(server: net.Server): Promise<void> {
+  if (!server.listening) {
+    return
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve()
+    })
+  })
+}
+
+async function reserveBusyRegroupPort(): Promise<{basePort: number; busyServer: net.Server; regroupPort: number}> {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const baseProbe = net.createServer()
+    const basePort = await listenOnPort(baseProbe, 0)
+    await closeServer(baseProbe)
+    const regroupPort = basePort + 1000
+
+    if (regroupPort > 65535) {
+      continue
+    }
+
+    const busyServer = net.createServer()
+    try {
+      await listenOnPort(busyServer, regroupPort)
+      return {basePort, busyServer, regroupPort}
+    } catch {
+      await closeServer(busyServer).catch(() => undefined)
+    }
+  }
+
+  throw new Error('could not reserve a busy regroup port for the startup cleanup test')
 }
 
 function testBuildRegroupParties(): void {
@@ -210,6 +300,63 @@ function testDetectFirewallStateReturnsKnownValue(): void {
   assert(['active', 'inactive', 'unknown'].includes(detectFirewallState()))
 }
 
+async function testMainClosesStartedServersOnSecondListenFailure(): Promise<void> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-regroup-connectivity-main-'))
+  const configPath = path.join(tempDir, 'regroup-config.json')
+  const config = {
+    chainId: 102,
+    oldPartyIps: ['10.0.0.1', '10.0.0.2'],
+    newPartyIps: ['10.0.0.1', '10.0.0.2'],
+    oldThreshold: 1,
+    newThreshold: 1,
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+
+  const originalResolveRegroupPartyIndex = regroupCeremony.resolveRegroupPartyIndex
+  const originalArgv = [...process.argv]
+  const originalExitCode = process.exitCode
+  const {basePort, busyServer, regroupPort} = await reserveBusyRegroupPort()
+
+  try {
+    ;(regroupCeremony as any).resolveRegroupPartyIndex = async () => ({
+      partyIdx: 1,
+      partyIp: '10.0.0.1',
+      source: 'local',
+      detectedLocalIps: ['10.0.0.1'],
+      detectedExternalIps: [],
+      attemptedExternalLookup: false,
+    })
+
+    process.argv = [
+      'node',
+      'dist/scripts/tss-regroup-connectivity-check.js',
+      '--config',
+      configPath,
+      '--port',
+      String(basePort),
+    ]
+    process.exitCode = undefined
+
+    const output = await captureOutput(async () => {
+      await runRegroupConnectivityCheckMain()
+    })
+
+    assert.equal(process.exitCode, 1)
+    assert(output.includes(`Port ${regroupPort} is already in use.`))
+    assert(output.includes("  pkill -f 'node dist/scripts/tss-regroup-connectivity-check.js' || true"))
+
+    const probe = net.createServer()
+    await listenOnPort(probe, basePort)
+    await closeServer(probe)
+  } finally {
+    ;(regroupCeremony as any).resolveRegroupPartyIndex = originalResolveRegroupPartyIndex
+    process.argv = originalArgv
+    process.exitCode = originalExitCode
+    await closeServer(busyServer)
+    fs.rmSync(tempDir, {recursive: true, force: true})
+  }
+}
+
 async function main(): Promise<void> {
   testBuildRegroupParties()
   testHelloMessageRoundTrip()
@@ -218,6 +365,7 @@ async function main(): Promise<void> {
   testTrackerForCarryOverLocalMember()
   testTrackerForNewOnlyLocalMember()
   await testResolvedConnectivityLogging()
+  await testMainClosesStartedServersOnSecondListenFailure()
   console.log('regroup connectivity check tests passed')
 }
 

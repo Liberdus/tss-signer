@@ -852,12 +852,21 @@ export async function main(): Promise<void> {
   process.once('SIGINT', requestStop)
   process.once('SIGTERM', requestStop)
 
+  const startedServers: net.Server[] = []
+  let listenPort: number | undefined
   try {
     for (const entry of servers) {
+      listenPort = entry.port
       await waitForServerListening(entry.server, entry.port)
+      startedServers.push(entry.server)
+      listenPort = undefined
     }
   } catch (error) {
-    const listenPort = servers.find((entry) => entry.server.listening === false)?.port
+    if (startedServers.length > 0) {
+      await closeServers(startedServers, sockets)
+    }
+    process.off('SIGINT', requestStop)
+    process.off('SIGTERM', requestStop)
     if (isPortInUseError(error) && listenPort !== undefined) {
       logPortInUseHelp(listenPort)
       process.exitCode = 1
