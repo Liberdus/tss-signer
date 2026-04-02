@@ -108,38 +108,52 @@ async function testConnectivityTrackerSuccess(): Promise<void> {
     {partyIdx: 2, ip: '10.0.0.2', port: 41011},
     {partyIdx: 3, ip: '10.0.0.3', port: 41011},
   ]
-  const tracker = new ConnectivityTracker(peers)
+  const tracker = new ConnectivityTracker(peers, () => 0, 1_000)
+
+  tracker.markInbound(peers[0])
+  tracker.markOutbound(peers[0])
+  tracker.markInbound(peers[1])
+  tracker.markOutbound(peers[1])
 
   const logs = await captureConsoleLogs(async () => {
-    tracker.markInbound(peers[0])
-    tracker.markOutbound(peers[0])
-    tracker.markInbound(peers[1])
-    tracker.markOutbound(peers[1])
-    assert.equal(tracker.printRoundSummary(), 0)
+    assert.equal(tracker.printStatus('Last updated: 12:00:00'), 0)
   })
 
   assert(logs.includes('Connectivity status:'))
   assert(logs.some((line) => line.includes('Party') && line.includes('Address') && line.includes('Ready')))
-  assert(logs.some((line) => line.includes('10.0.0.2:41011') && line.includes('✓') && line.includes('✓')))
-  assert(logs.includes('Overall: ✓ 2/2 peers ready'))
+  assert(logs.some((line) => line.includes('10.0.0.2:41011') && line.includes('OK') && line.includes('OK')))
+  assert(logs.includes('Overall: OK 2/2 peers ready'))
 }
 
-async function testConnectivityTrackerTimeoutSummary(): Promise<void> {
-  const peers = [
-    {partyIdx: 2, ip: '10.0.0.2', port: 41011},
-    {partyIdx: 3, ip: '10.0.0.3', port: 41011},
-  ]
-  const tracker = new ConnectivityTracker(peers)
+function testConnectivityTrackerInboundExpires(): void {
+  const peers = [{partyIdx: 2, ip: '10.0.0.2', port: 41011}]
+  let now = 0
+  const tracker = new ConnectivityTracker(peers, () => now, 1_000)
 
-  const logs = await captureConsoleLogs(async () => {
-    tracker.markInbound(peers[0])
-    tracker.markOutbound(peers[0])
-    assert.equal(tracker.printRoundSummary(), 1)
-  })
+  tracker.markInbound(peers[0])
+  tracker.markOutbound(peers[0])
+  assert.equal(tracker.getSnapshot()[0].ready, true)
 
-  assert(logs.includes('Connectivity status:'))
-  assert(logs.some((line) => line.includes('10.0.0.3:41011') && line.includes('X') && line.includes('X')))
-  assert(logs.includes('Overall: X 1/2 peers ready'))
+  now = 1_001
+  const snapshot = tracker.getSnapshot()[0]
+  assert.equal(snapshot.inbound, false)
+  assert.equal(snapshot.outbound, true)
+  assert.equal(snapshot.ready, false)
+}
+
+function testConnectivityTrackerOutboundFailureClearsStatus(): void {
+  const peers = [{partyIdx: 2, ip: '10.0.0.2', port: 41011}]
+  const tracker = new ConnectivityTracker(peers, () => 0, 1_000)
+
+  tracker.markInbound(peers[0])
+  tracker.markOutbound(peers[0])
+  assert.equal(tracker.getSnapshot()[0].ready, true)
+
+  tracker.markOutboundFailure(peers[0])
+  const snapshot = tracker.getSnapshot()[0]
+  assert.equal(snapshot.inbound, true)
+  assert.equal(snapshot.outbound, false)
+  assert.equal(snapshot.ready, false)
 }
 
 async function testResolvedConnectivityLogging(): Promise<void> {
@@ -170,6 +184,7 @@ async function testResolvedConnectivityLogging(): Promise<void> {
   })
 
   assert(logs.includes('  firewall (ufw): inactive'))
+  assert(logs.includes('  check interval: 5 seconds'))
 }
 
 function testDetectFirewallStateReturnsKnownValue(): void {
@@ -182,7 +197,8 @@ async function main(): Promise<void> {
   testDetectFirewallStateReturnsKnownValue()
   await testResolveConnectivityCheckWithPortOverride()
   await testConnectivityTrackerSuccess()
-  await testConnectivityTrackerTimeoutSummary()
+  testConnectivityTrackerInboundExpires()
+  testConnectivityTrackerOutboundFailureClearsStatus()
   await testResolvedConnectivityLogging()
   console.log('connectivity check tests passed')
 }
