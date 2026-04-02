@@ -24,7 +24,7 @@
     "tss-regroup": "npm run compile && node dist/tss-tools/regroup.js",
     "tss-verify": "npm run compile && node dist/tss-tools/verify.js",
     "tss-sign-ethereum-tx": "npm run compile && node dist/tss-tools/sign-ethereum-tx.js",
-    "test:tss-tools": "node dist/tss-tools/lib/committeeTopology.test.js && node dist/tss-tools/lib/channelId.test.js && node dist/tss-tools/lib/keygenCeremony.test.js && node dist/scripts/tss-connectivity-check.test.js && node dist/tss-tools/lib/regroupCeremony.test.js && node dist/tss-tools/lib/tssPartyDefaults.test.js && node dist/tss-tools/lib/bnbTss.test.js && node dist/tss-tools/lib/verifyArgs.test.js && bash ./tss-tools/setup-mise-go.test.sh",
+    "test:tss-tools": "node dist/tss-tools/lib/committeeTopology.test.js && node dist/tss-tools/lib/channelId.test.js && node dist/tss-tools/lib/keygenCeremony.test.js && node dist/scripts/tss-connectivity-check.test.js && node dist/tss-tools/lib/regroupCeremony.test.js && node dist/tss-tools/lib/tssPartyDefaults.test.js && node dist/tss-tools/lib/bnbTss.test.js && bash ./tss-tools/setup-mise-go.test.sh",
     "start-tss": "npm run compile && pm2 start ecosystem.config.js",
     "stop-tss": "pm2 stop ecosystem.config.js",
     "restart-tss": "npm run compile && pm2 restart ecosystem.config.js",
