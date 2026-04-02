@@ -148,8 +148,47 @@ REPO_DIR="$HOME/tss-signer"
 REPO_URL="https://github.com/Liberdus/tss-signer.git"
 
 if [ -d "$REPO_DIR" ]; then
-    BACKUP_DIR="${REPO_DIR}.bak.$(date +%Y-%m-%d_%H-%M-%S)"
-    echo -e "\n${YELLOW}Existing $REPO_DIR found. Renaming it to $BACKUP_DIR...${NC}"
+    echo -e "\n${YELLOW}Existing repository found at $REPO_DIR.${NC}"
+
+    # Prompt helper that works with or without /dev/tty.
+    prompt_with_default() {
+        local msg="$1" default="$2" input
+        if [ -t 0 ]; then
+            read -p "$msg" -r input
+        else
+            # Non-interactive environment: default answer when empty
+            printf "%s" "$msg"
+            read -r input || input=""
+        fi
+        if [ -z "$input" ] && [ -n "$default" ]; then
+            input="$default"
+        fi
+        REPLY="$input"
+    }
+
+    prompt_with_default "Do you want to rename the existing directory before continuing? (Y/n): " "Y"
+    echo
+
+    if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+        echo -e "${RED}User opted not to rename existing $REPO_DIR. Exiting.${NC}"
+        exit 1
+    fi
+
+    # Find a backup name with a timestamp in seconds (and fallback if collision)
+    BACKUP_DIR="$HOME/tss_signer_backup_$(date +%s)"
+    if [ -e "$BACKUP_DIR" ]; then
+        # Extremely unlikely, but fallback to sequence if the timestamp already exists.
+        i=1
+        while true; do
+            BACKUP_DIR="$HOME/tss_signer_backup_$(date +%s)_$i"
+            if [ ! -e "$BACKUP_DIR" ]; then
+                break
+            fi
+            i=$((i + 1))
+        done
+    fi
+
+    echo -e "${YELLOW}Renaming existing $REPO_DIR to $BACKUP_DIR...${NC}"
     mv "$REPO_DIR" "$BACKUP_DIR"
 fi
 
