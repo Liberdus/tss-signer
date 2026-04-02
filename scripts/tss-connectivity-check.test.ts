@@ -8,7 +8,6 @@ import {
   buildPeers,
   ConnectivityTracker,
   detectFirewallState,
-  formatParty,
   logResolvedConnectivityCheck,
   parseHelloMessage,
   resolveConnectivityCheck,
@@ -119,9 +118,10 @@ async function testConnectivityTrackerSuccess(): Promise<void> {
     assert.equal(tracker.printRoundSummary(), 0)
   })
 
-  assert(logs.includes('Connectivity check passed.'))
-  assert(logs.includes('  Outbound connections succeeded: 2/2'))
-  assert(logs.includes('  Inbound connections received: 2/2'))
+  assert(logs.includes('Connectivity status:'))
+  assert(logs.some((line) => line.includes('Party') && line.includes('Address') && line.includes('Ready')))
+  assert(logs.some((line) => line.includes('10.0.0.2:41011') && line.includes('✓') && line.includes('✓')))
+  assert(logs.includes('Overall: ✓ 2/2 peers ready'))
 }
 
 async function testConnectivityTrackerTimeoutSummary(): Promise<void> {
@@ -137,10 +137,9 @@ async function testConnectivityTrackerTimeoutSummary(): Promise<void> {
     assert.equal(tracker.printRoundSummary(), 1)
   })
 
-  assert(logs.includes('Connectivity check did not pass.'))
-  assert(logs.includes('Still waiting for these parties to connect to you:'))
-  assert(logs.includes(`  - ${formatParty(peers[1])}`))
-  assert(logs.includes('You could not connect to these parties:'))
+  assert(logs.includes('Connectivity status:'))
+  assert(logs.some((line) => line.includes('10.0.0.3:41011') && line.includes('X') && line.includes('X')))
+  assert(logs.includes('Overall: X 1/2 peers ready'))
 }
 
 async function testResolvedConnectivityLogging(): Promise<void> {
