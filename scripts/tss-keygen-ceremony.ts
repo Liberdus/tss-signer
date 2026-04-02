@@ -235,7 +235,7 @@ async function main(): Promise<void> {
   }
 
   console.log('\nKeygen complete. Set your vault password for this session:')
-  console.log("  export BNB_TSS_PASSWORD='<your-vault-password>'")
+  console.log('  export BNB_TSS_PASSWORD=your-vault-password')
 }
 
 main().catch((error) => {
