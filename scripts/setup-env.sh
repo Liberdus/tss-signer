@@ -148,8 +148,26 @@ REPO_DIR="$HOME/tss-signer"
 REPO_URL="https://github.com/Liberdus/tss-signer.git"
 
 if [ -d "$REPO_DIR" ]; then
-    BACKUP_DIR="${REPO_DIR}.bak.$(date +%Y-%m-%d_%H-%M-%S)"
-    echo -e "\n${YELLOW}Existing $REPO_DIR found. Renaming it to $BACKUP_DIR...${NC}"
+    echo -e "\n${YELLOW}Existing repository found at $REPO_DIR.${NC}"
+    read -p "Do you want to rename the existing directory before continuing? (Y/n): " -r < /dev/tty
+    echo
+
+    if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+        echo -e "${RED}User opted not to rename existing $REPO_DIR. Exiting.${NC}"
+        exit 1
+    fi
+
+    # Find a backup name tss_signer_backup_1, _2, ... that does not exist
+    i=1
+    while true; do
+        BACKUP_DIR="$HOME/tss_signer_backup_$i"
+        if [ ! -e "$BACKUP_DIR" ]; then
+            break
+        fi
+        i=$((i + 1))
+    done
+
+    echo -e "${YELLOW}Renaming existing $REPO_DIR to $BACKUP_DIR...${NC}"
     mv "$REPO_DIR" "$BACKUP_DIR"
 fi
 
