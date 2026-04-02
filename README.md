@@ -126,6 +126,7 @@ npm run tss-party
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
 npm run tss-keygen-ceremony -- --nonce 1
+npm run tss-regroup-connectivity-check
 npm run tss-verify -- --party 1
 npm run tss-regroup -- --party 1 --chain-id 97 --is-old --new-threshold 3 --new-parties 5
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file tx.json.example

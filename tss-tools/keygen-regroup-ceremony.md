@@ -268,7 +268,37 @@ Rules:
 - the local machine must appear in `newPartyIps`
 - duplicate IPs are rejected
 
-### 3. Run Regroup
+### 3. Run Regroup Connectivity Check
+
+Before regroup, every operator should run:
+
+```bash
+npm run tss-regroup-connectivity-check
+```
+
+Start it once on each machine. Operators do not need to start at the same time.
+
+Legend:
+
+```text
+In = peer connected to your port
+Out = you connected to the peer's port
+n/a = not required
+```
+
+Expected result:
+
+```text
+✓ ALL REQUIRED PEERS READY
+```
+
+and every peer row shows `Ready = OK`.
+
+If not, fix the network issue before attempting regroup.
+
+Once the banner is green and every peer row is `OK`, stop the regroup connectivity check with `Ctrl+C` and move on.
+
+### 4. Run Regroup
 
 Coordinate a start time, then each participating machine runs:
 
@@ -290,7 +320,7 @@ The wrapper:
 
 If any machine fails, rerun regroup together with a new nonce.
 
-### 4. Verify After Regroup
+### 5. Verify After Regroup
 
 After regroup, verify on all participating machines:
 
