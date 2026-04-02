@@ -66,6 +66,19 @@ function promptForVaultPassword(): string {
   }
 }
 
+function promptForNewVaultPassword(): string {
+  while (true) {
+    const password = readlineSync.question('Select BNB_TSS_PASSWORD for this vault: ', {
+      hideEchoBack: true,
+      mask: '',
+    })
+    if (password.length > 8) {
+      return password
+    }
+    console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
+  }
+}
+
 function verifyVaultPassword(signerRoot: string, chainId: number, homePath?: string): string {
   while (true) {
     const password = promptForVaultPassword()
@@ -154,7 +167,7 @@ async function main(): Promise<void> {
 
   let password: string
   if (vaultIsNew) {
-    password = promptForVaultPassword()
+    password = promptForNewVaultPassword()
     console.log(`Initializing vault for chain ${config.chainId}...`)
     await bnbTss.initParty({
       signerRoot,
