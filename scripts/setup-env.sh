@@ -149,7 +149,24 @@ REPO_URL="https://github.com/Liberdus/tss-signer.git"
 
 if [ -d "$REPO_DIR" ]; then
     echo -e "\n${YELLOW}Existing repository found at $REPO_DIR.${NC}"
-    read -p "Do you want to rename the existing directory before continuing? (Y/n): " -r < /dev/tty
+
+    # Prompt helper that works with or without /dev/tty.
+    prompt_with_default() {
+        local msg="$1" default="$2" input
+        if [ -t 0 ]; then
+            read -p "$msg" -r input
+        else
+            # Non-interactive environment: default answer when empty
+            printf "%s" "$msg"
+            read -r input || input=""
+        fi
+        if [ -z "$input" ] && [ -n "$default" ]; then
+            input="$default"
+        fi
+        REPLY="$input"
+    }
+
+    prompt_with_default "Do you want to rename the existing directory before continuing? (Y/n): " "Y"
     echo
 
     if [[ "$REPLY" =~ ^[Nn]$ ]]; then
