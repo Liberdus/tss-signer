@@ -169,8 +169,10 @@ The ceremony prints the resolved `listen addr` before launching keygen. If it di
 After keygen, each operator independently verifies their vault and displays the derived EOA address. No coordination needed for the command itself.
 
 ```bash
-npm run tss-verify -- --chain-id <CHAIN_ID>
+npm run tss-verify
 ```
+
+`tss-verify` reads `chainId` from the shared `keygen-config.json` if `--chain-id` is omitted.
 
 What to check:
 - The command completes without errors.
@@ -343,7 +345,7 @@ Use a fresh nonce for every retry.
 Verify the EOA address is unchanged across all parties:
 
 ```bash
-npm run tss-verify -- --chain-id <CHAIN_ID>
+npm run tss-verify
 ```
 
 Then restart your TSS party process:
