@@ -285,26 +285,37 @@ The check:
 - always checks the base regroup port derived from `chainId`
 - also checks the regroup `+1000` port for active old participants
 - prints a compact live status table
+- prints the exact port numbers in the table headers, for example `41021 In`, `41021 Out`, `42021 In`, `42021 Out`
+- prints `n/a` for directions that are not required on that machine or for that peer
+- shows a green `✓ ALL REQUIRED PEERS READY` banner when the regroup network is fully ready
 - prints a copy/paste cleanup command if one of the listen ports is already in use
 
 Port behavior:
 
-- `Base In` / `Base Out` must be `OK` for every peer
-- `+1000 In` is required only on carry-over old-member machines
-- `+1000 Out` is required only for peers that are active old participants
-- `-` means that `+1000` direction is not required for that row
+- `<basePort> In` / `<basePort> Out` must be `OK` for every peer
+- `<regroupPort> In` is required only on carry-over old-member machines
+- `<regroupPort> Out` is required only for peers that are active old participants
+- `n/a` means that direction is not required for that row
 
 Operators do not need to start it at the same time. Start it once on each machine and leave it running while the rest of the team gets set up.
 
-Wait until every operator sees every peer row show:
+Legend:
 
 ```text
-Base In = OK, Base Out = OK, Ready = OK
+In = peer connected to your port
+Out = you connected to the peer's port
+n/a = not required
 ```
 
-and every required `+1000` column also shows `OK`.
+Wait until every operator sees:
 
-If not, fix the network issue before attempting regroup. Once every required column is `OK`, stop the regroup connectivity check with `Ctrl+C` and move on.
+```text
+✓ ALL REQUIRED PEERS READY
+```
+
+and every peer row shows `Ready = OK`.
+
+If not, fix the network issue before attempting regroup. Once the banner is green and every peer row is `OK`, stop the regroup connectivity check with `Ctrl+C` and move on.
 
 ### 4. Run Regroup
 
