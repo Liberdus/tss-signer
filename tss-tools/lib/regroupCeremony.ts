@@ -76,6 +76,10 @@ function validateIpList(fieldName: string, value: unknown): string[] {
   return ips
 }
 
+function stripUtf8Bom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
 function buildCeremonyMaterial(config: RegroupCeremonyConfig, nonce: string): string {
   return JSON.stringify({
     purpose: 'tss-regroup-ceremony-v1',
@@ -167,7 +171,7 @@ export function loadRegroupCeremonyConfig(
   if (!fs.existsSync(resolvedPath)) {
     throw new Error(`Missing regroup config at ${resolvedPath}`)
   }
-  return validateRegroupCeremonyConfig(JSON.parse(fs.readFileSync(resolvedPath, 'utf8')) as unknown)
+  return validateRegroupCeremonyConfig(JSON.parse(stripUtf8Bom(fs.readFileSync(resolvedPath, 'utf8'))) as unknown)
 }
 
 export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOptions): string[] {

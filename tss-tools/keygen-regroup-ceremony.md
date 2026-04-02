@@ -268,7 +268,45 @@ Rules:
 - the local machine must appear in `newPartyIps`
 - duplicate IPs are rejected
 
-### 3. Run Regroup
+### 3. Run Regroup Connectivity Check
+
+Before regroup, have every operator run the regroup connectivity check on their own machine:
+
+```bash
+npm run tss-regroup-connectivity-check
+```
+
+The check:
+
+- resolves the local committee position from `newPartyIps`
+- checks the unique set of IPs across `oldPartyIps` and `newPartyIps`
+- keeps a live listener open until you stop it with `Ctrl+C`
+- continuously rechecks every peer every few seconds
+- always checks the base regroup port derived from `chainId`
+- also checks the regroup `+1000` port for active old participants
+- prints a compact live status table
+- prints a copy/paste cleanup command if one of the listen ports is already in use
+
+Port behavior:
+
+- `Base In` / `Base Out` must be `OK` for every peer
+- `+1000 In` is required only on carry-over old-member machines
+- `+1000 Out` is required only for peers that are active old participants
+- `-` means that `+1000` direction is not required for that row
+
+Operators do not need to start it at the same time. Start it once on each machine and leave it running while the rest of the team gets set up.
+
+Wait until every operator sees every peer row show:
+
+```text
+Base In = OK, Base Out = OK, Ready = OK
+```
+
+and every required `+1000` column also shows `OK`.
+
+If not, fix the network issue before attempting regroup. Once every required column is `OK`, stop the regroup connectivity check with `Ctrl+C` and move on.
+
+### 4. Run Regroup
 
 Coordinate a start time, then each participating machine runs:
 
@@ -290,7 +328,7 @@ The wrapper:
 
 If any machine fails, rerun regroup together with a new nonce.
 
-### 4. Verify After Regroup
+### 5. Verify After Regroup
 
 After regroup, verify on all participating machines:
 

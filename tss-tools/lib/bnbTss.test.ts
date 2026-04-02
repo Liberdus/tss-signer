@@ -28,13 +28,14 @@ function testResolveMisePlatformRejectsUnsupportedPlatforms(): void {
 }
 
 function testGetPartyHomeUsesCleanDefaultPathWhenRequested(): void {
+  const signerRoot = path.join(path.sep, 'tmp', 'tss')
   assert.equal(
     getPartyHome({
-      signerRoot: '/tmp/tss',
+      signerRoot,
       chainId: 201,
       useDefaultSlotPath: true,
     }),
-    '/tmp/tss/keystores/bnbtss/chain-201',
+    path.resolve(signerRoot, 'keystores', 'bnbtss', 'chain-201'),
   )
 }
 
@@ -58,13 +59,14 @@ function testGetPartyHomeFallsBackToLegacyPartyOnePath(): void {
 }
 
 function testGetPartyHomeKeepsIndexedManualPath(): void {
+  const signerRoot = path.join(path.sep, 'tmp', 'tss')
   assert.equal(
     getPartyHome({
-      signerRoot: '/tmp/tss',
+      signerRoot,
       partyIdx: 4,
       chainId: 201,
     }),
-    '/tmp/tss/keystores/bnbtss/party-4/chain-201',
+    path.resolve(signerRoot, 'keystores', 'bnbtss', 'party-4', 'chain-201'),
   )
 }
 

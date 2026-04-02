@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import * as path from 'node:path'
 import {DEFAULT_RUNTIME_PARTY_IDX, deriveObserverUrl, deriveTransactionsDbPath, resolveRuntimePartyIdx} from './tssPartyDefaults'
 
 function testResolveRuntimePartyIdxDefaultsToOne(): void {
@@ -31,7 +32,10 @@ function testDeriveObserverUrl(): void {
 }
 
 function testDeriveTransactionsDbPath(): void {
-  assert.equal(deriveTransactionsDbPath('/tmp/tss', 1), '/tmp/tss/db/transactions-1.sqlite')
+  assert.equal(
+    deriveTransactionsDbPath(path.join(path.sep, 'tmp', 'tss'), 1),
+    path.resolve(path.join(path.sep, 'tmp', 'tss'), 'db', 'transactions-1.sqlite'),
+  )
 }
 
 function main(): void {

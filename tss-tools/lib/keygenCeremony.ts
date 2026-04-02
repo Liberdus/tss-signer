@@ -59,6 +59,10 @@ function buildCeremonyMaterial(config: KeygenCeremonyConfig, nonce: string): str
   })
 }
 
+function stripUtf8Bom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
 export function resolveKeygenCeremonyConfigPath(
   configPath = DEFAULT_CONFIG_NAME,
   signerRoot = resolveProjectRoot(),
@@ -104,7 +108,7 @@ export function loadKeygenCeremonyConfig(
   if (!fs.existsSync(resolvedPath)) {
     throw new Error(`Missing keygen config at ${resolvedPath}`)
   }
-  return validateKeygenCeremonyConfig(JSON.parse(fs.readFileSync(resolvedPath, 'utf8')) as unknown)
+  return validateKeygenCeremonyConfig(JSON.parse(stripUtf8Bom(fs.readFileSync(resolvedPath, 'utf8'))) as unknown)
 }
 
 export function deriveKeygenThreshold(parties: number): number {
