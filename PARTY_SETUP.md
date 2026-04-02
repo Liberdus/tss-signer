@@ -172,6 +172,8 @@ After keygen, each operator independently verifies their vault and displays the 
 npm run tss-verify -- --chain-id <CHAIN_ID>
 ```
 
+`tss-verify` reads `chainId` from the shared `keygen-config.json` if `--chain-id` is omitted.
+
 What to check:
 - The command completes without errors.
 - The EOA address printed matches what the other operators see — all parties share the same public key / address.
@@ -345,6 +347,8 @@ Verify the EOA address is unchanged across all parties:
 ```bash
 npm run tss-verify -- --chain-id <CHAIN_ID>
 ```
+
+`tss-verify` reads `chainId` from the shared `keygen-config.json` if `--chain-id` is omitted.
 
 Then restart your TSS party process:
 

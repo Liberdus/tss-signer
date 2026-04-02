@@ -141,8 +141,10 @@ Important notes:
 After keygen succeeds, each operator verifies their vault:
 
 ```bash
-npm run tss-verify -- --chain-id <CHAIN_ID>
+npm run tss-verify
 ```
+
+`tss-verify` uses `chainId` from `keygen-config.json` if `--chain-id` is not passed.
 
 Check that:
 
@@ -290,7 +292,7 @@ If any machine fails, rerun regroup together with a new nonce.
 After regroup, verify on all participating machines:
 
 ```bash
-npm run tss-verify -- --chain-id <CHAIN_ID>
+npm run tss-verify
 ```
 
 The regrouped committee must converge on the same `ethereum_address`, and that address must remain unchanged from the pre-regroup committee.

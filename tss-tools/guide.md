@@ -202,9 +202,10 @@ npm run tss-keygen -- --party 5 --chain-id 80002
 
 
 # 11) Verify / derive the public key and address from a party vault
-npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890
-npm run tss-verify -- --party 2 --chain-id 97 --password 1234567890
-npm run tss-verify -- --party 3 --chain-id 97 --password 1234567890
+# If keygen-config.json is present, you can omit --chain-id and tss-verify will use its chainId.
+npm run tss-verify -- --party 1 --password 1234567890
+npm run tss-verify -- --party 2 --password 1234567890
+npm run tss-verify -- --party 3 --password 1234567890
 
 # All parties in the same committee should show the same:
 #   ethereum_address
@@ -212,10 +213,10 @@ npm run tss-verify -- --party 3 --chain-id 97 --password 1234567890
 #   public_key_compressed
 
 # Output formats:
-npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format all
-npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format ethereum-address
-npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format ethereum-pubkey
-npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890 --format compressed
+npm run tss-verify -- --party 1 --password 1234567890 --format all
+npm run tss-verify -- --party 1 --password 1234567890 --format ethereum-address
+npm run tss-verify -- --party 1 --password 1234567890 --format ethereum-pubkey
+npm run tss-verify -- --party 1 --password 1234567890 --format compressed
 
 
 # 12) Prepare an unsigned Ethereum transaction JSON
@@ -364,7 +365,7 @@ npm run tss-build
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
 npm run tss-keygen-ceremony -- --nonce 1
-npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890
+npm run tss-verify -- --party 1 --password 1234567890
 npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-regroup-ceremony -- --nonce 1
 npm run tss-regroup -- --party 4 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5

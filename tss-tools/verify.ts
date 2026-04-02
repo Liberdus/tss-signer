@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import 'dotenv/config'
 import * as bnbTss from './lib/bnbTss'
+import {loadKeygenCeremonyConfig} from './lib/keygenCeremony'
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/verify.js --chain-id <id> [--party <idx>=1..N] [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [--format compressed|ethereum-pubkey|ethereum-address|all]',
+    'Usage: node tss-tools/verify.js [--chain-id <id>] [--party <idx>=1..N] [--password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [--format compressed|ethereum-pubkey|ethereum-address|all]',
   );
+  console.error('If --chain-id is omitted, the verifier uses chainId from keygen-config.json.');
   process.exit(1);
 }
 
 function parseArgs(argv: string[]): bnbTss.VerifyOptions & {chainId: number; format: bnbTss.DerivePubkeyFormat} {
   const options: Partial<bnbTss.VerifyOptions> & {format: bnbTss.DerivePubkeyFormat} = {format: 'all'};
   let partyExplicit = false;
+  let chainIdExplicit = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = argv[i + 1];
@@ -23,6 +26,7 @@ function parseArgs(argv: string[]): bnbTss.VerifyOptions & {chainId: number; for
         break;
       case '--chain-id':
         options.chainId = Number.parseInt(value, 10);
+        chainIdExplicit = true;
         i += 1;
         break;
       case '--password':
@@ -57,7 +61,17 @@ function parseArgs(argv: string[]): bnbTss.VerifyOptions & {chainId: number; for
         usage();
     }
   }
-  if (!Number.isInteger(options.chainId)) usage();
+  if (chainIdExplicit) {
+    if (!Number.isInteger(options.chainId)) usage();
+  } else {
+    try {
+      options.chainId = loadKeygenCeremonyConfig().chainId;
+    } catch (error) {
+      throw new Error(
+        `Missing chain id. Pass --chain-id <id> or provide a valid keygen-config.json (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+  }
   if (!partyExplicit) {
     options.useDefaultSlotPath = true;
   }
