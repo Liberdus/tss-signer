@@ -169,7 +169,7 @@ The ceremony prints the resolved `listen addr` before launching keygen. If it di
 After keygen, each operator independently verifies their vault and displays the derived EOA address. No coordination needed for the command itself.
 
 ```bash
-npm run tss-verify
+npm run tss-verify -- --chain-id <CHAIN_ID>
 ```
 
 `tss-verify` reads `chainId` from the shared `keygen-config.json` if `--chain-id` is omitted.
