@@ -89,7 +89,7 @@ Rules:
 
 ## Step 2 — Run Connectivity Check
 
-> **Role: All party operators (simultaneously)**
+> **Role: All party operators**
 
 Before running keygen, confirm that every party can reach every other party on the derived TSS listen port.
 
@@ -102,24 +102,25 @@ npm run tss-connectivity-check
 The check:
 - Resolves the machine's committee position from `partyIps`
 - Derives the expected listen port from the chain ID
-- Opens a listener on that port and keeps it running until you exit
-- Runs one outbound connectivity pass against every other party on that port
-- Prints one clear line for each successful connection in both directions
-- Prints a compact status table with inbound, outbound, and ready columns
-- Prompts whether to exit or run another round while leaving the listener open
+- Opens a listener on that port and keeps it running until you stop it with `Ctrl+C`
+- Rechecks every other party on that port every few seconds
+- Updates a compact live status table with inbound, outbound, and ready columns
+- Prints a copy/paste cleanup command if the port is already in use
 
-If one operator starts early and another starts later, the early operator can leave the script running, then choose to run the check again after the later operator connects.
+Operators do not need to start it at the same time. Start it once on each machine and leave it running while the rest of the team gets set up.
 
-Wait for every operator to see:
+Wait for every operator to see every peer row show:
 
 ```text
-Overall: ✓ <N>/<N> peers ready
+In = OK, Out = OK, Ready = OK
 ```
 
 If any operator still sees `X` values in the status table, stop and fix the reported connectivity issue before attempting keygen. Common causes are:
 - the wrong IP address in `keygen-config.json`
 - the required port is not open in `ufw`
 - the required port is blocked by a cloud firewall
+
+Once every row is `OK`, stop the connectivity check with `Ctrl+C` and move on to keygen.
 
 If needed, you can override the derived port:
 
@@ -359,7 +360,7 @@ pm2 restart tss-party
 | Step | Who | Coordination needed |
 |---|---|---|
 | 1. Create `keygen-config.json` | One operator prepares, all operators apply | Share exact one-liner; agree on party IP order |
-| 2. Connectivity check (`tss-connectivity-check`) | All 5 simultaneously | Same config on all machines; all parties must pass before keygen |
+| 2. Connectivity check (`tss-connectivity-check`) | All 5 operators | Same config on all machines; start it once on each machine and wait for every peer row to show `OK` before keygen |
 | 3. Keygen (`tss-keygen-ceremony`) | All 5 simultaneously | Agree on start time and nonce; same config on all machines |
 | 4. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA address across all parties |
 | Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
@@ -394,4 +395,4 @@ After opening the port, rerun:
 npm run tss-connectivity-check
 ```
 
-Do not proceed to keygen until every operator sees `Connectivity check passed.`
+Do not proceed to keygen until every operator sees every peer row show `In = OK`, `Out = OK`, and `Ready = OK`.

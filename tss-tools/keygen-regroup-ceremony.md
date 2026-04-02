@@ -82,17 +82,20 @@ The check:
 
 - resolves the local committee position from `partyIps`
 - derives the expected listen port from `chainId`
-- opens a listener on that port
-- tests outbound connectivity to every other party
-- prints a compact status table
+- opens a listener on that port and keeps it running until you stop it with `Ctrl+C`
+- rechecks every other party every few seconds
+- prints a compact live status table
+- prints a copy/paste cleanup command if the port is already in use
 
-Wait until every operator sees:
+Operators do not need to start it at the same time. Start it once on each machine and leave it running while the rest of the team gets set up.
+
+Wait until every operator sees every peer row show:
 
 ```text
-Overall: ✓ <N>/<N> peers ready
+In = OK, Out = OK, Ready = OK
 ```
 
-If not, fix the network issue before attempting keygen.
+If not, fix the network issue before attempting keygen. Once every row is `OK`, stop the connectivity check with `Ctrl+C` and move on.
 
 ### 3. Run Keygen
 
