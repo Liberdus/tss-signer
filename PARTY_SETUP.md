@@ -107,6 +107,8 @@ The check:
 - Prints a short missing-party summary if any connection is blocked
 - Prompts whether to exit or run another round
 
+Each round stays open briefly so operators who start a little late still have time to connect.
+
 Wait for every operator to see:
 
 ```text

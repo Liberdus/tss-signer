@@ -40,7 +40,7 @@ type ResolvedConnectivityCheck = {
 
 const CONNECT_TIMEOUT_MS = 5_000
 const ROUND_START_DELAY_MS = 5_000
-const ROUND_WINDOW_MS = 10_000
+const ROUND_WINDOW_MS = 20_000
 
 function usage(exitCode = 1): never {
   console.error('Usage: node scripts/tss-connectivity-check.js [--config <path>] [--port <number>]')
