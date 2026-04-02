@@ -270,34 +270,13 @@ Rules:
 
 ### 3. Run Regroup Connectivity Check
 
-Before regroup, have every operator run the regroup connectivity check on their own machine:
+Before regroup, every operator should run:
 
 ```bash
 npm run tss-regroup-connectivity-check
 ```
 
-The check:
-
-- resolves the local committee position from `newPartyIps`
-- checks the unique set of IPs across `oldPartyIps` and `newPartyIps`
-- keeps a live listener open until you stop it with `Ctrl+C`
-- continuously rechecks every peer every few seconds
-- always checks the base regroup port derived from `chainId`
-- also checks the regroup `+1000` port for active old participants
-- prints a compact live status table
-- prints the exact port numbers in the table headers, for example `41021 In`, `41021 Out`, `42021 In`, `42021 Out`
-- prints `n/a` for directions that are not required on that machine or for that peer
-- shows a green `✓ ALL REQUIRED PEERS READY` banner when the regroup network is fully ready
-- prints a copy/paste cleanup command if one of the listen ports is already in use
-
-Port behavior:
-
-- `<basePort> In` / `<basePort> Out` must be `OK` for every peer
-- `<regroupPort> In` is required only on carry-over old-member machines
-- `<regroupPort> Out` is required only for peers that are active old participants
-- `n/a` means that direction is not required for that row
-
-Operators do not need to start it at the same time. Start it once on each machine and leave it running while the rest of the team gets set up.
+Start it once on each machine. Operators do not need to start at the same time.
 
 Legend:
 
@@ -307,7 +286,7 @@ Out = you connected to the peer's port
 n/a = not required
 ```
 
-Wait until every operator sees:
+Expected result:
 
 ```text
 ✓ ALL REQUIRED PEERS READY
@@ -315,7 +294,9 @@ Wait until every operator sees:
 
 and every peer row shows `Ready = OK`.
 
-If not, fix the network issue before attempting regroup. Once the banner is green and every peer row is `OK`, stop the regroup connectivity check with `Ctrl+C` and move on.
+If not, fix the network issue before attempting regroup.
+
+Once the banner is green and every peer row is `OK`, stop the regroup connectivity check with `Ctrl+C` and move on.
 
 ### 4. Run Regroup
 
