@@ -8,6 +8,21 @@ cd ~/tss-signer
 #
 # User-facing party indices start at 1.
 
+# Preferred remote multi-machine flow
+#
+# For remote multi-IP testing with the ceremony wrappers, see:
+#   tss-tools/keygen-regroup-ceremony.md
+#
+# That doc covers:
+# - shared `keygen-config.json` / `regroup-config.json`
+# - `npm run tss-connectivity-check`
+# - `npm run tss-keygen-ceremony -- --nonce <n>`
+# - `npm run tss-regroup-ceremony -- --nonce <n>`
+#
+# For the broader production/operator procedure, including observer/tss-party
+# startup and bridge integration steps, see:
+#   PARTY_SETUP.md
+
 
 # 1) Install Node dependencies
 npm install
@@ -96,7 +111,7 @@ export BNB_TSS_CHANNEL_PASSWORD=1234567890
 # want a smaller temporary committee.
 
 
-# 9) Init all parties first in separate terminals
+# 9) Manual indexed flow for local testing / debugging
 # The helper initializes the party home with a deterministic local listen port:
 #   port = 40000 + ((chainId % 1000) * 10) + partyIdx
 
@@ -348,8 +363,10 @@ npm run tss-party
 npm run tss-build
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
+npm run tss-keygen-ceremony -- --nonce 1
 npm run tss-verify -- --party 1 --chain-id 97 --password 1234567890
 npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
+npm run tss-regroup-ceremony -- --nonce 1
 npm run tss-regroup -- --party 4 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json

@@ -17,6 +17,8 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
   - Deterministic signing `channelPassword` derived from `channelId` and `SHARDUS_CRYPTO_HASH_KEY`.
 - `init.ts`, `keygen.ts`, `regroup.ts`, `verify.ts`, `sign-ethereum-tx.ts`
   - TypeScript entrypoints for native TSS flows. Compiled to `dist/tss-tools/*.js` by `npm run compile`.
+- `../scripts/tss-keygen-ceremony.ts`, `../scripts/tss-regroup-ceremony.ts`
+  - Higher-level ceremony wrappers for the normal multi-machine operator flow. They resolve committee position from shared ordered-IP config, derive deterministic channel credentials, and compute peer address topology automatically.
 - `derive-pubkey/main.go`
   - Go helper source staged into `../tss/.tooling` and run inside the patched `tss` module to derive an Ethereum pubkey/address from an existing vault. Used by `verify.ts` and post-keygen address derivation.
 - `build-tss.sh`
@@ -30,13 +32,21 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
 - `patch-peer-addrs/`
   - Standalone Go utility that patches the `peer_addrs` and `peers` fields inside each party's encrypted `config.json` vault file. Needed when keystores were generated locally (all peers on `127.0.0.1`) and must be deployed to separate machines with real public IPs. Built by `npm run tss-build` to `tss/.tooling/bin/patch-peer-addrs`. See [Patching peer addresses](#patching-peer-addresses) below.
 - `guide.md`
-  - Step-by-step operator guide for local native TSS workflows: build, init, keygen, verify, sign, regroup, runtime requirements.
+  - Operator guide covering both the preferred ceremony-based remote flow and the lower-level manual native workflows.
 - `patches/README.md`
   - Describes every change in `tss-source.patch`, the reason for each, and how to regenerate the patch.
 
 ## How it fits together
 
-The upstream `tss` source is fetched via Git submodule and patched locally before build/use. The patch is applied automatically by `build-tss.sh`. Native vaults are stored under:
+The upstream `tss` source is fetched via Git submodule and patched locally before build/use. The patch is applied automatically by `build-tss.sh`.
+
+Default ceremony-based vault layout:
+
+```
+keystores/bnbtss/chain-<chainId>/default/
+```
+
+Legacy indexed/manual vault layout:
 
 ```
 keystores/bnbtss/party-<idx>/chain-<chainId>/default/
@@ -44,7 +54,9 @@ keystores/bnbtss/party-<idx>/chain-<chainId>/default/
 
 User-facing party indices start at 1. The binary resolves to `tss/.tooling/bin/tss`.
 
-For the step-by-step operator workflow, see `guide.md`. For production multi-operator setup, see `../PARTY_SETUP.md`.
+For the remote multi-IP keygen/regroup test flow, see `keygen-regroup-ceremony.md`.
+For the broader production/operator procedure, see `../PARTY_SETUP.md`.
+For the lower-level operator workflow, see `guide.md`.
 
 ---
 
