@@ -433,3 +433,94 @@ func TestNormalizeRegroupPortsConfigWarnsWhenMonikerFallbackUsed(t *testing.T) {
 		t.Fatalf("expected fallback strategy in warning, got %q", string(stderrBytes))
 	}
 }
+
+func TestNormalizeRegroupPortsConfigDropsOnlyLocalhostSelfAddr(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	passphrase := "1234567890"
+
+	plain := map[string]interface{}{
+		"p2p": map[string]interface{}{
+			"listen":     "/ip4/0.0.0.0/tcp/44131",
+			"new_listen": "/ip4/0.0.0.0/tcp/44131",
+			"peer_addrs": []string{
+				"/ip4/127.0.0.1/tcp/44131",
+				"/ip4/127.0.0.1/tcp/44132",
+				"/ip4/127.0.0.1/tcp/44133",
+				"/ip4/127.0.0.1/tcp/44134",
+				"/ip4/127.0.0.1/tcp/44135",
+			},
+			"peers": []string{
+				"party-1-chain-1313@peer1",
+				"party-2-chain-1313@peer2",
+				"party-3-chain-1313@peer3",
+				"party-4-chain-1313@peer4",
+				"party-5-chain-1313@peer5",
+			},
+		},
+		"Moniker": "party-1-chain-1313",
+		"Id":      "peer1",
+	}
+	plainBytes, err := json.Marshal(plain)
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	enc, err := encrypt(plainBytes, passphrase, kdfParams{
+		Memory:      65536,
+		Iterations:  13,
+		Parallelism: 4,
+		SaltLength:  16,
+		KeyLength:   48,
+	})
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	sc := secretConfig{
+		Config:     enc,
+		ListenAddr: "/ip4/0.0.0.0/tcp/44131",
+	}
+	raw, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal secret config: %v", err)
+	}
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := normalizeRegroupPortsConfig(configPath, passphrase, 1313, 1, false); err != nil {
+		t.Fatalf("normalizeRegroupPortsConfig: %v", err)
+	}
+
+	updatedRaw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	var updated secretConfig
+	if err := json.Unmarshal(updatedRaw, &updated); err != nil {
+		t.Fatalf("unmarshal updated secret config: %v", err)
+	}
+	updatedPlain, err := decrypt(*updated.Config, passphrase)
+	if err != nil {
+		t.Fatalf("decrypt updated config: %v", err)
+	}
+	var updatedTss map[string]interface{}
+	if err := json.Unmarshal(updatedPlain, &updatedTss); err != nil {
+		t.Fatalf("unmarshal updated tss config: %v", err)
+	}
+	p2p := updatedTss["p2p"].(map[string]interface{})
+	gotPeerAddrs := p2p["peer_addrs"].([]interface{})
+	wantPeerAddrs := []string{
+		"/ip4/127.0.0.1/tcp/43132",
+		"/ip4/127.0.0.1/tcp/43133",
+		"/ip4/127.0.0.1/tcp/43134",
+		"/ip4/127.0.0.1/tcp/43135",
+	}
+	if len(gotPeerAddrs) != len(wantPeerAddrs) {
+		t.Fatalf("expected %d peer_addrs after dropping self entry, got %d", len(wantPeerAddrs), len(gotPeerAddrs))
+	}
+	for i, want := range wantPeerAddrs {
+		if gotPeerAddrs[i].(string) != want {
+			t.Fatalf("peer_addrs[%d]: want %s, got %s", i, want, gotPeerAddrs[i].(string))
+		}
+	}
+}

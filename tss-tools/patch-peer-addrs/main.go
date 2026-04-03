@@ -254,6 +254,18 @@ func normalizeLocalListenAddr(current string, port int) (string, error) {
 	return replaceTCPPort(current, port)
 }
 
+func isLocalSelfPeerAddr(addr string, listenAddr string, port int) bool {
+	normalized := strings.TrimSpace(addr)
+	if normalized == "" {
+		return false
+	}
+	if normalized == strings.TrimSpace(listenAddr) {
+		return true
+	}
+	return normalized == fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port) ||
+		normalized == fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)
+}
+
 func buildParties(chainId int, ips, peerIDs, monikers []string) []partyInfo {
 	parties := make([]partyInfo, len(ips))
 	for i := range ips {
@@ -501,6 +513,10 @@ func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explici
 	rawPeerAddrs, peerAddrsOK := p2p["peer_addrs"].([]interface{})
 	if peerAddrsOK {
 		normalizedPeerAddrs := make([]string, 0, len(rawPeerAddrs))
+		localListenPort := 0
+		if partyIdx > 0 {
+			localListenPort = derivePort(chainId, partyIdx)
+		}
 		for i := range rawPeerAddrs {
 			addr, ok := rawPeerAddrs[i].(string)
 			if !ok {
@@ -509,6 +525,9 @@ func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explici
 			normalizedAddr, err := normalizeRegroupAddrPort(addr, chainId)
 			if err != nil {
 				return err
+			}
+			if localListenPort > 0 && isLocalSelfPeerAddr(normalizedAddr, normalizedListen, localListenPort) {
+				continue
 			}
 			normalizedPeerAddrs = append(normalizedPeerAddrs, normalizedAddr)
 		}
