@@ -173,6 +173,22 @@ func derivePort(chainId, partyIdx int) int {
 	return 40000 + (chainId%1000)*10 + partyIdx
 }
 
+func normalizeRegroupPort(chainId, port int) int {
+	basePrefix := 40000 + (absInt(chainId)%1000)*10
+	candidateIdx := port - basePrefix - 1000
+	if candidateIdx >= 1 && derivePort(chainId, candidateIdx)+1000 == port {
+		return derivePort(chainId, candidateIdx)
+	}
+	return port
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 func derivePartyIdxFromMoniker(moniker string) (int, error) {
 	const prefix = "party-"
 	if !strings.HasPrefix(moniker, prefix) {
@@ -193,11 +209,6 @@ func derivePartyIdxFromMoniker(moniker string) (int, error) {
 	return idx, nil
 }
 
-func peerMoniker(expectedPeer string) string {
-	parts := strings.SplitN(expectedPeer, "@", 2)
-	return strings.TrimSpace(parts[0])
-}
-
 func replaceTCPPort(addr string, port int) (string, error) {
 	marker := "/tcp/"
 	idx := strings.LastIndex(addr, marker)
@@ -213,6 +224,27 @@ func replaceTCPPort(addr string, port int) (string, error) {
 		return "", fmt.Errorf("address %q does not contain a tcp port", addr)
 	}
 	return addr[:start] + strconv.Itoa(port) + addr[end:], nil
+}
+
+func normalizeRegroupAddrPort(addr string, chainId int) (string, error) {
+	marker := "/tcp/"
+	idx := strings.LastIndex(addr, marker)
+	if idx == -1 {
+		return "", fmt.Errorf("address %q does not contain /tcp/", addr)
+	}
+	start := idx + len(marker)
+	end := start
+	for end < len(addr) && addr[end] >= '0' && addr[end] <= '9' {
+		end++
+	}
+	if end == start {
+		return "", fmt.Errorf("address %q does not contain a tcp port", addr)
+	}
+	currentPort, err := strconv.Atoi(addr[start:end])
+	if err != nil {
+		return "", fmt.Errorf("invalid tcp port in %q", addr)
+	}
+	return replaceTCPPort(addr, normalizeRegroupPort(chainId, currentPort))
 }
 
 func normalizeLocalListenAddr(current string, port int) (string, error) {
@@ -400,7 +432,7 @@ func normalizeListenConfig(configPath, passphrase, listenAddr string) error {
 	return nil
 }
 
-func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explicitPartyIdx int) error {
+func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explicitPartyIdx int, useDefaultSlotPath bool) error {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", configPath, err)
@@ -427,9 +459,14 @@ func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explici
 	moniker, _ := tssConfig["Moniker"].(string)
 	partyIdx := explicitPartyIdx
 	if partyIdx == 0 {
-		partyIdx, err = derivePartyIdxFromMoniker(moniker)
-		if err != nil {
-			return err
+		if useDefaultSlotPath {
+			partyIdx = 1
+		} else {
+			partyIdx, err = derivePartyIdxFromMoniker(moniker)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: could not derive local party index from moniker %q; falling back to port-based regroup normalization\n", moniker)
+				partyIdx = 0
+			}
 		}
 	}
 
@@ -439,40 +476,37 @@ func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explici
 		tssConfig["p2p"] = p2p
 	}
 
-	basePort := derivePort(chainId, partyIdx)
 	currentListen := sc.ListenAddr
 	if listen, ok := p2p["listen"].(string); ok && strings.TrimSpace(listen) != "" {
 		currentListen = listen
 	}
-	normalizedListen, err := normalizeLocalListenAddr(currentListen, basePort)
-	if err != nil {
-		return err
+
+	var normalizedListen string
+	if partyIdx > 0 {
+		basePort := derivePort(chainId, partyIdx)
+		normalizedListen, err = normalizeLocalListenAddr(currentListen, basePort)
+		if err != nil {
+			return err
+		}
+	} else {
+		normalizedListen, err = normalizeRegroupAddrPort(currentListen, chainId)
+		if err != nil {
+			return err
+		}
 	}
 	sc.ListenAddr = normalizedListen
 	p2p["listen"] = normalizedListen
 	p2p["new_listen"] = ""
 
 	rawPeerAddrs, peerAddrsOK := p2p["peer_addrs"].([]interface{})
-	rawPeers, peersOK := p2p["peers"].([]interface{})
-	if peerAddrsOK && peersOK {
-		if len(rawPeerAddrs) != len(rawPeers) {
-			return fmt.Errorf("peer_addrs length %d does not match peers length %d", len(rawPeerAddrs), len(rawPeers))
-		}
+	if peerAddrsOK {
 		normalizedPeerAddrs := make([]string, 0, len(rawPeerAddrs))
 		for i := range rawPeerAddrs {
 			addr, ok := rawPeerAddrs[i].(string)
 			if !ok {
 				return fmt.Errorf("peer_addrs[%d] is not a string", i)
 			}
-			peer, ok := rawPeers[i].(string)
-			if !ok {
-				return fmt.Errorf("peers[%d] is not a string", i)
-			}
-			peerIdx, err := derivePartyIdxFromMoniker(peerMoniker(peer))
-			if err != nil {
-				return fmt.Errorf("derive peer index from %q: %w", peer, err)
-			}
-			normalizedAddr, err := replaceTCPPort(addr, derivePort(chainId, peerIdx))
+			normalizedAddr, err := normalizeRegroupAddrPort(addr, chainId)
 			if err != nil {
 				return err
 			}
@@ -515,14 +549,15 @@ func main() {
 	configPathFlag := flag.String("config-path", "", "Path to a single config.json file to patch directly")
 	setListenFlag := flag.String("set-listen", "", "Normalize the stored listen addr to this multiaddr and clear temporary p2p.new_listen")
 	normalizeRegroupPortsFlag := flag.Bool("normalize-regroup-ports", false, "Normalize a single stored config back to base ports after regroup")
+	useDefaultSlotPathFlag := flag.Bool("use-default-slot-path", false, "Treat regroup port normalization as default-slot based when no explicit local party index is provided")
 	flag.Parse()
 
 	if *normalizeRegroupPortsFlag {
 		if *configPathFlag == "" || *password == "" || *chainId == 0 {
-			fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --normalize-regroup-ports --config-path <path/to/config.json> --chain-id <id> --password <pass> [--party <idx>]")
+			fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --normalize-regroup-ports --config-path <path/to/config.json> --chain-id <id> --password <pass> [--party <idx>] [--use-default-slot-path]")
 			os.Exit(1)
 		}
-		if err := normalizeRegroupPortsConfig(*configPathFlag, *password, *chainId, *partyFlag); err != nil {
+		if err := normalizeRegroupPortsConfig(*configPathFlag, *password, *chainId, *partyFlag, *useDefaultSlotPathFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR normalizing regroup ports: %v\n", err)
 			os.Exit(1)
 		}

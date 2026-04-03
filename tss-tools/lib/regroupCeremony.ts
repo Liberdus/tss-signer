@@ -83,7 +83,7 @@ function buildCeremonyMaterial(config: RegroupCeremonyConfig, nonce: string): st
   return JSON.stringify({
     purpose: 'tss-regroup-ceremony-v1',
     chainId: config.chainId,
-    oldPartyIps: config.oldPartyIps,
+    oldPartyIps: sortIps(config.oldPartyIps),
     newPartyIps: config.newPartyIps,
     oldThreshold: config.oldThreshold,
     newThreshold: config.newThreshold,
@@ -217,27 +217,27 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
       if (isOld) {
         continue
       }
-      peerAddrs.push(getOldPeerAddr(ip, chainId))
+      pushUniqueAddr(peerAddrs, getOldPeerAddr(ip, chainId))
       continue
     }
-    peerAddrs.push(getOldPeerAddr(ip, chainId))
+    pushUniqueAddr(peerAddrs, getOldPeerAddr(ip, chainId))
   }
 
   for (const ip of oldAndNewIps) {
     if (ip === committeePartyIp) {
       if (isOld) {
-        peerAddrs.push(getNewPeerAddr(ip, chainId))
+        pushUniqueAddr(peerAddrs, getNewPeerAddr(ip, chainId))
       }
       continue
     }
-    peerAddrs.push(getNewPeerAddr(ip, chainId))
+    pushUniqueAddr(peerAddrs, getNewPeerAddr(ip, chainId))
   }
 
   for (const ip of newOnlyIps) {
     if (ip === committeePartyIp) {
       continue
     }
-    peerAddrs.push(getOldPeerAddr(ip, chainId))
+    pushUniqueAddr(peerAddrs, getOldPeerAddr(ip, chainId))
   }
 
   const expectedCount = oldThreshold + newParties

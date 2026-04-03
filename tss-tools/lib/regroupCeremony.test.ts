@@ -177,6 +177,24 @@ function testDeterministicRegroupChannelCredentials(): void {
   assert.match(channelPassword, /^[0-9a-f]+$/)
 }
 
+function testReorderedOldPartyIpsProduceSameChannelCredentials(): void {
+  const reordered = validateRegroupCeremonyConfig({
+    chainId: 97,
+    oldPartyIps: ['172.232.45.137', '145.223.74.11', '104.238.181.92'],
+    newPartyIps: config.newPartyIps,
+    oldThreshold: 2,
+    newThreshold: 3,
+  })
+  const fixedNow = new Date('2026-03-31T19:24:57Z')
+  const channelId = deriveDeterministicRegroupChannelId(config, '1', fixedNow)
+  const reorderedChannelId = deriveDeterministicRegroupChannelId(reordered, '1', fixedNow)
+  const channelPassword = deriveDeterministicRegroupChannelPassword(config, '1', channelId)
+  const reorderedChannelPassword = deriveDeterministicRegroupChannelPassword(reordered, '1', reorderedChannelId)
+
+  assert.equal(channelId, reorderedChannelId)
+  assert.equal(channelPassword, reorderedChannelPassword)
+}
+
 function main(): void {
   testValidateRegroupCeremonyConfigRejectsBadInput()
   testDeriveRegroupCeremonyConfigForCarryOverMember()
@@ -185,6 +203,7 @@ function main(): void {
   testDeriveOrderedRegroupPeerAddrsForNewOnlyMember()
   testReorderedOldPartyIpsProduceSameDerivedPeerAddrs()
   testDeterministicRegroupChannelCredentials()
+  testReorderedOldPartyIpsProduceSameChannelCredentials()
   console.log('regroup ceremony tests passed')
 }
 

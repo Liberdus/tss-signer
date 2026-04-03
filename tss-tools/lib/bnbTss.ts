@@ -1044,6 +1044,7 @@ export function normalizeStoredPostRegroupPorts(options: BasePartyOptions): void
       String(options.chainId),
       '--password',
       password,
+      ...(options.useDefaultSlotPath ? ['--use-default-slot-path'] : []),
       ...(Number.isInteger(options.partyIdx) ? ['--party', String(getEffectivePartyIdx(options))] : []),
     ],
     {

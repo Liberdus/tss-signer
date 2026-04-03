@@ -11,6 +11,8 @@ tx.json
 # Environment variables
 .env
 keygen-config.json
+regroup-config.json
+
 
 # Local Infura API keys (never commit)
 infura-keys.json
