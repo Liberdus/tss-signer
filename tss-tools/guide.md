@@ -220,18 +220,7 @@ npm run tss-verify -- --party 1 --password 1234567890 --format compressed
 
 
 # 12) Prepare an unsigned Ethereum transaction JSON
-# You can use tx.json.example or a custom file.
-cat > ./keystores/unsigned-tx.json <<'EOF'
-{
-  "to": "0x1111111111111111111111111111111111111111",
-  "value": "0x1",
-  "nonce": 0,
-  "gasLimit": 21000,
-  "gasPrice": "0x3b9aca00",
-  "data": "0x",
-  "chainId": 97
-}
-EOF
+# Use ethereum-tx.json.example (repo root) or a custom file.
 
 
 # 13) Sign an Ethereum transaction with threshold+1 parties
@@ -251,10 +240,10 @@ EOF
 # So all participating parties should start the command within the same
 # 30-minute bucket when using the sign-ethereum-tx.ts fallback.
 
-npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
-npm run tss-sign-ethereum-tx -- --party 2 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
-npm run tss-sign-ethereum-tx -- --party 3 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
-npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.json.example
+npm run tss-sign-ethereum-tx -- --party 2 --chain-id 97 --tx-file ethereum-tx.json.example
+npm run tss-sign-ethereum-tx -- --party 3 --chain-id 97 --tx-file ethereum-tx.json.example
+npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ethereum-tx.json.example
 
 # Expected JSON output:
 #   signed_tx
@@ -370,7 +359,7 @@ npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 3 --parties 
 npm run tss-regroup-ceremony -- --nonce 1
 npm run tss-regroup -- --party 4 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
-npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/unsigned-tx.json
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.json.example
 
 
 # 18) Sign bootstrap — flexible k-of-n signing and discovery timeout
@@ -388,10 +377,10 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ./keystores/un
 #     (still valid if ≥ threshold+1 parties are present)
 #
 # To extend the window (e.g. for high-latency multi-machine setups):
-npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json --sign_discovery_timeout 10s
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ethereum-tx.json.example --sign_discovery_timeout 10s
 #
 # To disable the window and require all n parties (strict mode):
-npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ./keystores/unsigned-tx.json --sign_discovery_timeout 0
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ethereum-tx.json.example --sign_discovery_timeout 0
 
 
 # 19) Test harness — verify sign bootstrap across delay scenarios

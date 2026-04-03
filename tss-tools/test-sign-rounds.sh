@@ -125,7 +125,7 @@ run_scenario() {
   for i in $(seq 1 "$PARTIES"); do
     local d="${delays[$((i-1))]}"
     (sleep "$d"; run_timed "$PARTY_TIMEOUT" env BNB_TSS_PASSWORD=1234567890 node dist/tss-tools/sign-ethereum-tx.js \
-      --party "$i" --chain-id 31338 --tx-file ./keystores/unsigned-tx.json \
+      --party "$i" --chain-id 31338 --tx-file ethereum-tx.json.example \
       --channel-id "$channel_id" \
       2>&1) >> "${SCRIPT_DIR}/test-party${i}.log" &
     pids+=( $! )

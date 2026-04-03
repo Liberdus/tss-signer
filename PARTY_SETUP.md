@@ -193,6 +193,30 @@ Each vault contains your unique key share. If it is lost, your party can no long
 
 ---
 
+## Step 5 — Test Signing
+
+> **Role: All party operators (simultaneously)**
+
+After verifying the keystores, confirm that the threshold signing ceremony actually works before starting the long-running bridge processes.
+
+**Coordinate a start time, then each operator runs on their own machine:**
+
+```bash
+npm run tss-sign-ethereum-tx -- --chain-id <CHAIN_ID> --tx-file ethereum-tx.json.example --sign_discovery_timeout 60s
+```
+
+The `--sign_discovery_timeout 60s` flag gives all parties a 60-second window to connect before signing proceeds. With 5 parties, signing succeeds as soon as `threshold + 1` (≥ 4) parties have joined.
+
+What to check:
+
+- Each operator's terminal should print a JSON result containing `signed_tx`, `tx_hash`, and `ethereum_address`.
+- The `ethereum_address` field must match the EOA address verified in Step 4 across all parties.
+- If fewer than `threshold + 1` parties join within the 60-second window, signing fails — confirm all operators started and retry.
+
+If signing fails, do not proceed to start the bridge processes. Diagnose the issue (connectivity, vault password mismatch, wrong chain ID) and retry. Use a new channel by waiting for the next 30-minute time bucket or passing explicit `--channel-id` and `--channel-password` flags.
+
+---
+
 ## Before Starting — Register the TSS Address in the Bridge Contract
 
 > **Role: Contract admin**
@@ -239,7 +263,7 @@ Restart the Liberdus proxy after updating the config.
 
 ---
 
-## Step 5 — Start the Observer and TSS Party
+## Step 6 — Start the Observer and TSS Party
 
 > **Role: Party operators**
 
@@ -357,6 +381,10 @@ Then restart your TSS party process:
 pm2 restart tss-party
 ```
 
+### Test signing after regroup
+
+Repeat [Step 5 — Test Signing](#step-5--test-signing) to confirm the new committee can produce a valid threshold signature before restarting the bridge processes.
+
 ---
 
 ## Summary
@@ -367,10 +395,11 @@ pm2 restart tss-party
 | 2. Connectivity check (`tss-connectivity-check`) | All 5 operators | Same config on all machines; start it once on each machine and wait for every peer row to show `OK` before keygen |
 | 3. Keygen (`tss-keygen-ceremony`) | All 5 simultaneously | Agree on start time and nonce; same config on all machines |
 | 4. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA address across all parties |
+| 5. Test signing (`tss-sign-ethereum-tx`) | All 5 simultaneously | Confirm threshold signing works; `ethereum_address` must match verified EOA |
 | Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
 | Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
 | Configure proxy `observer_urls` | Proxy admin | Update `config.json` with each party's real IP + observer port; restart proxy |
-| 5. Start observer + party | Each operator independently | TSS address must be registered, funded, and proxy configured; both processes required |
+| 6. Start observer + party | Each operator independently | TSS address must be registered, funded, and proxy configured; both processes required |
 | Regroup (when needed) | Old + new members | Share `regroup-config.json`; `threshold+1` old members required |
 
 ---
