@@ -6,6 +6,7 @@ import {
   deriveOrderedRegroupPeerAddrs,
   validateRegroupCeremonyConfig,
 } from './regroupCeremony'
+import {getIpBasedMoniker} from './bnbTss'
 
 const config = validateRegroupCeremonyConfig({
   chainId: 97,
@@ -195,6 +196,25 @@ function testReorderedOldPartyIpsProduceSameChannelCredentials(): void {
   assert.equal(channelPassword, reorderedChannelPassword)
 }
 
+function testReorderedNewPartyIpsKeepSameIpBasedMoniker(): void {
+  const reordered = validateRegroupCeremonyConfig({
+    chainId: 97,
+    oldPartyIps: config.oldPartyIps,
+    newPartyIps: ['198.74.61.203', '145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24'],
+    oldThreshold: 2,
+    newThreshold: 3,
+  })
+
+  const originalDerived = deriveRegroupCeremonyConfig(config, '198.74.61.203')
+  const reorderedDerived = deriveRegroupCeremonyConfig(reordered, '198.74.61.203')
+
+  assert.notEqual(originalDerived.committeePosition, reorderedDerived.committeePosition)
+  assert.equal(
+    getIpBasedMoniker(config.chainId, originalDerived.committeePartyIp),
+    getIpBasedMoniker(reordered.chainId, reorderedDerived.committeePartyIp),
+  )
+}
+
 function main(): void {
   testValidateRegroupCeremonyConfigRejectsBadInput()
   testDeriveRegroupCeremonyConfigForCarryOverMember()
@@ -204,6 +224,7 @@ function main(): void {
   testReorderedOldPartyIpsProduceSameDerivedPeerAddrs()
   testDeterministicRegroupChannelCredentials()
   testReorderedOldPartyIpsProduceSameChannelCredentials()
+  testReorderedNewPartyIpsKeepSameIpBasedMoniker()
   console.log('regroup ceremony tests passed')
 }
 

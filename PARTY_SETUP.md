@@ -81,8 +81,7 @@ EOF
 Share this exact one-liner with all operators so every machine has the same file contents. Each operator runs it on their own machine.
 
 Rules:
-- `partyIps` must be in the agreed committee order (position = party index)
-- every machine must use the same file contents
+- every machine must use the same `partyIps` list in the same order
 - the local machine's public IP must appear exactly once in `partyIps`
 
 ---
@@ -321,10 +320,6 @@ Regroup redistributes key shares to a new committee without changing the TSS Eth
 
 Regroup requires at least `oldThreshold + 1` old participants.
 
-### New-only members: initialize vault first
-
-If your machine was not part of the previous keygen, you need a vault before participating. Run the keygen ceremony wrapper on your machine with a `keygen-config.json` pointing only to your machine (or use `tss-init` directly) to initialize a local vault, then proceed to the regroup ceremony.
-
 ### Create the regroup config
 
 One operator prepares a shared `regroup-config.json` and distributes it to all participants:
@@ -344,7 +339,7 @@ EOF
 - `oldPartyIps` — IPs of the active old participants for this regroup
 - `oldPartyIps.length` must equal `oldThreshold + 1`
 - every `oldPartyIp` must also appear in `newPartyIps`
-- `newPartyIps` — ordered IPs of the incoming committee
+- `newPartyIps` — IPs of the incoming committee
 - Every participating machine must use the same file contents
 
 ### Run the regroup ceremony
@@ -375,15 +370,15 @@ npm run tss-verify -- --chain-id <CHAIN_ID>
 
 `tss-verify` reads `chainId` from the shared `keygen-config.json` if `--chain-id` is omitted.
 
+### Test signing after regroup
+
+Repeat [Step 5 — Test Signing](#step-5--test-signing) to confirm the new committee can produce a valid threshold signature before restarting the bridge processes.
+
 Then restart your TSS party process:
 
 ```bash
 pm2 restart tss-party
 ```
-
-### Test signing after regroup
-
-Repeat [Step 5 — Test Signing](#step-5--test-signing) to confirm the new committee can produce a valid threshold signature before restarting the bridge processes.
 
 ---
 

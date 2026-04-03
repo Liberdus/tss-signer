@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import {getMoniker, getPartyHome, readStoredListenAddr, resolveMisePlatform} from './bnbTss';
+import {getIpBasedMoniker, getMoniker, getPartyHome, readStoredListenAddr, resolveMisePlatform} from './bnbTss';
 
 function testResolveMisePlatformSupportsDarwinArm64(): void {
   assert.equal(resolveMisePlatform('darwin', 'arm64'), 'darwin-arm64');
@@ -74,6 +74,14 @@ function testGetMonikerKeepsIndexedFormat(): void {
   assert.equal(getMoniker(4, 201), 'party-4-chain-201')
 }
 
+function testGetIpBasedMonikerUsesStableIpFormat(): void {
+  assert.equal(getIpBasedMoniker(56, '69.164.244.104'), 'ip-69-164-244-104-chain-56')
+}
+
+function testGetIpBasedMonikerRejectsInvalidIpv4(): void {
+  assert.throws(() => getIpBasedMoniker(56, 'not-an-ip'), /Invalid IPv4 address/)
+}
+
 function testReadStoredListenAddrReadsOuterConfigListen(): void {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-listen-read-'))
   try {
@@ -99,6 +107,8 @@ function main(): void {
   testGetPartyHomeFallsBackToLegacyPartyOnePath();
   testGetPartyHomeKeepsIndexedManualPath();
   testGetMonikerKeepsIndexedFormat();
+  testGetIpBasedMonikerUsesStableIpFormat();
+  testGetIpBasedMonikerRejectsInvalidIpv4();
   testReadStoredListenAddrReadsOuterConfigListen();
   console.log('bnbTss tests passed');
 }

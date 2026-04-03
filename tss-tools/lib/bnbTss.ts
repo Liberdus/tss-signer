@@ -664,6 +664,18 @@ export function getMoniker(partyIdx: number, chainId: number): string {
   return `party-${partyIdx}-chain-${chainId}`;
 }
 
+export function getIpBasedMoniker(chainId: number, ip: string): string {
+  const normalizedIp = `${ip || ''}`.trim()
+  const octets = normalizedIp.split('.')
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !/^\d+$/.test(octet) || Number.parseInt(octet, 10) < 0 || Number.parseInt(octet, 10) > 255)
+  ) {
+    throw new Error(`Invalid IPv4 address for moniker derivation: ${ip}`)
+  }
+  return `ip-${octets.join('-')}-chain-${chainId}`
+}
+
 function getDefaultSlotMoniker(chainId: number, home: string): string {
   return `default-chain-${chainId}`;
 }

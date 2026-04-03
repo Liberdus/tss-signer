@@ -171,6 +171,7 @@ async function main(): Promise<void> {
   )
   console.log(`  party index source: ${resolution.source}`)
   console.log(`  matched party IP: ${derived.committeePartyIp}`)
+  console.log(`  vault moniker: ${bnbTss.getIpBasedMoniker(config.chainId, derived.committeePartyIp)}`)
   console.log(`  listen port: ${derived.listenPort}`)
   console.log(`  listen addr: ${derived.listenAddr}`)
   console.log(`  peer addrs (${derived.peerAddrs.length}): ${derived.peerAddrs.join(',')}`)
@@ -186,7 +187,7 @@ async function main(): Promise<void> {
       signerRoot,
       chainId: config.chainId,
       password,
-      moniker: bnbTss.getMoniker(derived.committeePosition, config.chainId),
+      moniker: bnbTss.getIpBasedMoniker(config.chainId, derived.committeePartyIp),
       homePath: vaultHome,
       useDefaultSlotPath: true,
     })

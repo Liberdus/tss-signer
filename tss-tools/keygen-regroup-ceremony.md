@@ -11,6 +11,8 @@ These wrappers are the recommended operator path for remote servers. They remove
 
 They resolve the local machine's committee position from shared config, derive deterministic channel credentials from the config plus `--nonce`, and launch the low-level commands with the correct arguments.
 
+For default-slot auto-init, the ceremony wrappers use an IP-based moniker derived from the matched machine IP. Reordering the shared IP list changes the current ceremony slot, but it no longer renames a wiped or reinitialized node.
+
 ## Shared Prerequisites
 
 On each participating machine:
@@ -69,6 +71,7 @@ Rules:
 - `partyIps` must be in the agreed committee order
 - every machine must use the same file contents
 - the local machine IP must appear exactly once in `partyIps`
+- committee order still determines the current ceremony slot, but not the auto-init moniker
 
 ### 2. Run Connectivity Check
 
@@ -116,6 +119,7 @@ The wrapper:
 - detects the machine's local IPv4 addresses
 - falls back to external IPv4 lookup if local detection is not enough
 - resolves the machine's committee position from `partyIps`
+- derives an IP-based moniker for default-slot auto-init from the matched party IP
 - prompts for the vault password
 - initializes the default-slot vault automatically if it does not yet exist
 - verifies the password against the existing vault if it already exists
@@ -264,6 +268,7 @@ Rules:
 - `oldPartyIps.length` must equal `oldThreshold + 1`
 - every `oldPartyIp` must also appear in `newPartyIps`
 - `newPartyIps` must be in the agreed new committee order
+- `newPartyIps` order determines the current ceremony slot, but not the auto-init moniker
 - every participating machine must use the same file contents
 - the local machine must appear in `newPartyIps`
 - duplicate IPs are rejected
@@ -311,6 +316,7 @@ Use a fresh nonce for every regroup retry.
 The wrapper:
 
 - detects the machine's committee position from `newPartyIps`
+- derives an IP-based moniker for default-slot auto-init from the matched party IP
 - determines automatically whether the machine is an old member or a new-only member
 - verifies the vault password, or initializes a new vault for new-only members if needed
 - derives deterministic regroup channel credentials from the config plus `--nonce`

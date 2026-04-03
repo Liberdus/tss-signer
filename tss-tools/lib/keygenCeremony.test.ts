@@ -15,6 +15,7 @@ import {
   validateKeygenCeremonyConfig,
   writeDerivedParamsConfig,
 } from './keygenCeremony'
+import {getIpBasedMoniker} from './bnbTss'
 
 const config = validateKeygenCeremonyConfig({
   chainId: 97,
@@ -99,6 +100,32 @@ function testDeriveKeygenCeremonyConfig(): void {
     '/ip4/159.89.207.131/tcp/40971',
     '/ip4/134.209.33.76/tcp/40971',
   ])
+}
+
+function testReorderedPartyIpsKeepSameIpBasedMoniker(): void {
+  const reordered = validateKeygenCeremonyConfig({
+    chainId: 97,
+    partyIps: [
+      '157.245.62.204',
+      '138.197.201.44',
+      '64.23.154.91',
+      '146.190.88.173',
+      '165.227.120.58',
+      '159.89.207.131',
+      '134.209.33.76',
+    ],
+  })
+
+  const originalDerived = deriveKeygenCeremonyConfig(config, 6)
+  const reorderedDerived = deriveKeygenCeremonyConfig(reordered, 1)
+
+  assert.equal(originalDerived.committeePartyIp, '157.245.62.204')
+  assert.equal(reorderedDerived.committeePartyIp, '157.245.62.204')
+  assert.notEqual(originalDerived.committeePosition, reorderedDerived.committeePosition)
+  assert.equal(
+    getIpBasedMoniker(config.chainId, originalDerived.committeePartyIp),
+    getIpBasedMoniker(reordered.chainId, reorderedDerived.committeePartyIp),
+  )
 }
 
 function testResolveKeygenVaultPreparationForNewVault(): void {
@@ -196,6 +223,7 @@ function main(): void {
   testDetectPartyIndexFromIps()
   testResolvePartyIndexFromCandidates()
   testDeriveKeygenCeremonyConfig()
+  testReorderedPartyIpsKeepSameIpBasedMoniker()
   testResolveKeygenVaultPreparationForNewVault()
   testResolveKeygenVaultPreparationForExistingVault()
   testResolveKeygenVaultPreparationUsesInitializedHome()
