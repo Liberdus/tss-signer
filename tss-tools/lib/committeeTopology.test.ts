@@ -19,12 +19,16 @@ function testDeriveLocalPeerAddrs(): void {
 }
 
 function testExtractCommitteeTopologyFromDescribeOutput(): void {
-  const output = `address of this vault: bnb1test\nconfig of this vault:\n{\n  "p2p": {\n    "peer_addrs": ["/ip4/127.0.0.1/tcp/43381"],\n    "peers": ["party-1@peerid1"]\n  }\n}`;
+  const output = `address of this vault: bnb1test\nconfig of this vault:\n{\n  "p2p": {\n    "listen": "/ip4/0.0.0.0/tcp/43382",\n    "new_listen": "",\n    "peer_addrs": ["/ip4/127.0.0.1/tcp/43381"],\n    "peers": ["party-1@peerid1"]\n  },\n  "Id": "peerid2",\n  "Moniker": "party-2"\n}`;
   const parsed = extractCommitteeTopologyFromDescribeOutput(output);
 
   assert.deepEqual(parsed, {
     peerAddrs: ['/ip4/127.0.0.1/tcp/43381'],
     expectedPeers: ['party-1@peerid1'],
+    listenAddr: '/ip4/0.0.0.0/tcp/43382',
+    newListenAddr: '',
+    peerId: 'peerid2',
+    moniker: 'party-2',
   });
 }
 
@@ -68,7 +72,7 @@ function testBuildKeygenArgsIncludesPeerAddrs(): void {
 function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember(): void {
   const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
     chainId: 31338,
-    parties: 3,
+    parties: 2,
     threshold: 1,
     newParties: 3,
     partyIdx: 1,
@@ -86,7 +90,7 @@ function testDeriveLocalRegroupPeerAddrsForCarryOverOldMember(): void {
 function testDeriveLocalRegroupPeerAddrsForNewOnlyMember(): void {
   const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
     chainId: 31338,
-    parties: 3,
+    parties: 2,
     threshold: 1,
     newParties: 3,
     partyIdx: 3,
@@ -112,7 +116,7 @@ function testBuildRegroupWrapperArgsUsesExplicitOverrides(): void {
 function testDeriveLocalRegroupPeerAddrsHasNoDuplicates(): void {
   const peerAddrs = bnbTss.deriveLocalRegroupPeerAddrs({
     chainId: 31338,
-    parties: 3,
+    parties: 2,
     threshold: 1,
     newParties: 3,
     partyIdx: 2,
@@ -127,7 +131,7 @@ function testDeriveLocalRegroupPeerAddrsRejectsMixedWrapperRoles(): void {
     () =>
       bnbTss.deriveLocalRegroupPeerAddrs({
         chainId: 31338,
-        parties: 3,
+        parties: 2,
         threshold: 1,
         newParties: 3,
         partyIdx: 1,
@@ -148,6 +152,10 @@ function testGetCommitteeTopologyUsesParsedDescribeOutput(): void {
   assert.deepEqual(parsed, {
     peerAddrs: ['/ip4/127.0.0.1/tcp/43382'],
     expectedPeers: ['party-2@peerid2'],
+    listenAddr: undefined,
+    newListenAddr: undefined,
+    peerId: undefined,
+    moniker: undefined,
   });
 }
 

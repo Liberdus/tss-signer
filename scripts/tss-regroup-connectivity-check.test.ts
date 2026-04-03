@@ -189,7 +189,7 @@ async function testResolveRegroupConnectivityCheckWithPortOverride(): Promise<vo
 
   try {
     ;(regroupCeremony as any).resolveRegroupPartyIndex = async () => ({
-      partyIdx: 5,
+      committeePosition: 5,
       partyIp: '10.0.0.5',
       source: 'local',
       detectedLocalIps: ['10.0.0.5'],
@@ -266,7 +266,7 @@ async function testResolvedConnectivityLogging(): Promise<void> {
         newThreshold: 3,
       },
       resolution: {
-        partyIdx: 5,
+        committeePosition: 5,
         partyIp: '10.0.0.5',
         source: 'local',
       },
@@ -319,7 +319,7 @@ async function testMainClosesStartedServersOnSecondListenFailure(): Promise<void
 
   try {
     ;(regroupCeremony as any).resolveRegroupPartyIndex = async () => ({
-      partyIdx: 1,
+      committeePosition: 1,
       partyIp: '10.0.0.1',
       source: 'local',
       detectedLocalIps: ['10.0.0.1'],

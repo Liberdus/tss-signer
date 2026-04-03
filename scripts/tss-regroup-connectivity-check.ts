@@ -506,10 +506,10 @@ export async function resolveRegroupConnectivityCheck(options: Options): Promise
   const basePort = options.port ?? bnbTss.getDefaultSlotListenPort(config.chainId)
   const regroupPort = getRegroupPort(basePort)
   const {activeOldPartyIps, parties} = buildRegroupParties(config, basePort)
-  const localParty = parties.find((party) => party.partyIdx === resolution.partyIdx)
+  const localParty = parties.find((party) => party.partyIdx === resolution.committeePosition)
 
   if (!localParty) {
-    throw new Error(`Failed to resolve local party ${resolution.partyIdx} from regroup-config.json`)
+    throw new Error(`Failed to resolve local party ${resolution.committeePosition} from regroup-config.json`)
   }
 
   return {

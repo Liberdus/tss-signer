@@ -14,7 +14,7 @@ const SIGN_CHANNEL_TIME_BUCKET_MS = 30 * 60 * 1000
 
 function usage(): never {
   console.error(
-    'Usage: node tss-tools/sign-ethereum-tx.js --chain-id <id> [--party <idx>=1..N] --tx-file <path> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [-- <extra sign args...>]',
+    'Usage: node tss-tools/sign-ethereum-tx.js --chain-id <id> [--party <idx>=1..N] --tx-file <path> [--password <value>] [--log_level <value>] [--channel-id <id>] [--channel-password <value>] [--vault <name>] [--home-root <path>] [--home-path <path>] [--use-default-slot-path] [--sign_discovery_timeout <value>] [-- <extra sign args...>]',
   );
   process.exit(1);
 }
@@ -57,6 +57,10 @@ function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {chainId: num
         break;
       case '--channel-password':
         options.channelPassword = value;
+        i += 1;
+        break;
+      case '--sign_discovery_timeout':
+        options.signDiscoveryTimeout = value;
         i += 1;
         break;
       case '--vault':

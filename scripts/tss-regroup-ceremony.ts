@@ -107,7 +107,7 @@ async function main(): Promise<void> {
   const resolvedConfigPath = resolveRegroupCeremonyConfigPath(options.configPath, signerRoot)
   const config = loadRegroupCeremonyConfig(options.configPath, signerRoot)
   const resolution = await resolveRegroupPartyIndex(config)
-  const derived = deriveRegroupCeremonyConfig(config, resolution.partyIdx)
+  const derived = deriveRegroupCeremonyConfig(config, resolution.partyIp)
   const vaultHome = bnbTss.getPartyHome({
     signerRoot,
     chainId: config.chainId,

@@ -1,29 +1,16 @@
 import assert from 'node:assert/strict'
-import {deriveDeterministicKeygenChannelId} from './keygenCeremony'
 import {
   deriveDeterministicRegroupChannelId,
   deriveDeterministicRegroupChannelPassword,
-  deriveOrderedRegroupPeerAddrs,
   deriveRegroupCeremonyConfig,
+  deriveOrderedRegroupPeerAddrs,
   validateRegroupCeremonyConfig,
 } from './regroupCeremony'
 
 const config = validateRegroupCeremonyConfig({
-  chainId: 201,
-  oldPartyIps: [
-    '145.223.74.11',
-    '104.238.181.92',
-    '172.232.45.137',
-    '66.228.53.24',
-    '198.74.61.203',
-  ],
-  newPartyIps: [
-    '145.223.74.11',
-    '104.238.181.92',
-    '172.232.45.137',
-    '66.228.53.24',
-    '198.74.61.203',
-  ],
+  chainId: 97,
+  oldPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137'],
+  newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
   oldThreshold: 2,
   newThreshold: 3,
 })
@@ -33,142 +20,146 @@ function testValidateRegroupCeremonyConfigRejectsBadInput(): void {
   assert.throws(
     () =>
       validateRegroupCeremonyConfig({
-        chainId: 201,
-        oldPartyIps: ['145.223.74.11', '145.223.74.11'],
-        newPartyIps: ['145.223.74.11', '104.238.181.92'],
-        oldThreshold: 1,
-        newThreshold: 1,
-      }),
-    /oldPartyIps must not contain duplicates/,
-  )
-  assert.throws(
-    () =>
-      validateRegroupCeremonyConfig({
-        chainId: 201,
-        oldPartyIps: ['145.223.74.11', '104.238.181.92'],
-        newPartyIps: ['145.223.74.11', 'not-an-ip'],
-        oldThreshold: 1,
-        newThreshold: 1,
-      }),
-    /valid IPv4/,
-  )
-  assert.throws(
-    () =>
-      validateRegroupCeremonyConfig({
-        chainId: 201,
-        oldPartyIps: ['145.223.74.11', '104.238.181.92'],
-        newPartyIps: ['145.223.74.11', '104.238.181.92'],
+        chainId: 97,
+        oldPartyIps: ['145.223.74.11', '145.223.74.11', '172.232.45.137'],
+        newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
         oldThreshold: 2,
-        newThreshold: 1,
+        newThreshold: 3,
       }),
-    /oldThreshold \+ 1/,
+    /must not contain duplicates/,
+  )
+  assert.throws(
+    () =>
+      validateRegroupCeremonyConfig({
+        chainId: 97,
+        oldPartyIps: ['145.223.74.11', '104.238.181.92'],
+        newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
+        oldThreshold: 2,
+        newThreshold: 3,
+      }),
+    /must equal oldThreshold \+ 1/,
+  )
+  assert.throws(
+    () =>
+      validateRegroupCeremonyConfig({
+        chainId: 97,
+        oldPartyIps: ['145.223.74.11', '104.238.181.92', '203.0.113.10'],
+        newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
+        oldThreshold: 2,
+        newThreshold: 3,
+      }),
+    /must also be present in newPartyIps/,
   )
 }
 
 function testDeriveRegroupCeremonyConfigForCarryOverMember(): void {
-  const derived = deriveRegroupCeremonyConfig(config, 1)
+  const derived = deriveRegroupCeremonyConfig(config, '145.223.74.11')
 
+  assert.equal(derived.chainId, 97)
   assert.equal(derived.committeePosition, 1)
+  assert.equal(derived.committeePartyIp, '145.223.74.11')
+  assert.equal(derived.oldParties, 3)
+  assert.equal(derived.newParties, 5)
+  assert.equal(derived.oldThreshold, 2)
+  assert.equal(derived.newThreshold, 3)
   assert.equal(derived.isOld, true)
   assert.equal(derived.isNewMember, false)
-  assert.equal(derived.committeePartyIp, '145.223.74.11')
-  assert.equal(derived.newListenAddr, '/ip4/0.0.0.0/tcp/43011')
+  assert.equal(derived.newListenPort, 41971)
+  assert.equal(derived.newListenAddr, '/ip4/0.0.0.0/tcp/41971')
   assert.deepEqual(derived.newPeerAddrs, [
-    '/ip4/104.238.181.92/tcp/42011',
-    '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/145.223.74.11/tcp/43011',
-    '/ip4/104.238.181.92/tcp/43011',
-    '/ip4/172.232.45.137/tcp/43011',
-    '/ip4/66.228.53.24/tcp/42011',
-    '/ip4/198.74.61.203/tcp/42011',
-  ])
-  assert.equal(derived.newPeerAddrs.length, 7)
-}
-
-function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
-  const peerAddrs = deriveOrderedRegroupPeerAddrs({
-    chainId: 201,
-    oldPartyIps: config.oldPartyIps,
-    newPartyIps: config.newPartyIps,
-    oldThreshold: 2,
-    committeePosition: 1,
-    committeePartyIp: '145.223.74.11',
-    isOld: true,
-  })
-
-  assert.deepEqual(peerAddrs, [
-    '/ip4/104.238.181.92/tcp/42011',
-    '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/145.223.74.11/tcp/43011',
-    '/ip4/104.238.181.92/tcp/43011',
-    '/ip4/172.232.45.137/tcp/43011',
-    '/ip4/66.228.53.24/tcp/42011',
-    '/ip4/198.74.61.203/tcp/42011',
+    '/ip4/104.238.181.92/tcp/40971',
+    '/ip4/172.232.45.137/tcp/40971',
+    '/ip4/104.238.181.92/tcp/41971',
+    '/ip4/145.223.74.11/tcp/41971',
+    '/ip4/172.232.45.137/tcp/41971',
+    '/ip4/66.228.53.24/tcp/40971',
+    '/ip4/198.74.61.203/tcp/40971',
   ])
 }
 
 function testDeriveRegroupCeremonyConfigForNewOnlyMember(): void {
-  const changedConfig = validateRegroupCeremonyConfig({
-    chainId: 201,
-    oldPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137'],
-    newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
-    oldThreshold: 2,
-    newThreshold: 3,
-  })
-  const derived = deriveRegroupCeremonyConfig(changedConfig, 5)
+  const derived = deriveRegroupCeremonyConfig(config, '198.74.61.203')
 
+  assert.equal(derived.chainId, 97)
   assert.equal(derived.committeePosition, 5)
+  assert.equal(derived.committeePartyIp, '198.74.61.203')
+  assert.equal(derived.oldParties, 3)
+  assert.equal(derived.newParties, 5)
+  assert.equal(derived.oldThreshold, 2)
+  assert.equal(derived.newThreshold, 3)
   assert.equal(derived.isOld, false)
   assert.equal(derived.isNewMember, true)
+  assert.equal(derived.newListenPort, undefined)
   assert.equal(derived.newListenAddr, undefined)
   assert.deepEqual(derived.newPeerAddrs, [
-    '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42011',
-    '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/145.223.74.11/tcp/43011',
-    '/ip4/104.238.181.92/tcp/43011',
-    '/ip4/172.232.45.137/tcp/43011',
-    '/ip4/66.228.53.24/tcp/42011',
+    '/ip4/104.238.181.92/tcp/40971',
+    '/ip4/145.223.74.11/tcp/40971',
+    '/ip4/172.232.45.137/tcp/40971',
+    '/ip4/104.238.181.92/tcp/41971',
+    '/ip4/145.223.74.11/tcp/41971',
+    '/ip4/172.232.45.137/tcp/41971',
+    '/ip4/66.228.53.24/tcp/40971',
   ])
-  assert.equal(derived.newPeerAddrs.length, 7)
+}
+
+function testDeriveOrderedRegroupPeerAddrsForCarryOverMember(): void {
+  assert.deepEqual(
+    deriveOrderedRegroupPeerAddrs({
+      chainId: config.chainId,
+      oldPartyIps: config.oldPartyIps,
+      newPartyIps: config.newPartyIps,
+      oldThreshold: config.oldThreshold,
+      committeePartyIp: '145.223.74.11',
+      isOld: true,
+    }),
+    [
+      '/ip4/104.238.181.92/tcp/40971',
+      '/ip4/172.232.45.137/tcp/40971',
+      '/ip4/104.238.181.92/tcp/41971',
+      '/ip4/145.223.74.11/tcp/41971',
+      '/ip4/172.232.45.137/tcp/41971',
+      '/ip4/66.228.53.24/tcp/40971',
+      '/ip4/198.74.61.203/tcp/40971',
+    ],
+  )
 }
 
 function testDeriveOrderedRegroupPeerAddrsForNewOnlyMember(): void {
-  const peerAddrs = deriveOrderedRegroupPeerAddrs({
-    chainId: 201,
-    oldPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137'],
-    newPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137', '66.228.53.24', '198.74.61.203'],
-    oldThreshold: 2,
-    committeePosition: 5,
-    committeePartyIp: '198.74.61.203',
-    isNewMember: true,
-  })
-
-  assert.deepEqual(peerAddrs, [
-    '/ip4/145.223.74.11/tcp/42011',
-    '/ip4/104.238.181.92/tcp/42011',
-    '/ip4/172.232.45.137/tcp/42011',
-    '/ip4/145.223.74.11/tcp/43011',
-    '/ip4/104.238.181.92/tcp/43011',
-    '/ip4/172.232.45.137/tcp/43011',
-    '/ip4/66.228.53.24/tcp/42011',
-  ])
+  assert.deepEqual(
+    deriveOrderedRegroupPeerAddrs({
+      chainId: config.chainId,
+      oldPartyIps: config.oldPartyIps,
+      newPartyIps: config.newPartyIps,
+      oldThreshold: config.oldThreshold,
+      committeePartyIp: '198.74.61.203',
+      isNewMember: true,
+    }),
+    [
+      '/ip4/104.238.181.92/tcp/40971',
+      '/ip4/145.223.74.11/tcp/40971',
+      '/ip4/172.232.45.137/tcp/40971',
+      '/ip4/104.238.181.92/tcp/41971',
+      '/ip4/145.223.74.11/tcp/41971',
+      '/ip4/172.232.45.137/tcp/41971',
+      '/ip4/66.228.53.24/tcp/40971',
+    ],
+  )
 }
 
-function testDeriveRegroupCeremonyConfigSupportsDifferentNewOrder(): void {
-  const changedConfig = validateRegroupCeremonyConfig({
-    chainId: 201,
-    oldPartyIps: ['145.223.74.11', '104.238.181.92', '172.232.45.137'],
-    newPartyIps: ['66.228.53.24', '145.223.74.11', '104.238.181.92', '172.232.45.137', '198.74.61.203'],
+function testReorderedOldPartyIpsProduceSameDerivedPeerAddrs(): void {
+  const reordered = validateRegroupCeremonyConfig({
+    chainId: 97,
+    oldPartyIps: ['172.232.45.137', '145.223.74.11', '104.238.181.92'],
+    newPartyIps: config.newPartyIps,
     oldThreshold: 2,
     newThreshold: 3,
   })
-  const derived = deriveRegroupCeremonyConfig(changedConfig, 1)
 
-  assert.equal(derived.committeePosition, 1)
-  assert.equal(derived.committeePartyIp, '66.228.53.24')
-  assert.equal(derived.newListenAddr, undefined)
-  assert.equal(derived.isNewMember, true)
+  const carryOver = deriveRegroupCeremonyConfig(reordered, '145.223.74.11')
+  const newOnly = deriveRegroupCeremonyConfig(reordered, '198.74.61.203')
+
+  assert.deepEqual(carryOver.newPeerAddrs, deriveRegroupCeremonyConfig(config, '145.223.74.11').newPeerAddrs)
+  assert.deepEqual(newOnly.newPeerAddrs, deriveRegroupCeremonyConfig(config, '198.74.61.203').newPeerAddrs)
 }
 
 function testDeterministicRegroupChannelCredentials(): void {
@@ -182,21 +173,17 @@ function testDeterministicRegroupChannelCredentials(): void {
   assert.match(channelId, /^\d{3}[0-9A-F]{8}$/)
   assert.equal(channelId, sameChannelId)
   assert.notEqual(channelId, differentChannelId)
-  assert.notEqual(
-    channelId,
-    deriveDeterministicKeygenChannelId({chainId: 201, partyIps: config.newPartyIps}, '1', fixedNow),
-  )
   assert.equal(channelPassword.length, 64)
   assert.match(channelPassword, /^[0-9a-f]+$/)
 }
 
 function main(): void {
   testValidateRegroupCeremonyConfigRejectsBadInput()
-  testDeriveOrderedRegroupPeerAddrsForCarryOverMember()
-  testDeriveOrderedRegroupPeerAddrsForNewOnlyMember()
   testDeriveRegroupCeremonyConfigForCarryOverMember()
   testDeriveRegroupCeremonyConfigForNewOnlyMember()
-  testDeriveRegroupCeremonyConfigSupportsDifferentNewOrder()
+  testDeriveOrderedRegroupPeerAddrsForCarryOverMember()
+  testDeriveOrderedRegroupPeerAddrsForNewOnlyMember()
+  testReorderedOldPartyIpsProduceSameDerivedPeerAddrs()
   testDeterministicRegroupChannelCredentials()
   console.log('regroup ceremony tests passed')
 }

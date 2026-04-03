@@ -13,6 +13,7 @@ const DEFAULT_GO_VERSION = '1.20.3';
 const DEFAULT_MISE_VERSION = 'v2026.3.8';
 const DEFAULT_BINARY_NAME = 'tss';
 const DEFAULT_DERIVE_BINARY_NAME = 'tss-derive-pubkey';
+const DEFAULT_PATCH_PEER_ADDRS_BINARY_NAME = 'patch-peer-addrs';
 export const SIGNING_TIMEOUT_ERROR = 'signing-timeout';
 
 const REGROUP_LISTEN_PORT_OFFSET = 1000;
@@ -36,6 +37,10 @@ type InitializedParty = {
   vaultName: string
   binary: string
   tssRoot: string
+}
+
+type StoredVaultConfig = {
+  listen?: string
 }
 
 type DerivedPubkeyAll = {
@@ -143,6 +148,10 @@ type ResolvedSignEthereumTxOptions = SignEthereumTxOptions & {
 type CommitteeTopologySnapshot = {
   peerAddrs: string[]
   expectedPeers: string[]
+  listenAddr?: string
+  newListenAddr?: string
+  peerId?: string
+  moniker?: string
 }
 
 type SignDigestResult = {
@@ -548,6 +557,31 @@ export function ensureTssPrepared(options: any = {}): string {
   return binaryPath;
 }
 
+function resolvePatchPeerAddrsBinary(options: any = {}): string {
+  const signerRoot = options.signerRoot || resolveProjectRoot();
+  const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
+  const binaryPath = path.join(resolveTssToolingRoot(tssRoot), 'bin', DEFAULT_PATCH_PEER_ADDRS_BINARY_NAME);
+  const sourcePath = path.join(resolveOverlayRoot(signerRoot), 'patch-peer-addrs', 'main.go');
+  if (fs.existsSync(binaryPath) && fs.existsSync(sourcePath)) {
+    const binaryMtimeMs = fs.statSync(binaryPath).mtimeMs;
+    const sourceMtimeMs = fs.statSync(sourcePath).mtimeMs;
+    if (binaryMtimeMs >= sourceMtimeMs) {
+      return binaryPath;
+    }
+  }
+
+  const goBin = ensureGoBinary(tssRoot);
+  const goEnv = buildGoEnv(signerRoot, tssRoot);
+  fs.mkdirSync(path.dirname(binaryPath), {recursive: true});
+  fs.mkdirSync(goEnv.GOCACHE, {recursive: true});
+  fs.mkdirSync(goEnv.GOMODCACHE, {recursive: true});
+  runOrThrow(goBin, ['build', '-o', binaryPath, '.'], {
+    cwd: path.join(resolveOverlayRoot(signerRoot), 'patch-peer-addrs'),
+    env: goEnv,
+  });
+  return binaryPath;
+}
+
 export function resolveBnbTssBinary(options: any = {}): string {
   const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
@@ -580,6 +614,15 @@ function getDefaultSlotHomePath(homeRoot: string, chainId: number): string {
 
 function getVaultConfigPath(home: string, vaultName: string): string {
   return path.join(home, vaultName, 'config.json')
+}
+
+export function readStoredListenAddr(home: string, vaultName = DEFAULT_VAULT_NAME): string | undefined {
+  const configPath = getVaultConfigPath(home, vaultName);
+  if (!fs.existsSync(configPath)) {
+    return undefined;
+  }
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as StoredVaultConfig;
+  return typeof parsed.listen === 'string' && parsed.listen.trim() ? parsed.listen.trim() : undefined;
 }
 
 function getEffectivePartyIdx(options: BasePartyOptions): number {
@@ -665,7 +708,7 @@ export function getLocalRegroupPeerAddr(chainId: number, partyIdx: number): stri
 }
 
 
-function deriveDefaultOldParticipantIndexes(parties: number, threshold: number): number[] {
+function deriveActiveOldParticipantIndexes(parties: number, threshold: number): number[] {
   const count = threshold + 1;
   if (!Number.isInteger(parties) || parties < 2) {
     throw new Error(`parties must be an integer >= 2, received ${parties}`);
@@ -673,12 +716,12 @@ function deriveDefaultOldParticipantIndexes(parties: number, threshold: number):
   if (!Number.isInteger(threshold) || threshold < 1) {
     throw new Error(`threshold must be an integer >= 1, received ${threshold}`);
   }
-  if (count > parties) {
-    throw new Error(`threshold + 1 (${count}) cannot exceed parties (${parties})`);
+  if (count !== parties) {
+    throw new Error(`parties must equal threshold + 1 (${count}), received ${parties}`);
   }
 
   const indexes: number[] = [];
-  for (let idx = 1; idx <= count; idx += 1) {
+  for (let idx = 1; idx <= parties; idx += 1) {
     indexes.push(idx);
   }
   return indexes;
@@ -710,25 +753,19 @@ export function deriveLocalRegroupPeerAddrs(options: LocalRegroupPeerAddrsOption
   if (!isOld && !isNewMember) {
     throw new Error('Local regroup peer derivation requires either --is-old or --is-new-member.');
   }
-  const oldParticipantIdxs = deriveDefaultOldParticipantIndexes(parties, threshold);
+  const oldParticipantIdxs = deriveActiveOldParticipantIndexes(parties, threshold);
   const newCommitteeIdxs = deriveDefaultNewCommitteeIndexes(newParties);
   const oldAndNewIdxs = oldParticipantIdxs.filter((idx) => newCommitteeIdxs.includes(idx));
   const newOnlyIdxs = newCommitteeIdxs.filter((idx) => !oldParticipantIdxs.includes(idx));
 
-  if (isOld && !oldParticipantIdxs.includes(partyIdx)) {
+  if (isOld && (!oldParticipantIdxs.includes(partyIdx) || !newCommitteeIdxs.includes(partyIdx))) {
     throw new Error(
-      `party ${partyIdx} is marked old, but the local deterministic regroup default expects old parties to be 1..${threshold + 1}`,
+      `party ${partyIdx} is marked old, but the local deterministic regroup default expects carry-over members to be within both active old parties 1..${parties} and new committee parties 1..${newParties}.`,
     );
   }
-  if (isNewMember && !newCommitteeIdxs.includes(partyIdx)) {
+  if (isNewMember && (!newCommitteeIdxs.includes(partyIdx) || oldParticipantIdxs.includes(partyIdx))) {
     throw new Error(
-      `party ${partyIdx} is marked new, but the local deterministic regroup default expects new committee parties to be 1..${newParties}`,
-    );
-  }
-  if (isOld && !newCommitteeIdxs.includes(partyIdx)) {
-    throw new Error(
-      `party ${partyIdx} is marked old, but in the wrapper --is-old means an existing member who also remains in the new committee. ` +
-        `The local deterministic regroup default expects carry-over members to be within new committee parties 1..${newParties}.`,
+      `party ${partyIdx} is marked new, but the local deterministic regroup default expects fresh new members to be within new committee parties 1..${newParties} and outside active old parties 1..${parties}.`,
     );
   }
 
@@ -766,7 +803,7 @@ export function deriveLocalRegroupPeerAddrs(options: LocalRegroupPeerAddrsOption
   if (peerAddrs.length !== expectedCount) {
     throw new Error(
       `Derived ${peerAddrs.length} regroup peer addrs for party ${partyIdx}, expected ${expectedCount}. ` +
-        `This local deterministic wrapper assumes old participants are parties 1..${threshold + 1} and the new committee is parties 1..${newParties}.`,
+        `This local deterministic wrapper expects exactly ${threshold + 1} active old parties (parties=threshold+1) and the new committee as parties 1..${newParties}.`,
     );
   }
 
@@ -989,6 +1026,33 @@ export function requireInitialized(options: BasePartyOptions = {} as BasePartyOp
     );
   }
   return {home, vaultName, binary, tssRoot};
+}
+
+export function normalizeStoredPostRegroupPorts(options: BasePartyOptions): void {
+  const signerRoot = options.signerRoot || resolveProjectRoot();
+  const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
+  const {home, vaultName} = requireInitialized({...options, signerRoot, tssRoot});
+  const password = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const patchBinary = resolvePatchPeerAddrsBinary({signerRoot, tssRoot});
+  runOrThrow(
+    patchBinary,
+    [
+      '--normalize-regroup-ports',
+      '--config-path',
+      getVaultConfigPath(home, vaultName),
+      '--chain-id',
+      String(options.chainId),
+      '--password',
+      password,
+      ...(Number.isInteger(options.partyIdx) ? ['--party', String(getEffectivePartyIdx(options))] : []),
+    ],
+    {
+      cwd: tssRoot,
+      env: {
+        TSS_PASSWORD: password,
+      },
+    },
+  );
 }
 
 export function derivePubkey(options: VerifyOptions = {} as VerifyOptions): DerivedPubkeyAll | string {

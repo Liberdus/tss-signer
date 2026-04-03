@@ -134,7 +134,7 @@ function main() {
     throw new Error('Use either --is-old or --is-new-member, not both. In the wrapper, --is-old means an existing member who stays in the new committee.');
   }
   if (!options.isOld && !options.isNewMember) {
-    throw new Error('Regroup requires exactly one wrapper role: use --is-old for an existing member who stays, or --is-new-member for a fresh new member.');
+    throw new Error('Regroup requires exactly one wrapper role: use --is-old for a carry-over member or --is-new-member for a fresh new member.');
   }
   const signerRoot = resolveProjectRoot();
   const tssRoot = bnbTss.resolveTssRoot(signerRoot);
@@ -223,6 +223,13 @@ function main() {
   if (result.status !== 0) {
     process.exit(result.status || 1);
   }
+  bnbTss.normalizeStoredPostRegroupPorts({
+    ...options,
+    signerRoot,
+    tssRoot,
+    homePath: initialized.home,
+    vaultName: initialized.vaultName,
+  });
   const derived = bnbTss.derivePubkey({...options, signerRoot, tssRoot, format: 'all'}) as {
     compressed: string
     ethereum_address: string

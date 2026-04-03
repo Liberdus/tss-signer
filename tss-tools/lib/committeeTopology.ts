@@ -11,6 +11,10 @@ export interface LocalPeerAddrsOptions {
 export interface CommitteeTopologySnapshot {
   peerAddrs: string[]
   expectedPeers: string[]
+  listenAddr?: string
+  newListenAddr?: string
+  peerId?: string
+  moniker?: string
 }
 
 function getDeterministicListenPort(chainId: number, partyIdx: number): number {
@@ -54,5 +58,9 @@ export function extractCommitteeTopologyFromDescribeOutput(output: string): Comm
   return {
     peerAddrs: Array.isArray(p2p.peer_addrs) ? p2p.peer_addrs : [],
     expectedPeers: Array.isArray(p2p.peers) ? p2p.peers : [],
+    listenAddr: typeof p2p.listen === 'string' ? p2p.listen : undefined,
+    newListenAddr: typeof p2p.new_listen === 'string' ? p2p.new_listen : undefined,
+    peerId: typeof parsed?.Id === 'string' ? parsed.Id : undefined,
+    moniker: typeof parsed?.Moniker === 'string' ? parsed.Moniker : undefined,
   }
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import {getMoniker, getPartyHome, resolveMisePlatform} from './bnbTss';
+import {getMoniker, getPartyHome, readStoredListenAddr, resolveMisePlatform} from './bnbTss';
 
 function testResolveMisePlatformSupportsDarwinArm64(): void {
   assert.equal(resolveMisePlatform('darwin', 'arm64'), 'darwin-arm64');
@@ -74,6 +74,22 @@ function testGetMonikerKeepsIndexedFormat(): void {
   assert.equal(getMoniker(4, 201), 'party-4-chain-201')
 }
 
+function testReadStoredListenAddrReadsOuterConfigListen(): void {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-listen-read-'))
+  try {
+    const vaultDir = path.join(home, 'default')
+    fs.mkdirSync(vaultDir, {recursive: true})
+    fs.writeFileSync(
+      path.join(vaultDir, 'config.json'),
+      JSON.stringify({listen: '/ip4/0.0.0.0/tcp/42011'}),
+      'utf8',
+    )
+    assert.equal(readStoredListenAddr(home), '/ip4/0.0.0.0/tcp/42011')
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true})
+  }
+}
+
 function main(): void {
   testResolveMisePlatformSupportsDarwinArm64();
   testResolveMisePlatformSupportsLinuxX64();
@@ -83,6 +99,7 @@ function main(): void {
   testGetPartyHomeFallsBackToLegacyPartyOnePath();
   testGetPartyHomeKeepsIndexedManualPath();
   testGetMonikerKeepsIndexedFormat();
+  testReadStoredListenAddrReadsOuterConfigListen();
   console.log('bnbTss tests passed');
 }
 

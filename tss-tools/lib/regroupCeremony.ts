@@ -42,7 +42,6 @@ export type OrderedRegroupPeerAddrsOptions = {
   oldPartyIps: string[]
   newPartyIps: string[]
   oldThreshold: number
-  committeePosition: number
   committeePartyIp: string
   isOld?: boolean
   isNewMember?: boolean
@@ -106,23 +105,8 @@ function pushUniqueAddr(target: string[], addr: string): void {
   }
 }
 
-function deriveDefaultOldParticipantIndexes(parties: number, threshold: number): number[] {
-  const count = threshold + 1
-  if (!Number.isInteger(parties) || parties < 2) {
-    throw new Error(`parties must be an integer >= 2, received ${parties}`)
-  }
-  if (!Number.isInteger(threshold) || threshold < 1) {
-    throw new Error(`threshold must be an integer >= 1, received ${threshold}`)
-  }
-  if (count > parties) {
-    throw new Error(`threshold + 1 (${count}) cannot exceed parties (${parties})`)
-  }
-
-  const indexes: number[] = []
-  for (let idx = 1; idx <= count; idx += 1) {
-    indexes.push(idx)
-  }
-  return indexes
+function sortIps(ips: string[]): string[] {
+  return [...ips].sort((a, b) => a.localeCompare(b))
 }
 
 export function resolveRegroupCeremonyConfigPath(
@@ -153,8 +137,13 @@ export function validateRegroupCeremonyConfig(raw: unknown): RegroupCeremonyConf
   if (!Number.isInteger(newThreshold) || newThreshold < 1) {
     throw new Error(`newThreshold must be an integer >= 1, received ${source.newThreshold}`)
   }
-  if (oldThreshold + 1 > oldPartyIps.length) {
-    throw new Error(`oldThreshold + 1 (${oldThreshold + 1}) cannot exceed oldPartyIps length (${oldPartyIps.length})`)
+  if (oldThreshold + 1 !== oldPartyIps.length) {
+    throw new Error(`oldPartyIps length (${oldPartyIps.length}) must equal oldThreshold + 1 (${oldThreshold + 1})`)
+  }
+  for (const ip of oldPartyIps) {
+    if (!newPartyIps.includes(ip)) {
+      throw new Error(`oldPartyIp ${ip} must also be present in newPartyIps`)
+    }
   }
   if (newThreshold + 1 > newPartyIps.length) {
     throw new Error(`newThreshold + 1 (${newThreshold + 1}) cannot exceed newPartyIps length (${newPartyIps.length})`)
@@ -180,7 +169,6 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
     oldPartyIps,
     newPartyIps,
     oldThreshold,
-    committeePosition,
     committeePartyIp,
     isOld = false,
     isNewMember = false,
@@ -205,26 +193,21 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
     throw new Error('newPartyIps must not contain duplicates')
   }
 
-  const oldParties = oldPartyIps.length
   const newParties = newPartyIps.length
-  const oldParticipantIdxs = deriveDefaultOldParticipantIndexes(oldParties, oldThreshold)
-  const oldParticipantIps = oldParticipantIdxs.map((idx) => oldPartyIps[idx - 1])
+  const oldParticipantIps = sortIps(oldPartyIps)
   const oldAndNewIps = oldParticipantIps.filter((ip) => newPartyIps.includes(ip))
   const newOnlyIps = newPartyIps.filter((ip) => !oldParticipantIps.includes(ip))
 
   if (!newPartyIps.includes(committeePartyIp)) {
     throw new Error(`party IP ${committeePartyIp} is not part of the new committee`)
   }
-  if (committeePosition !== newPartyIps.indexOf(committeePartyIp) + 1) {
-    throw new Error(`committeePosition ${committeePosition} does not match partyIp ${committeePartyIp} in newPartyIps`)
-  }
   if (isOld && !oldParticipantIps.includes(committeePartyIp)) {
     throw new Error(
-      `party ${committeePosition} (${committeePartyIp}) is marked old, but the ordered regroup default expects old participants from oldPartyIps positions 1..${oldThreshold + 1}`,
+      `party ${committeePartyIp} is marked old, but carry-over members must be present in both oldPartyIps and newPartyIps`,
     )
   }
   if (isNewMember && oldPartyIps.includes(committeePartyIp)) {
-    throw new Error(`party ${committeePosition} (${committeePartyIp}) is marked new, but it already exists in oldPartyIps`)
+    throw new Error(`party ${committeePartyIp} is marked new, but fresh new members must be present in newPartyIps and absent from oldPartyIps`)
   }
 
   const peerAddrs: string[] = []
@@ -260,7 +243,7 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
   const expectedCount = oldThreshold + newParties
   if (peerAddrs.length !== expectedCount) {
     throw new Error(
-      `Derived ${peerAddrs.length} ordered regroup peer addrs for party ${committeePosition}, expected ${expectedCount}.`,
+      `Derived ${peerAddrs.length} ordered regroup peer addrs for party ${committeePartyIp}, expected ${expectedCount}.`,
     )
   }
 
@@ -268,9 +251,9 @@ export function deriveOrderedRegroupPeerAddrs(options: OrderedRegroupPeerAddrsOp
 }
 
 export type RegroupPartyIndexResolution = {
-  partyIdx: number
   partyIp: string
   source: 'local' | 'external'
+  committeePosition: number
 }
 
 export async function resolveRegroupPartyIndex(
@@ -289,9 +272,13 @@ export async function resolveRegroupPartyIndex(
     resolution = resolvePartyIndexFromCandidates(config.newPartyIps, detectedLocalIps, detectedExternalIps)
   }
 
+  const partyIp = config.newPartyIps[resolution.partyIdx - 1]
+  const committeePosition = config.newPartyIps.indexOf(partyIp) + 1
+
   return {
-    ...resolution,
-    partyIp: config.newPartyIps[resolution.partyIdx - 1],
+    partyIp,
+    source: resolution.source,
+    committeePosition,
     detectedLocalIps,
     detectedExternalIps,
     attemptedExternalLookup,
@@ -300,14 +287,14 @@ export async function resolveRegroupPartyIndex(
 
 export function deriveRegroupCeremonyConfig(
   config: RegroupCeremonyConfig,
-  committeePosition: number,
+  committeePartyIp: string,
 ): RegroupCeremonyDerivedConfig {
   const newParties = config.newPartyIps.length
+  const committeePosition = config.newPartyIps.indexOf(committeePartyIp) + 1
   if (!Number.isInteger(committeePosition) || committeePosition < 1 || committeePosition > newParties) {
-    throw new Error(`committeePosition must be within 1..${newParties}, received ${committeePosition}`)
+    throw new Error(`committeePartyIp must be present in newPartyIps, received ${committeePartyIp}`)
   }
 
-  const committeePartyIp = config.newPartyIps[committeePosition - 1]
   const isOld = config.oldPartyIps.includes(committeePartyIp)
   const isNewMember = !isOld
   const newListenPort = isOld
@@ -334,7 +321,6 @@ export function deriveRegroupCeremonyConfig(
       oldPartyIps: config.oldPartyIps,
       newPartyIps: config.newPartyIps,
       oldThreshold: config.oldThreshold,
-      committeePosition,
       committeePartyIp,
       isOld,
       isNewMember,

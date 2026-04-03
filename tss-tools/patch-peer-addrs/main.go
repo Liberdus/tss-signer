@@ -1,7 +1,11 @@
-// patch-peer-addrs patches the encrypted peer_addrs and peers fields inside
+// patch-peer-addrs patches the encrypted peer_addrs / peers fields inside
 // each party's config.json vault file. This is needed when keystores were
 // generated locally (all parties on 127.0.0.1) but need to be deployed to
 // separate machines with real public IPs.
+//
+// It also supports a narrower normalization mode for post-regroup cleanup:
+// restoring the persisted listen addr back to the stable base port and
+// clearing any temporary regroup-only p2p.new_listen field.
 //
 // Usage:
 //
@@ -25,6 +29,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -162,7 +167,59 @@ type partyInfo struct {
 }
 
 func derivePort(chainId, partyIdx int) int {
+	if chainId < 0 {
+		chainId = -chainId
+	}
 	return 40000 + (chainId%1000)*10 + partyIdx
+}
+
+func derivePartyIdxFromMoniker(moniker string) (int, error) {
+	const prefix = "party-"
+	if !strings.HasPrefix(moniker, prefix) {
+		return 0, fmt.Errorf("moniker %q does not start with %q", moniker, prefix)
+	}
+	rest := strings.TrimPrefix(moniker, prefix)
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, fmt.Errorf("moniker %q does not include a numeric party index", moniker)
+	}
+	idx, err := strconv.Atoi(rest[:end])
+	if err != nil || idx < 1 {
+		return 0, fmt.Errorf("invalid party index in moniker %q", moniker)
+	}
+	return idx, nil
+}
+
+func peerMoniker(expectedPeer string) string {
+	parts := strings.SplitN(expectedPeer, "@", 2)
+	return strings.TrimSpace(parts[0])
+}
+
+func replaceTCPPort(addr string, port int) (string, error) {
+	marker := "/tcp/"
+	idx := strings.LastIndex(addr, marker)
+	if idx == -1 {
+		return "", fmt.Errorf("address %q does not contain /tcp/", addr)
+	}
+	start := idx + len(marker)
+	end := start
+	for end < len(addr) && addr[end] >= '0' && addr[end] <= '9' {
+		end++
+	}
+	if end == start {
+		return "", fmt.Errorf("address %q does not contain a tcp port", addr)
+	}
+	return addr[:start] + strconv.Itoa(port) + addr[end:], nil
+}
+
+func normalizeLocalListenAddr(current string, port int) (string, error) {
+	if strings.TrimSpace(current) == "" {
+		return fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), nil
+	}
+	return replaceTCPPort(current, port)
 }
 
 func buildParties(chainId int, ips, peerIDs, monikers []string) []partyInfo {
@@ -287,6 +344,165 @@ func patchPartyConfig(configPath string, partyIdx int, parties []partyInfo, pass
 	return nil
 }
 
+func normalizeListenConfig(configPath, passphrase, listenAddr string) error {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", configPath, err)
+	}
+
+	var sc secretConfig
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		return fmt.Errorf("unmarshal secretConfig: %w", err)
+	}
+	if sc.Config == nil {
+		return fmt.Errorf("config.json has no encrypted 'config' field")
+	}
+
+	plainText, err := decrypt(*sc.Config, passphrase)
+	if err != nil {
+		return fmt.Errorf("decrypt: %w", err)
+	}
+
+	var tssConfig map[string]interface{}
+	if err := json.Unmarshal(plainText, &tssConfig); err != nil {
+		return fmt.Errorf("unmarshal TssConfig: %w", err)
+	}
+
+	p2p, ok := tssConfig["p2p"].(map[string]interface{})
+	if !ok {
+		p2p = make(map[string]interface{})
+		tssConfig["p2p"] = p2p
+	}
+
+	sc.ListenAddr = listenAddr
+	p2p["listen"] = listenAddr
+	p2p["new_listen"] = ""
+
+	updatedPlain, err := json.Marshal(tssConfig)
+	if err != nil {
+		return fmt.Errorf("marshal updated TssConfig: %w", err)
+	}
+
+	newCrypto, err := encrypt(updatedPlain, passphrase, sc.Config.KDFParams)
+	if err != nil {
+		return fmt.Errorf("re-encrypt: %w", err)
+	}
+
+	sc.Config = newCrypto
+	out, err := json.MarshalIndent(sc, "", "    ")
+	if err != nil {
+		return fmt.Errorf("marshal secretConfig: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
+		return fmt.Errorf("write %s: %w", configPath, err)
+	}
+	return nil
+}
+
+func normalizeRegroupPortsConfig(configPath, passphrase string, chainId, explicitPartyIdx int) error {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", configPath, err)
+	}
+
+	var sc secretConfig
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		return fmt.Errorf("unmarshal secretConfig: %w", err)
+	}
+	if sc.Config == nil {
+		return fmt.Errorf("config.json has no encrypted 'config' field")
+	}
+
+	plainText, err := decrypt(*sc.Config, passphrase)
+	if err != nil {
+		return fmt.Errorf("decrypt: %w", err)
+	}
+
+	var tssConfig map[string]interface{}
+	if err := json.Unmarshal(plainText, &tssConfig); err != nil {
+		return fmt.Errorf("unmarshal TssConfig: %w", err)
+	}
+
+	moniker, _ := tssConfig["Moniker"].(string)
+	partyIdx := explicitPartyIdx
+	if partyIdx == 0 {
+		partyIdx, err = derivePartyIdxFromMoniker(moniker)
+		if err != nil {
+			return err
+		}
+	}
+
+	p2p, ok := tssConfig["p2p"].(map[string]interface{})
+	if !ok {
+		p2p = make(map[string]interface{})
+		tssConfig["p2p"] = p2p
+	}
+
+	basePort := derivePort(chainId, partyIdx)
+	currentListen := sc.ListenAddr
+	if listen, ok := p2p["listen"].(string); ok && strings.TrimSpace(listen) != "" {
+		currentListen = listen
+	}
+	normalizedListen, err := normalizeLocalListenAddr(currentListen, basePort)
+	if err != nil {
+		return err
+	}
+	sc.ListenAddr = normalizedListen
+	p2p["listen"] = normalizedListen
+	p2p["new_listen"] = ""
+
+	rawPeerAddrs, peerAddrsOK := p2p["peer_addrs"].([]interface{})
+	rawPeers, peersOK := p2p["peers"].([]interface{})
+	if peerAddrsOK && peersOK {
+		if len(rawPeerAddrs) != len(rawPeers) {
+			return fmt.Errorf("peer_addrs length %d does not match peers length %d", len(rawPeerAddrs), len(rawPeers))
+		}
+		normalizedPeerAddrs := make([]string, 0, len(rawPeerAddrs))
+		for i := range rawPeerAddrs {
+			addr, ok := rawPeerAddrs[i].(string)
+			if !ok {
+				return fmt.Errorf("peer_addrs[%d] is not a string", i)
+			}
+			peer, ok := rawPeers[i].(string)
+			if !ok {
+				return fmt.Errorf("peers[%d] is not a string", i)
+			}
+			peerIdx, err := derivePartyIdxFromMoniker(peerMoniker(peer))
+			if err != nil {
+				return fmt.Errorf("derive peer index from %q: %w", peer, err)
+			}
+			normalizedAddr, err := replaceTCPPort(addr, derivePort(chainId, peerIdx))
+			if err != nil {
+				return err
+			}
+			normalizedPeerAddrs = append(normalizedPeerAddrs, normalizedAddr)
+		}
+		p2p["peer_addrs"] = normalizedPeerAddrs
+	}
+
+	updatedPlain, err := json.Marshal(tssConfig)
+	if err != nil {
+		return fmt.Errorf("marshal updated TssConfig: %w", err)
+	}
+
+	newCrypto, err := encrypt(updatedPlain, passphrase, sc.Config.KDFParams)
+	if err != nil {
+		return fmt.Errorf("re-encrypt: %w", err)
+	}
+
+	sc.Config = newCrypto
+	out, err := json.MarshalIndent(sc, "", "    ")
+	if err != nil {
+		return fmt.Errorf("marshal secretConfig: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
+		return fmt.Errorf("write %s: %w", configPath, err)
+	}
+	return nil
+}
+
 func main() {
 	keystoreRoot := flag.String("keystore-root", "", "Path to keystores root (e.g. keystores/bnbtss)")
 	chainId := flag.Int("chain-id", 0, "Chain ID (required)")
@@ -296,7 +512,36 @@ func main() {
 	monikersFlag := flag.String("monikers", "", "Comma-separated list of monikers in party order. Only needed if custom monikers were used during tss init; defaults to party-N-chain-ID.")
 	ipsFlag := flag.String("ips", "", "Comma-separated list of party IPs in order (party-1 first), e.g. 1.2.3.4,5.6.7.8,...")
 	peerIDsFlag := flag.String("peer-ids", "", "Comma-separated list of libp2p peer IDs in order (party-1 first). Obtain via: tss describe --home <vault-dir> --password <pass>")
+	configPathFlag := flag.String("config-path", "", "Path to a single config.json file to patch directly")
+	setListenFlag := flag.String("set-listen", "", "Normalize the stored listen addr to this multiaddr and clear temporary p2p.new_listen")
+	normalizeRegroupPortsFlag := flag.Bool("normalize-regroup-ports", false, "Normalize a single stored config back to base ports after regroup")
 	flag.Parse()
+
+	if *normalizeRegroupPortsFlag {
+		if *configPathFlag == "" || *password == "" || *chainId == 0 {
+			fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --normalize-regroup-ports --config-path <path/to/config.json> --chain-id <id> --password <pass> [--party <idx>]")
+			os.Exit(1)
+		}
+		if err := normalizeRegroupPortsConfig(*configPathFlag, *password, *chainId, *partyFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR normalizing regroup ports: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Normalized regroup ports at %s\n", *configPathFlag)
+		return
+	}
+
+	if *configPathFlag != "" || *setListenFlag != "" {
+		if *configPathFlag == "" || *setListenFlag == "" || *password == "" {
+			fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --config-path <path/to/config.json> --password <pass> --set-listen <multiaddr>")
+			os.Exit(1)
+		}
+		if err := normalizeListenConfig(*configPathFlag, *password, *setListenFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR normalizing listen config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Normalized listen config at %s -> %s\n", *configPathFlag, *setListenFlag)
+		return
+	}
 
 	if *keystoreRoot == "" || *password == "" || *chainId == 0 || *ipsFlag == "" || *peerIDsFlag == "" {
 		fmt.Fprintln(os.Stderr, "Usage: patch-peer-addrs --keystore-root <path> --chain-id <id> --password <pass> --ips <ip1,ip2,...> --peer-ids <id1,id2,...> [--party N] [--monikers m1,m2,...]")
