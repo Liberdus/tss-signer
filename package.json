@@ -23,6 +23,7 @@
     "tss-regroup-connectivity-check": "npm run compile && node dist/scripts/tss-regroup-connectivity-check.js",
     "tss-regroup-ceremony": "npm run compile && node dist/scripts/tss-regroup-ceremony.js",
     "tss-regroup": "npm run compile && node dist/tss-tools/regroup.js",
+    "tss-describe": "npm run compile && node dist/tss-tools/describe.js",
     "tss-verify": "npm run compile && node dist/tss-tools/verify.js",
     "tss-sign-ethereum-tx": "npm run compile && node dist/tss-tools/sign-ethereum-tx.js",
     "test:tss-tools": "node dist/tss-tools/lib/committeeTopology.test.js && node dist/tss-tools/lib/channelId.test.js && node dist/tss-tools/lib/keygenCeremony.test.js && node dist/scripts/tss-connectivity-check.test.js && node dist/scripts/tss-regroup-connectivity-check.test.js && node dist/tss-tools/lib/regroupCeremony.test.js && node dist/tss-tools/lib/tssPartyDefaults.test.js && node dist/tss-tools/lib/bnbTss.test.js && bash ./tss-tools/setup-mise-go.test.sh",
