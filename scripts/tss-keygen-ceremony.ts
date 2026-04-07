@@ -59,9 +59,10 @@ function parseArgs(argv: string[]): Options {
   return options as Options
 }
 
-function promptForVaultPassword(): string {
+function promptForVaultPassword(chainId: number): string {
+  const envKey = bnbTss.getVaultPasswordEnvKey(chainId)
   while (true) {
-    const password = readlineSync.question('Enter the chain-specific vault password for this vault: ', {
+    const password = readlineSync.question(`Enter the vault password for chain ${chainId} (${envKey}): `, {
       hideEchoBack: true,
       mask: '',
     })
@@ -72,9 +73,10 @@ function promptForVaultPassword(): string {
   }
 }
 
-function promptForNewVaultPassword(): string {
+function promptForNewVaultPassword(chainId: number): string {
+  const envKey = bnbTss.getVaultPasswordEnvKey(chainId)
   while (true) {
-    const password = readlineSync.question('Select the chain-specific vault password for this vault: ', {
+    const password = readlineSync.question(`Select the vault password for chain ${chainId} (${envKey}): `, {
       hideEchoBack: true,
       mask: '',
     })
@@ -82,7 +84,7 @@ function promptForNewVaultPassword(): string {
       console.error('The vault password must be longer than 8 characters')
       continue
     }
-    const confirm = readlineSync.question('Confirm the chain-specific vault password: ', {
+    const confirm = readlineSync.question(`Confirm the vault password for chain ${chainId} (${envKey}): `, {
       hideEchoBack: true,
       mask: '',
     })
@@ -95,7 +97,7 @@ function promptForNewVaultPassword(): string {
 
 function verifyVaultPassword(signerRoot: string, chainId: number, homePath?: string): string {
   while (true) {
-    const password = promptForVaultPassword()
+    const password = promptForVaultPassword(chainId)
     try {
       bnbTss.describeVault({signerRoot, chainId, password, homePath, useDefaultSlotPath: true})
       return password
@@ -181,7 +183,7 @@ async function main(): Promise<void> {
 
   let password: string
   if (vaultIsNew) {
-    password = promptForNewVaultPassword()
+    password = promptForNewVaultPassword(config.chainId)
     console.log(`Initializing vault for chain ${config.chainId}...`)
     await bnbTss.initParty({
       signerRoot,
