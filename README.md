@@ -79,14 +79,14 @@ The native binary is built to `./tss/.tooling/bin/tss`. Native vaults are stored
 ### 3. Set environment variables
 
 ```bash
-export BNB_TSS_PASSWORD_<chainId>=<chain-specific-vault-password>
+export BNB_TSS_PASSWORD_CHAIN_<chainId>=<chain-specific-vault-password>
 export BNB_TSS_CHANNEL_ID=<shared-channel-id>       # required for keygen/regroup
 export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>  # required for keygen/regroup
 ```
 
 Required envs by flow:
 
-- `BNB_TSS_PASSWORD_<chainId>`: required for native vault access on that chain. Must be set before `tss-init`, `tss-keygen`, `tss-verify`, and `tss-party` startup. If missing, startup validation fails with `BNB TSS vault password is required (BNB_TSS_PASSWORD_<chainId>)`.
+- `BNB_TSS_PASSWORD_CHAIN_<chainId>`: required for native vault access on that chain. Must be set before `tss-init`, `tss-keygen`, `tss-verify`, and `tss-party` startup. If missing, startup validation fails with `BNB TSS vault password is required (BNB_TSS_PASSWORD_CHAIN_<chainId>)`.
 - `BNB_TSS_CHANNEL_ID`: required for manual native keygen/regroup/sign flows unless passed explicitly on the command line.
 - `BNB_TSS_CHANNEL_PASSWORD`: required for manual native keygen/regroup/sign flows unless passed explicitly on the command line.
 - `SHARDUS_CRYPTO_HASH_KEY`: optional override for the long-lived `tss-party` signer. When unset, the code falls back to a built-in default. If you set it, all parties must use the same value so deterministic signing channel passwords match.
