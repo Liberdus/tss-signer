@@ -766,16 +766,27 @@ function dbStatusToSkipOutcome(
 function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: number, tssSender: string): void {
   const normalizedTssSender = toEthereumAddress(tssSender)
   const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, normalizedTssSender)
+  const nonceCacheChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
   if (maxDbNonce == null) {
-    console.log(`[nonce-manager] No finalized tx for ${tssSender} on chain ${chainId}, skipping nonce sync`)
+    console.log(
+      `[nonce-manager] No finalized tx for sender=${tssSender} on chain=${nonceCacheChainId}, skipping nonce sync`
+    )
     return
   }
-  const nonceCacheChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
   const currentLocal = getLocalNonce(nonceCacheChainId, tssSender)
-  console.log(`[nonce-manager] Syncing nonce for chain ${nonceCacheChainId} to ${maxDbNonce + 1} (dbChain=${chainId}, maxDbNonce=${maxDbNonce}) (currentLocal=${currentLocal})`)
+  console.log(
+    `[nonce-manager] Syncing local nonce for sender=${normalizedTssSender} ` +
+    `on chain=${nonceCacheChainId} ` +
+    `to nextNonce=${maxDbNonce + 1} from maxDbNonce=${maxDbNonce} ` +
+    `(currentLocal=${currentLocal})`
+  )
   if (currentLocal == null || maxDbNonce + 1 > currentLocal) {
     setLocalNonce(nonceCacheChainId, tssSender, maxDbNonce + 1)
-    console.log(`[nonce-manager] Synced nonce for chain ${nonceCacheChainId} to ${maxDbNonce + 1} (dbChain=${chainId}, maxDbNonce=${maxDbNonce})`)
+    console.log(
+      `[nonce-manager] Synced local nonce for sender=${normalizedTssSender} ` +
+      `on chain=${nonceCacheChainId} ` +
+      `to nextNonce=${maxDbNonce + 1}`
+    )
   }
 }
 
