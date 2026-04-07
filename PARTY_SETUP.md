@@ -342,6 +342,8 @@ Regroup redistributes key shares to a new committee without changing the TSS Eth
 
 Regroup requires at least `oldThreshold + 1` old participants.
 
+> **Important:** If a party was excluded from the previous regroup, do not reuse its existing vault data. That excluded party must clear its vault first and let the regroup ceremony create a fresh one.
+
 ### Create the regroup config
 
 One operator prepares a shared `regroup-config.json` and distributes it to all participants:
