@@ -113,7 +113,7 @@ function moveExistingChainHomeForFreshNewMember(vaultHome: string): string {
 function getUniqueChainHomeBackupDir(vaultHome: string): string {
   const parentDir = path.dirname(vaultHome)
   const chainHomeName = path.basename(vaultHome)
-  const baseBackupName = `${chainHomeName}-backup-${formatVaultBackupTimestamp()}`
+  const baseBackupName = `${chainHomeName}-old-${formatVaultBackupTimestamp()}`
   let backupDir = path.join(parentDir, baseBackupName)
   let suffix = 1
   while (fs.existsSync(backupDir)) {
