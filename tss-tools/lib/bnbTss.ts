@@ -901,7 +901,7 @@ export function getVaultPasswordEnvKey(chainId: number): string {
   if (!Number.isFinite(chainId)) {
     throw new Error(`chainId must be a finite number, got: ${chainId}`);
   }
-  return `BNB_TSS_PASSWORD_CHAIN_${chainId}`;
+  return `TSS_PASSWORD_CHAIN_${chainId}`;
 }
 
 export function requireVaultPassword(chainId: number, value?: string): string {

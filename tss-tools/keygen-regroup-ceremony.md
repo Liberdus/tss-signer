@@ -120,7 +120,7 @@ The wrapper:
 - falls back to external IPv4 lookup if local detection is not enough
 - resolves the machine's committee position from `partyIps`
 - derives an IP-based moniker for default-slot auto-init from the matched party IP
-- prompts for the chain-specific vault password (`BNB_TSS_PASSWORD_CHAIN_<chainId>`)
+- prompts for the chain-specific vault password (`TSS_PASSWORD_CHAIN_<chainId>`)
 - initializes the default-slot vault automatically if it does not yet exist
 - verifies the password against the existing vault if it already exists
 - derives `parties` and `threshold = floor(parties / 2)`
