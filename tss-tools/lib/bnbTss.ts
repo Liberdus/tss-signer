@@ -898,6 +898,9 @@ function requireEnvOrValue(value: string | undefined, envKey: string, label: str
 }
 
 export function getVaultPasswordEnvKey(chainId: number): string {
+  if (!Number.isFinite(chainId)) {
+    throw new Error(`chainId must be a finite number, got: ${chainId}`);
+  }
   return `BNB_TSS_PASSWORD_${chainId}`;
 }
 

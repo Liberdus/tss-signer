@@ -143,7 +143,7 @@ function main() {
   const password = bnbTss.requireVaultPassword(options.chainId, options.password);
   const channelId = options.channelId || process.env.BNB_TSS_CHANNEL_ID;
   const channelPassword = options.channelPassword || process.env.BNB_TSS_CHANNEL_PASSWORD;
-  if (!password || !channelId || !channelPassword) {
+  if (!channelId || !channelPassword) {
     throw new Error('BNB TSS regroup requires password, channel id, and channel password');
   }
   const params = bnbTss.readParams(signerRoot);

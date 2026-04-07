@@ -117,7 +117,7 @@ function main() {
   const channelId = options.channelId || process.env.BNB_TSS_CHANNEL_ID;
   const channelPassword = options.channelPassword || process.env.BNB_TSS_CHANNEL_PASSWORD;
   const password = bnbTss.requireVaultPassword(options.chainId, options.password);
-  if (!channelId || !channelPassword || !password) {
+  if (!channelId || !channelPassword) {
     throw new Error('BNB TSS keygen requires password, channel id, and channel password');
   }
   const peerAddrs =
