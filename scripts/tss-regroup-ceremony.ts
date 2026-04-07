@@ -155,6 +155,16 @@ function confirmProceed(): void {
   }
 }
 
+function describeVaultPlan(vaultHome: string, vaultIsNew: boolean, isNewMember: boolean): string {
+  if (vaultIsNew) {
+    return `will initialize a new vault at ${vaultHome}`
+  }
+  if (isNewMember) {
+    return `will back up the existing chain home and initialize a new vault at ${vaultHome}`
+  }
+  return `already initialized at ${vaultHome} (will create a backup copy before regroup)`
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2))
   const signerRoot = resolveProjectRoot()
@@ -218,7 +228,7 @@ async function main(): Promise<void> {
   console.log(`  new peer addrs (${derived.newPeerAddrs.length}): ${derived.newPeerAddrs.join(',')}`)
   console.log(`  channel id: ${channelId}`)
   console.log(`  channel id expires at (UTC): ${channelExpiryIso}`)
-  console.log(`  vault: ${vaultIsNew ? `will initialize (new) at ${vaultHome}` : `already initialized at ${vaultHome}`}`)
+  console.log(`  vault: ${describeVaultPlan(vaultHome, vaultIsNew, derived.isNewMember)}`)
 
   let password: string
   if (vaultIsNew) {
@@ -237,8 +247,8 @@ async function main(): Promise<void> {
     if (derived.isNewMember) {
       const backupDir = moveExistingChainHomeForFreshNewMember(vaultHome)
       console.log(`Moved existing chain home to ${backupDir}`)
-      password = promptForNewVaultPassword()
       console.log(`Initializing fresh vault for new-member regroup on chain ${config.chainId}...`)
+      password = promptForNewVaultPassword()
       await bnbTss.initParty({
         signerRoot,
         chainId: config.chainId,
