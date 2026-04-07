@@ -79,14 +79,14 @@ The native binary is built to `./tss/.tooling/bin/tss`. Native vaults are stored
 ### 3. Set environment variables
 
 ```bash
-export BNB_TSS_PASSWORD=<shared-vault-password>
+export BNB_TSS_PASSWORD_<chainId>=<chain-specific-vault-password>
 export BNB_TSS_CHANNEL_ID=<shared-channel-id>       # required for keygen/regroup
 export BNB_TSS_CHANNEL_PASSWORD=<shared-channel-password>  # required for keygen/regroup
 ```
 
 Required envs by flow:
 
-- `BNB_TSS_PASSWORD`: required for native vault access. Must be set before `tss-init`, `tss-keygen`, `tss-verify`, and `tss-party` startup. If missing, startup validation fails with `BNB TSS vault password is required (BNB_TSS_PASSWORD)`.
+- `BNB_TSS_PASSWORD_<chainId>`: required for native vault access on that chain. Must be set before `tss-init`, `tss-keygen`, `tss-verify`, and `tss-party` startup. If missing, startup validation fails with `BNB TSS vault password is required (BNB_TSS_PASSWORD_<chainId>)`.
 - `BNB_TSS_CHANNEL_ID`: required for manual native keygen/regroup/sign flows unless passed explicitly on the command line.
 - `BNB_TSS_CHANNEL_PASSWORD`: required for manual native keygen/regroup/sign flows unless passed explicitly on the command line.
 - `SHARDUS_CRYPTO_HASH_KEY`: optional override for the long-lived `tss-party` signer. When unset, the code falls back to a built-in default. If you set it, all parties must use the same value so deterministic signing channel passwords match.
@@ -137,7 +137,7 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.js
 
 ### Assisted keygen wrapper
 
-For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for `BNB_TSS_PASSWORD`, verifies the password can unlock the initialized vault, overwrites `params.json` with the derived `{parties, threshold}`, then runs `tss-keygen` with those env vars scoped to that child process only. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen. After the config is in place, `tss-verify` can omit `--chain-id` and will use `chainId` from that same file.
+For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for the chain-specific vault password, verifies the password can unlock the initialized vault, overwrites `params.json` with the derived `{parties, threshold}`, then runs `tss-keygen` with those env vars scoped to that child process only. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen. After the config is in place, `tss-verify` can omit `--chain-id` and will use `chainId` from that same file.
 
 Expected local config file:
 

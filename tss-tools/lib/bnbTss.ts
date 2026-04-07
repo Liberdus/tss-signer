@@ -897,6 +897,14 @@ function requireEnvOrValue(value: string | undefined, envKey: string, label: str
   return resolved;
 }
 
+export function getVaultPasswordEnvKey(chainId: number): string {
+  return `BNB_TSS_PASSWORD_${chainId}`;
+}
+
+export function requireVaultPassword(chainId: number, value?: string): string {
+  return requireEnvOrValue(value, getVaultPasswordEnvKey(chainId), 'BNB TSS vault password');
+}
+
 export function buildKeygenArgs({
   home,
   vaultName,
@@ -991,7 +999,7 @@ export async function initParty(options: InitPartyOptions = {} as InitPartyOptio
   const home = getPartyHome({...options, signerRoot});
   const vaultName = getVaultName(options.vaultName);
   const partyIdx = getEffectivePartyIdx(options);
-  const vaultPassword = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const vaultPassword = requireVaultPassword(options.chainId, options.password);
   const configPath = getVaultConfigPath(home, vaultName);
   if (fs.existsSync(configPath)) {
     return {home, vaultName, binary, tssRoot};
@@ -1044,7 +1052,7 @@ export function normalizeStoredPostRegroupPorts(options: BasePartyOptions): void
   const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const {home, vaultName} = requireInitialized({...options, signerRoot, tssRoot});
-  const password = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const password = requireVaultPassword(options.chainId, options.password);
   const patchBinary = resolvePatchPeerAddrsBinary({signerRoot, tssRoot});
   runOrThrow(
     patchBinary,
@@ -1072,7 +1080,7 @@ export function derivePubkey(options: VerifyOptions = {} as VerifyOptions): Deri
   const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   ensureTssPrepared({signerRoot, tssRoot});
-  const vaultPassword = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const vaultPassword = requireVaultPassword(options.chainId, options.password);
   const helperBinary = path.join(resolveTssToolingRoot(tssRoot), 'bin', DEFAULT_DERIVE_BINARY_NAME);
   if (!fs.existsSync(helperBinary)) {
     buildTssBinary({signerRoot, tssRoot, force: true});
@@ -1113,7 +1121,7 @@ export function describeVault(options: (BasePartyOptions & {initialized?: Initia
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const {home, vaultName} =
     options.initialized || requireInitialized({...options, signerRoot, tssRoot, binary});
-  const password = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const password = requireVaultPassword(options.chainId, options.password);
   const args = [
     'describe',
     '--home',
@@ -1194,7 +1202,7 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
   const binary = resolveBnbTssBinary({...options, signerRoot, tssRoot});
   const {home, vaultName} = requireInitialized({...options, signerRoot, tssRoot, binary});
-  const password = requireEnvOrValue(options.password, 'BNB_TSS_PASSWORD', 'BNB TSS vault password');
+  const password = requireVaultPassword(options.chainId, options.password);
   const channelId = requireEnvOrValue(options.channelId, 'BNB_TSS_CHANNEL_ID', 'BNB TSS channel id');
   const channelPassword = requireEnvOrValue(
     options.channelPassword,

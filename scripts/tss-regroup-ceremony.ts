@@ -58,28 +58,28 @@ function parseArgs(argv: string[]): Options {
 
 function promptForVaultPassword(): string {
   while (true) {
-    const password = readlineSync.question('Enter BNB_TSS_PASSWORD for this vault: ', {
+    const password = readlineSync.question('Enter the chain-specific vault password for this vault: ', {
       hideEchoBack: true,
       mask: '',
     })
     if (isValidVaultPassword(password)) {
       return password
     }
-    console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
+    console.error('The vault password must be longer than 8 characters')
   }
 }
 
 function promptForNewVaultPassword(): string {
   while (true) {
-    const password = readlineSync.question('Select BNB_TSS_PASSWORD for this vault: ', {
+    const password = readlineSync.question('Select the chain-specific vault password for this vault: ', {
       hideEchoBack: true,
       mask: '',
     })
     if (!isValidVaultPassword(password)) {
-      console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
+      console.error('The vault password must be longer than 8 characters')
       continue
     }
-    const confirm = readlineSync.question('Confirm BNB_TSS_PASSWORD: ', {
+    const confirm = readlineSync.question('Confirm the chain-specific vault password: ', {
       hideEchoBack: true,
       mask: '',
     })
@@ -285,7 +285,7 @@ async function main(): Promise<void> {
     cwd: signerRoot,
     env: {
       ...process.env,
-      BNB_TSS_PASSWORD: password,
+      [bnbTss.getVaultPasswordEnvKey(config.chainId)]: password,
       BNB_TSS_CHANNEL_ID: channelId,
       BNB_TSS_CHANNEL_PASSWORD: channelPassword,
     },
@@ -298,7 +298,7 @@ async function main(): Promise<void> {
   }
 
   console.log('\nRegroup complete. Set your vault password for this session:')
-  console.log('  export BNB_TSS_PASSWORD=your-vault-password')
+  console.log(`  export ${bnbTss.getVaultPasswordEnvKey(config.chainId)}=your-vault-password`)
 }
 
 main().catch((error) => {

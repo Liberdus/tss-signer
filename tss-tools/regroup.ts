@@ -140,7 +140,7 @@ function main() {
   const tssRoot = bnbTss.resolveTssRoot(signerRoot);
   const regroupCwd = `${tssRoot}/.tooling/bin`;
   const binary = bnbTss.resolveBnbTssBinary({...options, signerRoot, tssRoot});
-  const password = options.password || process.env.BNB_TSS_PASSWORD || process.env.TSS_PASSWORD;
+  const password = bnbTss.requireVaultPassword(options.chainId, options.password);
   const channelId = options.channelId || process.env.BNB_TSS_CHANNEL_ID;
   const channelPassword = options.channelPassword || process.env.BNB_TSS_CHANNEL_PASSWORD;
   if (!password || !channelId || !channelPassword) {
