@@ -106,6 +106,12 @@ interface SignedTx {
 
 type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
 
+// Receipt is polled only while remaining cooldown time exceeds (bridgeInCooldown - this value).
+// e.g. for a 60s cooldown: poll while remainingMs > 45s, skip receipt checks once < 45s remains —
+// indicating another party likely already submitted and mined the tx.
+const BRIDGE_COOLDOWN_RECEIPT_SKIP_TAIL_SEC = 15
+const BRIDGE_COOLDOWN_DB_POLL_INTERVAL_MS = 3_000
+
 function txStatusLabel(status: TransactionStatus): string {
   switch (status) {
     case TransactionStatus.PENDING:    return 'PENDING'
@@ -293,7 +299,12 @@ async function fetchBridgeState(
   }
 }
 
-async function waitForBridgeCooldown(chainState: ChainState, chainName: string): Promise<void> {
+async function waitForBridgeCooldown(
+  chainState: ChainState,
+  chainName: string,
+  txId: string,
+  txHash: string,
+): Promise<{ receipt: ethers.providers.TransactionReceipt | null; outcome: ProcessOutcome | null }> {
   const latestBlock = await chainRpcConfig.withChainHttpProvider(
     chainState.config.chainId,
     (provider) => provider.getBlock('latest'),
@@ -302,6 +313,10 @@ async function waitForBridgeCooldown(chainState: ChainState, chainName: string):
   const now = latestBlock.timestamp
   const cooldownEnd = chainState.lastBridgeInTime + chainState.bridgeInCooldown
   const waitSec = Math.max(0, cooldownEnd - now)
+  const receiptCheckMinRemainingSec = Math.max(
+    0,
+    chainState.bridgeInCooldown - BRIDGE_COOLDOWN_RECEIPT_SKIP_TAIL_SEC,
+  )
 
   console.log(
     `Bridge-in cooldown check on ${chainName}: ` +
@@ -309,12 +324,41 @@ async function waitForBridgeCooldown(chainState: ChainState, chainName: string):
     `lastBridgeInTime=${new Date(chainState.lastBridgeInTime * 1000).toISOString()}, ` +
     `cooldown=${chainState.bridgeInCooldown}s, ` +
     `cooldownEnd=${new Date(cooldownEnd * 1000).toISOString()}, ` +
-    `chainNow=${new Date(now * 1000).toISOString()}`
+    `chainNow=${new Date(now * 1000).toISOString()}, ` +
+    `receiptCheckMinRemaining=${receiptCheckMinRemainingSec}s`
   )
 
   if (waitSec > 0) {
-    await sleep(waitSec * 1000)
+    const waitDeadlineMs = Date.now() + waitSec * 1000
+    while (true) {
+      const remainingMs = waitDeadlineMs - Date.now()
+      if (remainingMs <= 0) break
+
+      const dbStatus = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
+      if (dbStatus != null) {
+        return { receipt: null, outcome: dbStatusToSkipOutcome(dbStatus) }
+      }
+
+      // Poll while remaining cooldown time exceeds the threshold — another party may have already
+      // submitted and mined the same deterministic tx, so checking its receipt lets us short-circuit.
+      if (remainingMs > receiptCheckMinRemainingSec * 1000) {
+        try {
+          const receipt = await getChainTransactionReceipt(chainState.config.chainId, txHash)
+          if (receipt) {
+            console.log(`[cooldown] Found receipt on ${chainName} for ${txHash}: status=${receipt.status} block=${receipt.blockNumber}`)
+            return { receipt, outcome: null }
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.warn(`[cooldown] Failed to fetch receipt on ${chainName} for ${txHash}: ${reason}`)
+        }
+      }
+
+      await sleep(Math.min(remainingMs, BRIDGE_COOLDOWN_DB_POLL_INTERVAL_MS))
+    }
   }
+
+  return { receipt: null, outcome: null }
 }
 
 function checkMaxBridgeAmount(
@@ -1108,7 +1152,23 @@ async function processCoinToToken(
   if (cached && cached.nonce === senderNonce) {
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
     await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId, {throwOnError: true})
-    await waitForBridgeCooldown(chainState, targetChainName)
+    const cooldownResult = await waitForBridgeCooldown(chainState, targetChainName, txId, cached.txHash)
+    if (cooldownResult.outcome != null) {
+      signedTxCache.delete(normalizedTxId)
+      return cooldownResult.outcome
+    }
+    if (cooldownResult.receipt?.status === 1) {
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+      signedTxCache.delete(normalizedTxId)
+      if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
+      return 'completed'
+    } else if (cooldownResult.receipt?.status === 0) {
+      console.log(`[nonce-guard] Cached tx reverted on ${targetChainName}: ${cached.txHash}`)
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
+      signedTxCache.delete(normalizedTxId)
+      if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
+      return 'reverted'
+    }
     const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
     if (preSubmit != null) {
       signedTxCache.delete(normalizedTxId)
@@ -1200,7 +1260,30 @@ async function processCoinToToken(
   }
 
   await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId, {throwOnError: true})
-  await waitForBridgeCooldown(chainState, targetChainName)
+  const cooldownResult = await waitForBridgeCooldown(chainState, targetChainName, txId, txHash)
+  if (cooldownResult.outcome != null) {
+    signedTxCache.delete(normalizedTxId)
+    return cooldownResult.outcome
+  }
+  if (cooldownResult.receipt?.status === 1) {
+    console.log(
+      `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+    )
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+    signedTxCache.delete(normalizedTxId)
+    if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
+    return 'completed'
+  } else if (cooldownResult.receipt?.status === 0) {
+    console.log(
+      `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+    )
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
+    signedTxCache.delete(normalizedTxId)
+    if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
+    return 'reverted'
+  }
   
   const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
   if (preSubmit != null) {
@@ -1366,7 +1449,23 @@ async function processVaultBridge(
   if (cached && cached.nonce === senderNonce) {
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
     await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId, {throwOnError: true})
-    await waitForBridgeCooldown(destChainState, destChainName)
+    const cooldownResult = await waitForBridgeCooldown(destChainState, destChainName, txId, cached.txHash)
+    if (cooldownResult.outcome != null) {
+      signedTxCache.delete(normalizedTxId)
+      return cooldownResult.outcome
+    }
+    if (cooldownResult.receipt?.status === 1) {
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+      signedTxCache.delete(normalizedTxId)
+      if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
+      return 'completed'
+    } else if (cooldownResult.receipt?.status === 0) {
+      console.log(`[nonce-guard] Cached tx reverted on ${destChainName}: ${cached.txHash}`)
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, cached.txHash, tssSender, senderNonce)
+      signedTxCache.delete(normalizedTxId)
+      if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
+      return 'reverted'
+    }
     const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
     if (preSubmit != null) {
       signedTxCache.delete(normalizedTxId)
@@ -1458,7 +1557,30 @@ async function processVaultBridge(
   }
 
   await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId, {throwOnError: true})
-  await waitForBridgeCooldown(destChainState, destChainName)
+  const cooldownResult = await waitForBridgeCooldown(destChainState, destChainName, txId, txHash)
+  if (cooldownResult.outcome != null) {
+    signedTxCache.delete(normalizedTxId)
+    return cooldownResult.outcome
+  }
+  if (cooldownResult.receipt?.status === 1) {
+    console.log(
+      `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+    )
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+    signedTxCache.delete(normalizedTxId)
+    if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
+    return 'completed'
+  } else if (cooldownResult.receipt?.status === 0) {
+    console.log(
+      `EVM-to-EVM transaction failed in execution - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
+    )
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.REVERTED, txHash, tssSender, senderNonce, '')
+    signedTxCache.delete(normalizedTxId)
+    if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
+    return 'reverted'
+  }
 
   const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
   if (preSubmit != null) {
