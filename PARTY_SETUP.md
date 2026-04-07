@@ -216,19 +216,43 @@ If signing fails, do not proceed to start the bridge processes. Diagnose the iss
 
 ---
 
-## Before Starting — Register the TSS Address in the Bridge Contract
+## Step 6 — Pre-Start Preparation
+
+All items in this section must be completed before starting the bridge processes. They can be done in parallel across roles.
+
+### 6a — Update chain-config.json with the TSS address
+
+> **Role: All party operators**
+
+Each party machine must have `chain-config.json` updated with the verified TSS sender address. Run the following on every party machine, replacing `<CHAIN_ID>` and `<EOA_ADDRESS>` with the values confirmed in Step 4.
+
+The `bridgeAddress` is the Ethereum address in lowercase without the `0x` prefix, right-zero-padded to 64 hex characters (32 bytes):
+
+```bash
+npm run update-chain -- ./chain-config.json <CHAIN_ID> \
+  '{"tssSenderAddress":"<EOA_ADDRESS>","bridgeAddress":"<EOA_WITHOUT_0x_PADDED_TO_64_HEX>"}'
+```
+
+Example for chain 97 with EOA `0x7fD5AF01358a7dad582b2476aA821b75CebaF297`:
+
+```bash
+npm run update-chain -- ./chain-config.json 97 \
+  '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297","bridgeAddress":"7fd5af01358a7dad582b2476aa821b75cebaf2970000000000000000000000000000000000000000000000000000000000000000"}'
+```
+
+The script deep-merges the supplied fields into every matching entry in `supportedChains`, `vaultChain`, and `secondaryChainConfig`, and writes a `.bak` backup before modifying the file.
+
+### 6b — Register the TSS Address in the Bridge Contract
 
 > **Role: Contract admin**
 
-Before the parties can submit signed transactions, the shared EOA address derived during keygen must be registered as the authorized `bridgeInCaller` in each bridge contract. This is a contract admin operation — whoever deployed the bridge contracts must perform it.
+The shared EOA address derived during keygen must be registered as the authorized `bridgeInCaller` in each bridge contract. This is a contract admin operation — whoever deployed the bridge contracts must perform it.
 
-Provide the contract admin with the verified EOA address from Step 3, and confirm it has been set on all supported chains before proceeding.
+Provide the contract admin with the verified EOA address from Step 4, and confirm it has been set on all supported chains before proceeding.
 
 > Until this is done, signed `bridgeIn` calls from the TSS parties will be rejected by the contract.
 
----
-
-## Before Starting — Fund the TSS Address
+### 6c — Fund the TSS Address
 
 > **Role: Contract admin**
 
@@ -238,9 +262,7 @@ After the TSS address has been registered in the bridge contracts, it must be fu
 
 > The TSS address must have a non-zero balance on each chain before the parties are started. Parties will attempt to submit transactions immediately upon startup if pending work exists.
 
----
-
-## Before Starting — Configure the Liberdus Proxy
+### 6d — Configure the Liberdus Proxy
 
 > **Role: Proxy admin**
 
@@ -262,11 +284,11 @@ Restart the Liberdus proxy after updating the config.
 
 ---
 
-## Step 6 — Start the Observer and TSS Party
+## Step 7 — Start the Observer and TSS Party
 
 > **Role: Party operators**
 
-Once all operators have verified their keystores and the TSS address has been registered in the contracts, the parties can be started.
+Once all Step 6 preparation items are complete, the parties can be started.
 
 Each party index runs **two** paired processes: an **observer** (on-chain monitor) and a **TSS party** (signer). Both must be running for the bridge to operate.
 
@@ -372,7 +394,7 @@ npm run tss-verify -- --chain-id <CHAIN_ID>
 
 ### Test signing after regroup
 
-Repeat [Step 5 — Test Signing](#step-5--test-signing) to confirm the new committee can produce a valid threshold signature before restarting the bridge processes.
+Repeat [Step 5 — Test Signing](#step-5--test-signing) to confirm the new committee can produce a valid threshold signature before restarting the bridge processes. Also re-run [Step 6a](#6a--update-chain-configjson-with-the-tss-address) on every party machine if the TSS address changed.
 
 Then restart your TSS party process:
 
@@ -391,10 +413,11 @@ pm2 restart tss-party
 | 3. Keygen (`tss-keygen-ceremony`) | All 5 simultaneously | Agree on start time and nonce; same config on all machines |
 | 4. Verify (`tss-verify`) | Each operator independently | Share and cross-check EOA address across all parties |
 | 5. Test signing (`tss-sign-ethereum-tx`) | All 5 simultaneously | Confirm threshold signing works; `ethereum_address` must match verified EOA |
-| Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
-| Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
-| Configure proxy `observer_urls` | Proxy admin | Update `config.json` with each party's real IP + observer port; restart proxy |
-| 6. Start observer + party | Each operator independently | TSS address must be registered, funded, and proxy configured; both processes required |
+| 6a. Update `chain-config.json` (`update-chain`) | All party operators | Run on every party machine with the verified EOA from Step 4 |
+| 6b. Register TSS address | Contract admin | Set verified EOA as `bridgeInCaller` on all chains |
+| 6c. Fund TSS address | Contract admin | Send native gas tokens to TSS address on every supported chain |
+| 6d. Configure proxy `observer_urls` | Proxy admin | Update `config.json` with each party's real IP + observer port; restart proxy |
+| 7. Start observer + party | Each operator independently | All Step 6 items must be complete; both processes required |
 | Regroup (when needed) | Old + new members | Share `regroup-config.json`; `threshold+1` old members required |
 
 ---
