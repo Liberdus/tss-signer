@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import {spawnSync} from 'node:child_process'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import * as readlineSync from 'readline-sync'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import {resolveProjectRoot} from '../shared/utils/paths'
@@ -11,6 +13,7 @@ import {
   resolveRegroupCeremonyConfigPath,
   resolveRegroupPartyIndex,
 } from '../tss-tools/lib/regroupCeremony'
+import {isValidVaultPassword} from '../tss-tools/lib/keygenCeremony'
 
 type Options = {
   configPath?: string
@@ -59,7 +62,7 @@ function promptForVaultPassword(): string {
       hideEchoBack: true,
       mask: '',
     })
-    if (password.length > 8) {
+    if (isValidVaultPassword(password)) {
       return password
     }
     console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
@@ -72,11 +75,62 @@ function promptForNewVaultPassword(): string {
       hideEchoBack: true,
       mask: '',
     })
-    if (password.length > 8) {
+    if (!isValidVaultPassword(password)) {
+      console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
+      continue
+    }
+    const confirm = readlineSync.question('Confirm BNB_TSS_PASSWORD: ', {
+      hideEchoBack: true,
+      mask: '',
+    })
+    if (password === confirm) {
       return password
     }
-    console.error('BNB_TSS_PASSWORD must be longer than 8 characters')
+    console.error('Passwords do not match, try again')
   }
+}
+
+function formatVaultBackupTimestamp(date = new Date()): string {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  const hours = `${date.getHours()}`.padStart(2, '0')
+  const minutes = `${date.getMinutes()}`.padStart(2, '0')
+  const seconds = `${date.getSeconds()}`.padStart(2, '0')
+  return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`
+}
+
+function moveExistingChainHomeForFreshNewMember(vaultHome: string): string {
+  if (!fs.existsSync(vaultHome)) {
+    throw new Error(`Expected initialized chain home at ${vaultHome}, but it does not exist.`)
+  }
+
+  const backupDir = getUniqueChainHomeBackupDir(vaultHome)
+  fs.renameSync(vaultHome, backupDir)
+  return backupDir
+}
+
+function getUniqueChainHomeBackupDir(vaultHome: string): string {
+  const parentDir = path.dirname(vaultHome)
+  const chainHomeName = path.basename(vaultHome)
+  const baseBackupName = `${chainHomeName}-backup-${formatVaultBackupTimestamp()}`
+  let backupDir = path.join(parentDir, baseBackupName)
+  let suffix = 1
+  while (fs.existsSync(backupDir)) {
+    backupDir = path.join(parentDir, `${baseBackupName}-${suffix}`)
+    suffix += 1
+  }
+  return backupDir
+}
+
+function copyExistingChainHomeForOldMember(vaultHome: string): string {
+  if (!fs.existsSync(vaultHome)) {
+    throw new Error(`Expected initialized chain home at ${vaultHome}, but it does not exist.`)
+  }
+
+  const backupDir = getUniqueChainHomeBackupDir(vaultHome)
+  fs.cpSync(vaultHome, backupDir, {recursive: true})
+  return backupDir
 }
 
 function verifyVaultPassword(signerRoot: string, chainId: number, homePath?: string): string {
@@ -180,7 +234,25 @@ async function main(): Promise<void> {
     })
     console.log(`Vault initialized at ${vaultHome}`)
   } else {
-    password = verifyVaultPassword(signerRoot, config.chainId, vaultHome)
+    if (derived.isNewMember) {
+      const backupDir = moveExistingChainHomeForFreshNewMember(vaultHome)
+      console.log(`Moved existing chain home to ${backupDir}`)
+      password = promptForNewVaultPassword()
+      console.log(`Initializing fresh vault for new-member regroup on chain ${config.chainId}...`)
+      await bnbTss.initParty({
+        signerRoot,
+        chainId: config.chainId,
+        password,
+        moniker: bnbTss.getIpBasedMoniker(config.chainId, derived.committeePartyIp),
+        homePath: vaultHome,
+        useDefaultSlotPath: true,
+      })
+      console.log(`Fresh vault initialized at ${vaultHome}`)
+    } else {
+      const backupDir = copyExistingChainHomeForOldMember(vaultHome)
+      console.log(`Copied existing chain home backup to ${backupDir}`)
+      password = verifyVaultPassword(signerRoot, config.chainId, vaultHome)
+    }
   }
   confirmProceed()
 
@@ -224,6 +296,9 @@ async function main(): Promise<void> {
   if (result.status !== 0) {
     process.exit(result.status || 1)
   }
+
+  console.log('\nRegroup complete. Set your vault password for this session:')
+  console.log('  export BNB_TSS_PASSWORD=your-vault-password')
 }
 
 main().catch((error) => {

@@ -342,8 +342,6 @@ Regroup redistributes key shares to a new committee without changing the TSS Eth
 
 Regroup requires at least `oldThreshold + 1` old participants.
 
-> **Important:** If a party was excluded from the previous regroup, do not reuse its existing vault data. That excluded party must clear its vault first and let the regroup ceremony create a fresh one.
-
 ### Create the regroup config
 
 One operator prepares a shared `regroup-config.json` and distributes it to all participants:
@@ -377,7 +375,9 @@ npm run tss-regroup-ceremony -- --nonce 1
 The wrapper:
 - Detects the machine's committee position from `newPartyIps`
 - Determines automatically whether this machine is `--is-old` or `--is-new-member`
-- Verifies the vault password against the local vault
+- Creates a timestamped backup of the local `chain-<CHAIN_ID>` home before regroup
+- Reinitializes a fresh local chain home automatically when this machine is joining as a new member
+- Verifies the vault password against the local vault for carry-over old members
 - Derives deterministic channel credentials from the config plus `--nonce`
 - Computes `--new-peer-addrs` from the active old participant set plus the ordered new committee automatically
 - Prints the resolved configuration and prompts for confirmation before launching regroup
