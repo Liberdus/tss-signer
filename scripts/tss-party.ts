@@ -1084,8 +1084,8 @@ async function processCoinToToken(
   console.log(`Processing transaction on ${targetChainName}`)
 
   if (!await checkMaxBridgeAmount(chainState, value)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName}`
-    console.error(reason)
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
+    console.error(`${reason} on ${targetChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
@@ -1134,8 +1134,8 @@ async function processCoinToToken(
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
     await fetchBridgeState(targetChainId)
     if (!await checkMaxBridgeAmount(chainState, value, true)) {
-      const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName} (post-sign check)`
-      console.error(reason)
+      const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
+      console.error(`${reason} on ${targetChainName} (post-sign)`)
       updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
       pendingTxQueueRemovalSet.add(txId)
       signedTxCache.delete(normalizedTxId)
@@ -1252,8 +1252,8 @@ async function processCoinToToken(
 
   await fetchBridgeState(targetChainId)
   if (!await checkMaxBridgeAmount(chainState, value, true)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName} (post-sign check)`
-    console.error(reason)
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
+    console.error(`${reason} on ${targetChainName} (post-sign)`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     pendingTxQueueRemovalSet.add(txId)
     signedTxCache.delete(normalizedTxId)
@@ -1399,8 +1399,8 @@ async function processVaultBridge(
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
   if (!await checkMaxBridgeAmount(destChainState, value)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName}`
-    console.error(reason)
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
+    console.error(`${reason} on ${destChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
     // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
@@ -1450,8 +1450,8 @@ async function processVaultBridge(
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
     await fetchBridgeState(destinationChainId)
     if (!await checkMaxBridgeAmount(destChainState, value, true)) {
-      const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName} (post-sign check)`
-      console.error(reason)
+      const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
+      console.error(`${reason} on ${destChainName} (post-sign)`)
       updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
       pendingTxQueueRemovalSet.add(txId)
       signedTxCache.delete(normalizedTxId)
@@ -1568,8 +1568,8 @@ async function processVaultBridge(
 
   await fetchBridgeState(destinationChainId)
   if (!await checkMaxBridgeAmount(destChainState, value, true)) {
-    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName} (post-sign check)`
-    console.error(reason)
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
+    console.error(`${reason} on ${destChainName} (post-sign)`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     pendingTxQueueRemovalSet.add(txId)
     signedTxCache.delete(normalizedTxId)
