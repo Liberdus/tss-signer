@@ -256,9 +256,7 @@ async function fetchBridgeState(
       const lastBridgeInStr = chainState.lastBridgeInTime > 0
         ? new Date(chainState.lastBridgeInTime * 1000).toISOString()
         : 'never'
-      const maxAmountStr = chainState.maxBridgeInAmount.isZero()
-        ? 'unlimited'
-        : `${ethersUtils.formatEther(chainState.maxBridgeInAmount)} ETH`
+      const maxAmountStr = `${ethersUtils.formatEther(chainState.maxBridgeInAmount)} ETH`
       console.log(
         `Bridge state fetched for ${chainState.config.name}: ` +
         `cooldown=${chainState.bridgeInCooldown}s, ` +
@@ -288,9 +286,7 @@ async function fetchBridgeState(
         { maxRetries: 3 },
       )
       chainState.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
-      const maxAmountStr = chainState.maxBridgeInAmount.isZero()
-        ? 'unlimited'
-        : `${ethersUtils.formatEther(chainState.maxBridgeInAmount)} ETH`
+      const maxAmountStr = `${ethersUtils.formatEther(chainState.maxBridgeInAmount)} ETH`
       console.log(`Bridge maxBridgeInAmount fetched for ${chainState.config.name}: ${maxAmountStr}`)
     }
   } catch (error) {
@@ -361,13 +357,17 @@ async function waitForBridgeCooldown(
   return { receipt: null, outcome: null }
 }
 
-function checkMaxBridgeAmount(
+async function checkMaxBridgeAmount(
   chainState: ChainState,
   value: ethers.BigNumber,
-): boolean {
-  if (chainState.maxBridgeInAmount.isZero()) return true
+  skipRefetch = false,
+): Promise<boolean> {
   if (value.lte(chainState.maxBridgeInAmount)) return true
-  return false
+  if (skipRefetch) return false
+  // Cached check failed — re-fetch in case the limit was raised on-chain
+  console.log(`[bridge-limits] Cached maxBridgeInAmount check failed, re-fetching for chain ${chainState.config.chainId}`)
+  await fetchBridgeState(chainState.config.chainId, 'maxBridgeInAmount')
+  return value.lte(chainState.maxBridgeInAmount)
 }
 
 async function refreshBridgeStateOnRevert(reason: string | undefined, chainId: number): Promise<void> {
@@ -697,24 +697,6 @@ function checkTxStatusFromLocalDB(txId: string): TransactionStatus | null {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     throw new Error(`[checkTxStatus] DB read failed for ${txId}: ${errorMessage}`)
-  }
-}
-
-async function refreshLastBridgeInTime(
-  txId: string,
-  txType: TransactionQueueItem['type'],
-  chainId: number,
-  options: {throwOnError?: boolean} = {},
-): Promise<void> {
-  try {
-    if (txType === 'coinToToken') {
-      await fetchBridgeState(chainId, 'lastBridgeInTime', options)
-    } else if (txType === 'vaultBridge' && chainConfigs.secondaryChainConfig?.chainId != null) {
-      await fetchBridgeState(chainConfigs.secondaryChainConfig.chainId, 'lastBridgeInTime', options)
-    }
-  } catch (error) {
-    console.warn(`[bridge-state] Failed to refresh lastBridgeInTime for tx ${txId}`, error)
-    if (options.throwOnError) throw error
   }
 }
 
@@ -1101,7 +1083,7 @@ async function processCoinToToken(
   let senderNonce = getLocalNonce(targetChainId, tssSender)
   console.log(`Processing transaction on ${targetChainName}`)
 
-  if (!checkMaxBridgeAmount(chainState, value)) {
+  if (!await checkMaxBridgeAmount(chainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName}`
     console.error(reason)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
@@ -1122,7 +1104,6 @@ async function processCoinToToken(
     syncLocalNonceFromDB('coinToToken', targetChainId, tssSender)
     if (driftResult.receiptId) {
       console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
-      await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId)
       return 'completed'
     }
     if (driftResult.latestDbNonce + 1 < chainNonce) {
@@ -1151,7 +1132,17 @@ async function processCoinToToken(
   const cached = signedTxCache.get(normalizedTxId)
   if (cached && cached.nonce === senderNonce) {
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
-    await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId, {throwOnError: true})
+    await fetchBridgeState(targetChainId)
+    if (!await checkMaxBridgeAmount(chainState, value, true)) {
+      const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName} (post-sign check)`
+      console.error(reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+      pendingTxQueueRemovalSet.add(txId)
+      signedTxCache.delete(normalizedTxId)
+      const txData = processingTransactionIds.get(txId)
+      if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${targetChainName}`)
+      return 'failed'
+    }
     const cooldownResult = await waitForBridgeCooldown(chainState, targetChainName, txId, cached.txHash)
     if (cooldownResult.outcome != null) {
       signedTxCache.delete(normalizedTxId)
@@ -1259,7 +1250,17 @@ async function processCoinToToken(
     return dbStatusToSkipOutcome(postSign)
   }
 
-  await refreshLastBridgeInTime(txId, 'coinToToken', targetChainId, {throwOnError: true})
+  await fetchBridgeState(targetChainId)
+  if (!await checkMaxBridgeAmount(chainState, value, true)) {
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)} on ${targetChainName} (post-sign check)`
+    console.error(reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+    pendingTxQueueRemovalSet.add(txId)
+    signedTxCache.delete(normalizedTxId)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${targetChainName}`)
+    return 'failed'
+  }
   const cooldownResult = await waitForBridgeCooldown(chainState, targetChainName, txId, txHash)
   if (cooldownResult.outcome != null) {
     signedTxCache.delete(normalizedTxId)
@@ -1397,7 +1398,7 @@ async function processVaultBridge(
 
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
-  if (!checkMaxBridgeAmount(destChainState, value)) {
+  if (!await checkMaxBridgeAmount(destChainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName}`
     console.error(reason)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
@@ -1419,7 +1420,6 @@ async function processVaultBridge(
     syncLocalNonceFromDB('vaultBridge', sourceChainId, tssSender)
     if (driftResult.receiptId) {
       console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
-      await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId)
       return 'completed'
     }
     if (driftResult.latestDbNonce + 1 < chainNonce) {
@@ -1448,7 +1448,17 @@ async function processVaultBridge(
   const cached = signedTxCache.get(normalizedTxId)
   if (cached && cached.nonce === senderNonce) {
     console.log(`[nonce-guard] Rebroadcasting cached signed tx for ${txId} nonce=${senderNonce}`)
-    await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId, {throwOnError: true})
+    await fetchBridgeState(destinationChainId)
+    if (!await checkMaxBridgeAmount(destChainState, value, true)) {
+      const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName} (post-sign check)`
+      console.error(reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+      pendingTxQueueRemovalSet.add(txId)
+      signedTxCache.delete(normalizedTxId)
+      const txData = processingTransactionIds.get(txId)
+      if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${destChainName}`)
+      return 'failed'
+    }
     const cooldownResult = await waitForBridgeCooldown(destChainState, destChainName, txId, cached.txHash)
     if (cooldownResult.outcome != null) {
       signedTxCache.delete(normalizedTxId)
@@ -1556,7 +1566,17 @@ async function processVaultBridge(
     return dbStatusToSkipOutcome(postSign)
   }
 
-  await refreshLastBridgeInTime(txId, 'vaultBridge', destinationChainId, {throwOnError: true})
+  await fetchBridgeState(destinationChainId)
+  if (!await checkMaxBridgeAmount(destChainState, value, true)) {
+    const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)} on ${destChainName} (post-sign check)`
+    console.error(reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+    pendingTxQueueRemovalSet.add(txId)
+    signedTxCache.delete(normalizedTxId)
+    const txData = processingTransactionIds.get(txId)
+    if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${destChainName}`)
+    return 'failed'
+  }
   const cooldownResult = await waitForBridgeCooldown(destChainState, destChainName, txId, txHash)
   if (cooldownResult.outcome != null) {
     signedTxCache.delete(normalizedTxId)
@@ -2176,7 +2196,6 @@ async function main(): Promise<void> {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed in local DB at pre-process')
       }
-      await refreshLastBridgeInTime(txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       processingTransactionIds.delete(txId)
       return
     }
@@ -2223,7 +2242,6 @@ async function main(): Promise<void> {
       if (outcome === 'completed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         pendingTxQueueRemovalSet.add(txId)
-        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.type === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : validTx.chainId)
         console.log('Transaction processed successfully:', validTx)
       } else if (outcome === 'reverted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
@@ -2241,7 +2259,6 @@ async function main(): Promise<void> {
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
-        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_reverted') {
         console.log(`Transaction ${validTx.txId} was already reverted in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
@@ -2251,13 +2268,11 @@ async function main(): Promise<void> {
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
-        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       } else if (outcome === 'skipped_db_failed') {
         console.log(`Transaction ${validTx.txId} was already failed in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         pendingTxQueueRemovalSet.add(txId)
         appendToFailedTxsLogs(validTx, 'already failed in local DB during reconcile')
-        await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
       }
 
       // Check memory usage after successful transaction
@@ -2282,7 +2297,6 @@ async function main(): Promise<void> {
         if (finalStatus === TransactionStatus.COMPLETED) {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           pendingTxQueueRemovalSet.add(txId)
-          await refreshLastBridgeInTime(validTx.txId, validTx.type as TransactionQueueItem['type'], validTx.chainId)
           // Another party submitted this tx — nonce was consumed, advance local tracker
           if (validTx.type !== 'tokenToCoin') {
             const nonceCacheChainId = validTx.type === 'vaultBridge'
