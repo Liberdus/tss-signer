@@ -1,173 +1,105 @@
 #!/usr/bin/env node
-/**
- * inject-liberdus-tx.js
- *
- * Manually sign a Liberdus transaction using all 5 TSS party keystores
- * and inject it into the Liberdus network.
- *
- * Prerequisites:
- *   - WASM built: npm run build_node
- *   - Coordinator running at coordinatorUrl (default: http://127.0.0.1:8000)
- *
- * Usage:
- *   node scripts/inject-liberdus-tx.js <chainId> <tx-json-file>
- *
- * Example:
- *   node scripts/inject-liberdus-tx.js 80002 ./tx.json
- *
- * Environment variables:
- *   COORDINATOR_URL     Override coordinator URL (default: from chain-config.json)
- *   LIBERDUS_PROXY_URL  Override proxy URL for injection (default: https://dev.liberdus.com:3030)
- *
- * tx.json — required fields for ALL types:
- *   { "from": "<shardus 64-char hex>", "type": "<tx-type>", ... }
- *
- * Type-specific notes:
- *   transfer   — also needs: to, amount (decimal string), networkId, memo
- *                timestamp: use the provided value, or Date.now() if omitted —
- *                frozen before signing so all 5 parties hash the same object
- *                pass --cal-chatid to compute chatId from from+to automatically
- *   <other>    — include whatever fields the network expects; the script signs
- *                the whole object without restricting which fields are present.
- *
- * BigInt fields: any field listed in --bigint-fields (comma-separated) will be
- *   converted from decimal string → BigInt before hashing.
- *   Default bigint fields: amount
- *   Example: --bigint-fields amount,fee
- */
+import {ethers} from 'ethers'
+import * as crypto from '@shardus/crypto-utils'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import axios from 'axios'
+import * as bnbTss from '../tss-tools/lib/bnbTss'
+import {chainConfigsRaw} from '../shared/config'
+import {
+  DEFAULT_SHARDUS_CRYPTO_HASH_KEY,
+  deriveDeterministicChannelId,
+  deriveDeterministicChannelPassword,
+} from '../tss-tools/lib/channelId'
 
-'use strict'
+const {stringify} = require(path.join(process.cwd(), 'external/stringify-shardus'))
 
-const gg18 = require('../pkg')
-const ethers = require('ethers')
-const crypto = require('@shardus/crypto-utils')
-const fs = require('fs')
-const path = require('path')
-const axios = require('axios')
-const {stringify} = require('../external/stringify-shardus')
+type TxValue = string | number | bigint | boolean | null | undefined | TxObject | TxValue[]
 
-// ─── Init ────────────────────────────────────────────────────────────────────
+type TxObject = {
+  [key: string]: TxValue
+}
+
+type UnsignedLiberdusTx = TxObject & {
+  from: string
+  to?: string
+  type: string
+  timestamp?: number
+  chatId?: string
+}
+
+type SignedLiberdusTx = UnsignedLiberdusTx & {
+  sign: {
+    owner: string
+    sig: string
+  }
+}
+
+type CliFlags = {
+  [key: string]: string | boolean | undefined
+}
+
+type CycleRecord = {
+  start: number
+  duration: number
+}
 
 const CRYPTO_INIT_KEY = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc'
-const KEYSTORE_DIR = path.join(__dirname, '../keystores')
+const proxyServerHost =
+  process.env.LIBERDUS_PROXY_URL || chainConfigsRaw.proxyServerHost || 'https://dev.liberdus.com:3030'
+const collectorHost = process.env.COLLECTOR_HOST || chainConfigsRaw.collectorHost || ''
 
 crypto.init(CRYPTO_INIT_KEY)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
-const params = JSON.parse(fs.readFileSync(path.join(__dirname, '../params.json'), 'utf8'))
-const chainConfigs = JSON.parse(fs.readFileSync(path.join(__dirname, '../chain-config.json'), 'utf8'))
-
-const t = params.threshold
-const n = params.parties
-
-const coordinatorUrl =
-  process.env.COORDINATOR_URL || chainConfigs.coordinatorUrl || 'http://127.0.0.1:8000'
-
-const enableShardusCryptoAuth =
-  process.env.ENABLE_SHARDUS_CRYPTO_AUTH != null
-    ? process.env.ENABLE_SHARDUS_CRYPTO_AUTH === 'true'
-    : chainConfigs.enableShardusCryptoAuth === true
-const signerKeyStoreDir = path.join(__dirname, '../keystores')
-const signerKeyPairFilePathFromEnv = (process.env.TSS_SIGNER_KEYPAIR_FILE || '').trim()
-const signerPartyIdx = parseInt((process.env.TSS_PARTY_IDX || process.argv[4] || '1').toString(), 10)
-
-function isHexWithLength(value, length) {
-  return typeof value === 'string' && value.length === length && /^[0-9a-fA-F]+$/.test(value)
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function loadSignerKeyPairFromFile(filePath) {
-  if (!fs.existsSync(filePath)) return null
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-    const publicKey = typeof parsed.publicKey === 'string' ? parsed.publicKey.trim() : ''
-    const secretKey = typeof parsed.secretKey === 'string' ? parsed.secretKey.trim() : ''
-    if (
-      isHexWithLength(publicKey, 64) &&
-      isHexWithLength(secretKey, 128)
-    ) {
-      return {
-        publicKey,
-        secretKey,
-      }
-    }
-    console.error(
-      `[auth] Invalid signer keyPair format in ${filePath}: expected publicKey=64 hex and secretKey=128 hex`
-    )
-  } catch (error) {
-    console.error(`[auth] Failed to read signer keyPair file ${filePath}:`, error)
-  }
-  return null
-}
-
-function resolveSignerKeyPairFilePath(partyIdx) {
-  if (signerKeyPairFilePathFromEnv) return signerKeyPairFilePathFromEnv
-  return path.join(signerKeyStoreDir, `tss_signer_keypair_party_${partyIdx}.json`)
-}
-
-function ensureSignerKeyPairTemplate(filePath) {
-  if (fs.existsSync(filePath)) return
-  fs.mkdirSync(path.dirname(filePath), {recursive: true})
-  fs.writeFileSync(
-    filePath,
+function usage(exitCode = 1): never {
+  console.log('Usage: node scripts/inject-liberdus-tx.js <chainId> <tx-json-file> [options]')
+  console.log('')
+  console.log('Options:')
+  console.log('  --bigint-fields <fields>  Comma-separated tx fields to convert to BigInt')
+  console.log('                            (default: "amount")')
+  console.log('  --party <idx>             Use explicit party-N vault layout instead of default-slot')
+  console.log('  --use-default-slot-path   Force default-slot vault layout')
+  console.log('  --password <value>        Override TSS vault password')
+  console.log('  --vault <name>            Override vault name (default: "default")')
+  console.log('  --home-root <path>        Override keystore root for BNB TSS')
+  console.log('  --home-path <path>        Override exact vault home path for BNB TSS')
+  console.log('  --channel-id <value>      Override BNB TSS signing channel id')
+  console.log('  --channel-password <v>    Override BNB TSS signing channel password')
+  console.log('  --sign-discovery-timeout <duration>')
+  console.log('                            Native BNB TSS peer discovery window (default: 60s)')
+  console.log('  --cal-chatid              Compute chatId from from+to and add it to the tx')
+  console.log('  --dry-run                 Sign but do not inject')
+  console.log('')
+  console.log('Examples:')
+  console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json')
+  console.log('  node scripts/inject-liberdus-tx.js 97 ./tx.json --party 1')
+  console.log('  node scripts/inject-liberdus-tx.js 97 ./tx.json --sign-discovery-timeout 60s')
+  console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json --dry-run')
+  console.log('')
+  console.log('transfer tx.json example:')
+  console.log(
     JSON.stringify(
       {
-        publicKey: '',
-        secretKey: '',
+        from: '35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000',
+        to: '<recipient-shardus-address>',
+        amount: '1000000000000000000',
+        type: 'transfer',
+        networkId: chainConfigsRaw.liberdusNetworkId,
+        memo: 'optional memo',
       },
       null,
-      2
-    ) + '\n'
+      2,
+    ),
   )
-  console.warn(`[auth] Created missing signer keyPair template at ${filePath}`)
+  process.exit(exitCode)
 }
 
-if (enableShardusCryptoAuth) {
-  if (typeof gg18.gg18_shardus_crypto_init !== 'function' || typeof gg18.gg18_shardus_crypto_keys !== 'function') {
-    throw new Error(
-      '[auth] ENABLE_SHARDUS_CRYPTO_AUTH is true but gg18 Shardus Crypto exports are unavailable'
-    )
-  }
-
-  const shardusCryptoHashKey = (process.env.SHARDUS_CRYPTO_HASH_KEY || '').trim()
-  if (!shardusCryptoHashKey) {
-    throw new Error('[auth] SHARDUS_CRYPTO_HASH_KEY is required when ENABLE_SHARDUS_CRYPTO_AUTH=true')
-  }
-
-  const signerKeyPairFilePath = resolveSignerKeyPairFilePath(signerPartyIdx)
-  const fileKeyPair = loadSignerKeyPairFromFile(signerKeyPairFilePath)
-  const signerPublicKey =
-    (process.env.TSS_SIGNER_PUB_KEY || '').trim() || (fileKeyPair && fileKeyPair.publicKey) || ''
-  const signerSecretKey =
-    (process.env.TSS_SIGNER_SEC_KEY || '').trim() || (fileKeyPair && fileKeyPair.secretKey) || ''
-
-  if (!signerPublicKey || !signerSecretKey) {
-    if (!signerKeyPairFilePathFromEnv) {
-      ensureSignerKeyPairTemplate(signerKeyPairFilePath)
-    }
-    throw new Error(
-      `[auth] TSS signer keyPair is required when ENABLE_SHARDUS_CRYPTO_AUTH=true (set TSS_SIGNER_PUB_KEY/TSS_SIGNER_SEC_KEY or fill ${signerKeyPairFilePath})`
-    )
-  }
-  if (!isHexWithLength(signerPublicKey, 64) || !isHexWithLength(signerSecretKey, 128)) {
-    throw new Error(
-      '[auth] Invalid TSS signer keyPair format: expected TSS_SIGNER_PUB_KEY=64 hex and TSS_SIGNER_SEC_KEY=128 hex'
-    )
-  }
-
-  gg18.gg18_shardus_crypto_init(shardusCryptoHashKey)
-  gg18.gg18_shardus_crypto_keys(signerPublicKey, signerSecretKey)
-  console.log('[auth] gg18 Shardus Crypto request signing enabled for coordinator calls')
-} else {
-  console.log('[auth] gg18 Shardus Crypto request signing disabled (local development mode)')
-}
-const proxyServerHost =
-  process.env.LIBERDUS_PROXY_URL || 'https://dev.liberdus.com:3030'
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-const toShardusAddress = (address) => {
+function toShardusAddress(address: string): string {
   if (address.length === 64) return address.toLowerCase()
   if (/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return address.slice(2).toLowerCase() + '0'.repeat(24)
@@ -175,109 +107,78 @@ const toShardusAddress = (address) => {
   return address
 }
 
-const loadKeystore = (partyIdx, chainId) => {
-  const filePath = path.join(KEYSTORE_DIR, `keystore_party_${partyIdx}_chain_${chainId}.json`)
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Keystore not found: ${filePath}`)
-  }
-  return fs.readFileSync(filePath, 'utf8')
+function calculateChatId(from: string, to: string): string {
+  return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
 }
 
-const calculateChatId = (from, to) =>
-  crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
+function normalizeTxId(txId: string): string {
+  const normalized = txId.trim().toLowerCase().replace(/^0x/, '')
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(`Expected normalized 64-char tx id, got: ${txId}`)
+  }
+  return normalized
+}
 
-const verifySignedTx = (obj) => {
-  const {owner, sig} = obj.sign
-  const dataWithoutSign = Object.assign({}, obj)
-  dataWithoutSign.sign = undefined
+function stringifyWithBigInt(value: unknown): string {
+  return JSON.stringify(value, (_key, currentValue) =>
+    typeof currentValue === 'bigint' ? currentValue.toString() : currentValue,
+  )
+}
+
+function deriveLocalFutureTimestamp(
+  txId: string,
+  txTimestampMs: number,
+  currentCycleRecord: CycleRecord,
+): number {
+  const stepMs = Math.max((currentCycleRecord.duration || 10) * 1000, 10_000)
+  let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
+  const minFuture = Math.max(txTimestampMs + 60_000, Date.now() + 30_000)
+  while (futureTimestamp < minFuture) {
+    futureTimestamp += stepMs
+  }
+  const deterministicOffsetSteps = Number.parseInt(normalizeTxId(txId).slice(-2), 16) % 3
+  return futureTimestamp + deterministicOffsetSteps * stepMs
+}
+
+function verifySignedTx(tx: SignedLiberdusTx): boolean {
+  const {owner, sig} = tx.sign
+  const dataWithoutSign: TxObject = {...tx}
+  delete dataWithoutSign.sign
   const message = crypto.hashObj(dataWithoutSign)
   const recoveredAddress = ethers.utils.verifyMessage(message, sig)
   const recoveredShardusAddress = toShardusAddress(recoveredAddress)
   const isValid = recoveredShardusAddress.toLowerCase() === owner.toLowerCase()
-  console.log(`  Verification — owner: ${owner}`)
-  console.log(`  Verification — recovered: ${recoveredShardusAddress}`)
+  console.log(`  Verification - owner: ${owner}`)
+  console.log(`  Verification - recovered: ${recoveredShardusAddress}`)
   return isValid
 }
 
-// ─── TSS Signing ─────────────────────────────────────────────────────────────
-
-/**
- * Run one party's share of the TSS signing protocol.
- * Returns the sign_json string on success, or null if the signing slot was full.
- */
-async function tssSignParty(partyIdx, keyStore, digest) {
-  const operationId = digest.slice(2, 8)
-  const delay = Math.max(Math.random() * 500, 100)
-
-  let context
-  try {
-    context = await gg18.gg18_sign_client_new_context(
-      coordinatorUrl,
-      t,
-      n,
-      keyStore,
-      digest.slice(2),
-      operationId,
-    )
-  } catch (e) {
-    throw new Error(`Party ${partyIdx} failed at new_context: ${e.message || e}`)
-  }
-
-  const contextJSON = JSON.parse(context)
-  if (contextJSON.party_num_int > t + 1) {
-    console.log(
-      `  Party ${partyIdx}: slot full (party_num_int=${contextJSON.party_num_int}), skipping`,
-    )
-    return null
-  }
-  console.log(
-    `  Party ${partyIdx}: assigned party_num_int=${contextJSON.party_num_int}, running rounds...`,
-  )
-
-  context = await gg18.gg18_sign_client_round0(context, delay)
-  context = await gg18.gg18_sign_client_round1(context, delay)
-  context = await gg18.gg18_sign_client_round2(context, delay)
-  context = await gg18.gg18_sign_client_round3(context, delay)
-  context = await gg18.gg18_sign_client_round4(context, delay)
-  context = await gg18.gg18_sign_client_round5(context, delay)
-  context = await gg18.gg18_sign_client_round6(context, delay)
-  context = await gg18.gg18_sign_client_round7(context, delay)
-  context = await gg18.gg18_sign_client_round8(context, delay)
-  const signJson = await gg18.gg18_sign_client_round9(context, delay)
-
-  console.log(`  Party ${partyIdx}: signing complete`)
-  return signJson
-}
-
-// ─── Liberdus Network ────────────────────────────────────────────────────────
-
-async function injectLiberdusTx(txId, signedTx) {
+async function injectLiberdusTx(txId: string, signedTx: SignedLiberdusTx): Promise<void> {
   const body = {tx: stringify(signedTx)}
-  const injectUrl = proxyServerHost + '/inject'
-
+  const injectUrl = `${proxyServerHost}/inject`
   const waitTime = (signedTx.timestamp || 0) - Date.now()
+
   if (waitTime > 0) {
     console.log(`Waiting ${Math.round(waitTime / 1000)}s for timestamp window...`)
     await sleep(waitTime)
   }
 
-  console.log(`Injecting tx ${txId} → ${injectUrl}`)
-  const res = await axios.post(injectUrl, body)
-  console.log('Inject response:', JSON.stringify(res.data))
-  if (res.status !== 200 || res.data?.result?.success !== true) {
-    throw new Error(`Injection rejected: ${JSON.stringify(res.data)}`)
+  console.log(`Injecting tx ${txId} -> ${injectUrl}`)
+  const response = await axios.post(injectUrl, body)
+  console.log('Inject response:', JSON.stringify(response.data))
+  if (response.status !== 200 || response.data?.result?.success !== true) {
+    throw new Error(`Injection rejected: ${JSON.stringify(response.data)}`)
   }
-  return {success: true}
 }
 
-async function pollForReceipt(txId, maxRetries = 10) {
-  const url = proxyServerHost + '/transaction/' + txId
-  for (let i = 0; i < maxRetries; i++) {
+async function pollForReceipt(txId: string, maxRetries = 10): Promise<any | null> {
+  const url = `${proxyServerHost}/transaction/${txId}`
+  for (let i = 0; i < maxRetries; i += 1) {
     await sleep(2000)
     try {
-      const res = await axios.get(url)
-      if (res.data && res.data.transaction) return res.data.transaction
-    } catch (_) {
+      const response = await axios.get(url)
+      if (response.data && response.data.transaction) return response.data.transaction
+    } catch {
       // keep polling
     }
     console.log(`  Polling receipt... attempt ${i + 1}/${maxRetries}`)
@@ -285,182 +186,184 @@ async function pollForReceipt(txId, maxRetries = 10) {
   return null
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+async function getLatestCycleRecord(): Promise<CycleRecord> {
+  if (!collectorHost) {
+    throw new Error('COLLECTOR_HOST or chainConfigs.collectorHost is required to derive timestamp from cycle')
+  }
+  const url = `${collectorHost}/api/cycleinfo?count=1`
+  const response = await axios.get(url)
+  const {success, cycles} = response.data || {}
+  const cycleRecord = success && Array.isArray(cycles) && cycles.length > 0 ? cycles[0].cycleRecord : null
+  if (
+    !cycleRecord ||
+    !Number.isFinite(cycleRecord.start) ||
+    !Number.isFinite(cycleRecord.duration)
+  ) {
+    throw new Error(`Failed to load latest cycle record from ${url}`)
+  }
+  return {
+    start: cycleRecord.start,
+    duration: cycleRecord.duration,
+  }
+}
 
-async function main() {
-  // ── Parse CLI flags ────────────────────────────────────────────────────────
+function parseArgs(argv: string[]): {positional: string[]; flags: CliFlags} {
+  const positional: string[] = []
+  const flags: CliFlags = {}
+  const booleanFlags = new Set(['cal-chatid', 'dry-run', 'use-default-slot-path'])
 
-  // Collect named flags (--key value or --key=value) and positional args separately
-  const positional = []
-  const flags = {}
-  const rawArgs = process.argv.slice(2)
-  for (let i = 0; i < rawArgs.length; i++) {
-    const arg = rawArgs[i]
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
     if (arg.startsWith('--')) {
       const eqIdx = arg.indexOf('=')
       if (eqIdx !== -1) {
         flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1)
+      } else if (booleanFlags.has(arg.slice(2))) {
+        flags[arg.slice(2)] = true
       } else {
-        flags[arg.slice(2)] = rawArgs[++i]
+        flags[arg.slice(2)] = argv[i + 1]
+        i += 1
       }
-    } else {
-      positional.push(arg)
+      continue
     }
+    positional.push(arg)
   }
+
+  return {positional, flags}
+}
+
+function requireStringFlag(flags: CliFlags, key: string): string | undefined {
+  const value = flags[key]
+  return typeof value === 'string' ? value : undefined
+}
+
+function asUnsignedLiberdusTx(value: unknown): UnsignedLiberdusTx {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Transaction JSON must be an object')
+  }
+  return value as UnsignedLiberdusTx
+}
+
+async function main(): Promise<void> {
+  const {positional, flags} = parseArgs(process.argv.slice(2))
 
   if (positional.length < 2) {
-    console.log('Usage: node scripts/inject-liberdus-tx.js <chainId> <tx-json-file> [options]')
-    console.log('')
-    console.log('Options:')
-    console.log('  --bigint-fields <fields>  Comma-separated tx fields to convert to BigInt')
-    console.log('                            (default: "amount")')
-    console.log('  --cal-chatid              Compute chatId from from+to and add it to the tx')
-    console.log('  --dry-run                 Sign but do not inject')
-    console.log('')
-    console.log('Examples:')
-    console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json')
-    console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json --bigint-fields amount,fee')
-    console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json --dry-run')
-    console.log('')
-    console.log('transfer tx.json example:')
-    console.log(
-      JSON.stringify(
-        {
-          from: '35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000',
-          to: '<recipient-shardus-address>',
-          amount: '1000000000000000000',
-          type: 'transfer',
-          networkId: chainConfigs.liberdusNetworkId,
-          memo: 'optional memo',
-        },
-        null,
-        2,
-      ),
-    )
-    process.exit(1)
+    usage()
   }
 
-  // ── Parse CLI ──────────────────────────────────────────────────────────────
-
-  const chainId = parseInt(positional[0])
-  if (isNaN(chainId)) {
-    console.error(`Invalid chainId: "${positional[0]}"`)
-    process.exit(1)
+  const chainId = Number.parseInt(positional[0], 10)
+  if (!Number.isInteger(chainId)) {
+    throw new Error(`Invalid chainId: "${positional[0]}"`)
   }
 
   const txFilePath = path.resolve(positional[1])
   if (!fs.existsSync(txFilePath)) {
-    console.error(`Tx file not found: ${txFilePath}`)
-    process.exit(1)
+    throw new Error(`Tx file not found: ${txFilePath}`)
   }
 
-  const bigintFields = (flags['bigint-fields'] || 'amount').split(',').map((f) => f.trim()).filter(Boolean)
-  const calChatId = Object.prototype.hasOwnProperty.call(flags, 'cal-chatid')
-  const dryRun = Object.prototype.hasOwnProperty.call(flags, 'dry-run')
+  const bigintFields = (requireStringFlag(flags, 'bigint-fields') || 'amount')
+    .split(',')
+    .map((field) => field.trim())
+    .filter(Boolean)
+  const calChatId = flags['cal-chatid'] === true
+  const dryRun = flags['dry-run'] === true
+  const useDefaultSlotPath = flags['use-default-slot-path'] === true || !flags.party
+  const partyFlag = requireStringFlag(flags, 'party')
+  const partyIdx = partyFlag != null ? Number.parseInt(partyFlag, 10) : undefined
 
-  // ── Load & prepare tx ─────────────────────────────────────────────────────
+  if (partyFlag != null && (!Number.isInteger(partyIdx) || partyIdx < 1)) {
+    throw new Error(`Invalid --party value: "${partyFlag}"`)
+  }
 
-  const tx = JSON.parse(fs.readFileSync(txFilePath, 'utf8'))
+  const tx = asUnsignedLiberdusTx(JSON.parse(fs.readFileSync(txFilePath, 'utf8')))
 
   if (!tx.from) {
-    console.error('Missing required tx field: "from"')
-    process.exit(1)
+    throw new Error('Missing required tx field: "from"')
   }
   if (!tx.type) {
-    console.error('Missing required tx field: "type"')
-    process.exit(1)
+    throw new Error('Missing required tx field: "type"')
   }
 
-  // Normalise addresses to Shardus 64-char format
   tx.from = toShardusAddress(tx.from)
-  if (tx.to) tx.to = toShardusAddress(tx.to)
+  if (typeof tx.to === 'string') {
+    tx.to = toShardusAddress(tx.to)
+  }
 
   if (tx.type === 'register') {
-    tx.aliasHash = crypto.hash(tx.alias)
+    tx.aliasHash = crypto.hash(`${tx.alias || ''}`)
   }
 
-  // Convert specified fields to BigInt (JSON cannot represent BigInt natively)
   for (const field of bigintFields) {
     if (tx[field] != null) {
-      tx[field] = BigInt(tx[field])
+      tx[field] = BigInt(`${tx[field]}`)
       console.log(`Converted tx.${field} to BigInt`)
     }
   }
 
-  // Compute chatId from from+to if --cal-chatid flag is set
-  if (calChatId && tx.to) {
+  if (calChatId && typeof tx.to === 'string') {
     tx.chatId = calculateChatId(tx.from, tx.to)
     console.log(`Computed chatId: ${tx.chatId}`)
   }
 
-  // Use provided timestamp if present, otherwise stamp with Date.now()
-  // Either way it is frozen here so all 5 parties hash the exact same value
-  if (!tx.timestamp) tx.timestamp = Date.now() + 5 * 1000
+  if (!tx.timestamp) {
+    const timestampSeedTxId = crypto.hashObj(tx, true)
+    const currentCycleRecord = await getLatestCycleRecord()
+    tx.timestamp = deriveLocalFutureTimestamp(timestampSeedTxId, Date.now(), currentCycleRecord)
+  }
+
   console.log(`Timestamp: ${tx.timestamp} (${new Date(tx.timestamp).toISOString()})`)
-
-  console.log('\n── Transaction ──────────────────────────────────────────────')
-  console.log(JSON.stringify(tx, (k, v) => (typeof v === 'bigint' ? v.toString() : v), 2))
-  console.log(`\nChainId:     ${chainId}`)
-  console.log(`Coordinator: ${coordinatorUrl}`)
-  console.log(`Proxy:       ${proxyServerHost}`)
-
-  // ── Compute digest ─────────────────────────────────────────────────────────
+  console.log('\n-- Transaction ----------------------------------------------')
+  console.log(stringifyWithBigInt(tx))
+  console.log(`\nChainId:      ${chainId}`)
+  console.log(`Proxy:        ${proxyServerHost}`)
+  console.log(`Vault mode:   ${useDefaultSlotPath ? 'default-slot' : `party-${partyIdx}`}`)
 
   const hashMessage = crypto.hashObj(tx)
   const digest = ethers.utils.hashMessage(hashMessage)
-  console.log(`\nHash message: ${hashMessage}`)
-  console.log(`Digest:       ${digest}`)
+  const unsignedTxId = crypto.hashObj(tx, true)
+  const channelId =
+    requireStringFlag(flags, 'channel-id') ||
+    process.env.BNB_TSS_CHANNEL_ID ||
+    deriveDeterministicChannelId(normalizeTxId(unsignedTxId), tx.timestamp)
+  const channelPassword =
+    requireStringFlag(flags, 'channel-password') ||
+    process.env.BNB_TSS_CHANNEL_PASSWORD ||
+    deriveDeterministicChannelPassword(
+      channelId,
+      (process.env.SHARDUS_CRYPTO_HASH_KEY || DEFAULT_SHARDUS_CRYPTO_HASH_KEY).trim(),
+    )
 
-  // ── Load keystores ─────────────────────────────────────────────────────────
+  console.log(`\nHash message:  ${hashMessage}`)
+  console.log(`Digest:        ${digest}`)
+  console.log(`Unsigned tx ID:${unsignedTxId}`)
+  console.log(`Channel ID:    ${channelId}`)
 
-  console.log('\n── Loading keystores ────────────────────────────────────────')
-  const keystores = []
-  for (let i = 1; i <= n; i++) {
-    const ks = loadKeystore(i, chainId)
-    keystores.push({idx: i, res: ks})
-    console.log(`  Party ${i} / chain ${chainId}: OK`)
-  }
+  console.log('\n-- BNB TSS Signing ------------------------------------------')
+  console.log('Run this command on enough parties at the same time for threshold signing.')
 
-  // ── TSS Signing (all parties in parallel) ──────────────────────────────────
+  const signed = await bnbTss.signDigest({
+    ...(useDefaultSlotPath ? {} : {partyIdx}),
+    chainId,
+    useDefaultSlotPath,
+    digest,
+    channelId,
+    channelPassword,
+    password: requireStringFlag(flags, 'password'),
+    vaultName: requireStringFlag(flags, 'vault'),
+    homeRoot: requireStringFlag(flags, 'home-root'),
+    homePath: requireStringFlag(flags, 'home-path'),
+    signDiscoveryTimeout: requireStringFlag(flags, 'sign-discovery-timeout') || '60s',
+    printLogs: true,
+  })
 
-  console.log(
-    `\n── TSS Signing (${n} parties, threshold ${t}, signing slots: ${t + 1}) ──────────────`,
-  )
-
-  const settledResults = await Promise.allSettled(
-    keystores.map(({idx, res}) => tssSignParty(idx, res, digest)),
-  )
-
-  // Collect first successful non-null result
-  let signJson = null
-  const errors = []
-  for (const result of settledResults) {
-    if (result.status === 'fulfilled' && result.value !== null) {
-      signJson = result.value
-      break
-    }
-    if (result.status === 'rejected') {
-      errors.push(result.reason?.message || String(result.reason))
-    }
-  }
-
-  if (!signJson) {
-    console.error('TSS signing failed — no party produced a signature')
-    if (errors.length) console.error('Errors:', errors)
-    process.exit(1)
-  }
-
-  // ── Build signed tx ────────────────────────────────────────────────────────
-
-  const sigParts = JSON.parse(signJson)
   const signature = {
-    r: '0x' + sigParts[0],
-    s: '0x' + sigParts[1],
-    v: Number(sigParts[2]),
+    r: signed.r,
+    s: signed.s,
+    v: signed.v,
   }
   const serializedSignature = ethers.utils.joinSignature(signature)
 
-  const signedTx = {
+  const signedTx: SignedLiberdusTx = {
     ...tx,
     sign: {
       owner: tx.from,
@@ -468,43 +371,26 @@ async function main() {
     },
   }
 
-  // ── Verify ─────────────────────────────────────────────────────────────────
-
-  console.log('\n── Verifying signature ──────────────────────────────────────')
+  console.log('\n-- Verifying signature --------------------------------------')
   const isValid = verifySignedTx(signedTx)
   console.log(`Signature valid: ${isValid}`)
   if (!isValid) {
-    console.error('Signature verification failed — aborting')
-    process.exit(1)
+    throw new Error('Signature verification failed')
   }
-
-  // ── Compute tx ID ──────────────────────────────────────────────────────────
 
   const txId = crypto.hashObj(signedTx, true)
   console.log(`\nSigned tx ID: ${txId}`)
-  console.log(
-    'Signed tx:',
-    JSON.stringify(signedTx, (k, v) => (typeof v === 'bigint' ? v.toString() : v), 2),
-  )
-
-  // ── Inject ─────────────────────────────────────────────────────────────────
+  console.log('Signed tx:', stringifyWithBigInt(signedTx))
 
   if (dryRun) {
-    console.log('\n── Dry run — skipping injection ──────────────────────────────')
+    console.log('\n-- Dry run --------------------------------------------------')
     return
   }
 
-  console.log('\n── Injecting to Liberdus network ─────────────────────────────')
-  try {
-    await injectLiberdusTx(txId, signedTx)
-  } catch (e) {
-    console.error('Injection failed:', e.message)
-    process.exit(1)
-  }
+  console.log('\n-- Injecting to Liberdus network ----------------------------')
+  await injectLiberdusTx(txId, signedTx)
 
-  // ── Poll for receipt ───────────────────────────────────────────────────────
-
-  console.log('\n── Waiting for receipt ───────────────────────────────────────')
+  console.log('\n-- Waiting for receipt --------------------------------------')
   const receipt = await pollForReceipt(txId)
   if (receipt) {
     if (receipt.success === true) {
@@ -513,13 +399,14 @@ async function main() {
       console.log('Transaction failed on-chain:', receipt.reason || 'unknown reason')
     }
     console.log('Receipt:', JSON.stringify(receipt, null, 2))
-  } else {
-    console.log('No receipt within polling window. Verify manually:')
-    console.log(`  ${proxyServerHost}/transaction/${txId}`)
+    return
   }
+
+  console.log('No receipt within polling window. Verify manually:')
+  console.log(`  ${proxyServerHost}/transaction/${txId}`)
 }
 
-main().catch((e) => {
-  console.error('Fatal error:', e)
+Promise.resolve(main()).catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error))
   process.exit(1)
 })
