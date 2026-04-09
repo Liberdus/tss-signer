@@ -238,7 +238,8 @@ async function main(): Promise<void> {
   }
 
   console.log('\nKeygen complete. Set your vault password for this session:')
-  console.log(`  export ${bnbTss.getVaultPasswordEnvKey(config.chainId)}=your-vault-password`)
+  console.log(`   export ${bnbTss.getVaultPasswordEnvKey(config.chainId)}='your-vault-password'`)
+  console.log('Wrap your password in single quotes and add a leading space before "export" to keep it out of your shell history.')
 }
 
 main().catch((error) => {

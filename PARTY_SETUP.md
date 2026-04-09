@@ -141,7 +141,10 @@ npm run tss-keygen-ceremony -- --nonce 1
 
 The wrapper:
 - Detects the machine's local/public IPv4 and resolves its committee position from `partyIps`
-- Prompts for your vault password. For a new vault it asks twice (enter + confirm) — keep it safe. On success it prints an `export BNB_TSS_PASSWORD=...` reminder; run that in your terminal so the TSS party process can pick it up
+- Prompts for your vault password. For a new vault it asks twice (enter + confirm) — keep it safe. On success it prints a command to set the password env in your terminal so the TSS party process can pick it up. Wrap your password in single quotes and add a leading space before `export` to keep it out of your shell history:
+  ```bash
+   export TSS_PASSWORD_CHAIN_<CHAIN_ID>='your-vault-password'
+  ```
 - Initializes the vault automatically if it does not yet exist, or verifies the password if it does
 - Derives `parties` and `threshold = floor(parties / 2)` from the config and overwrites `params.json`
 - Computes the correct `--peer-addrs` list (excluding self)
