@@ -228,7 +228,6 @@ type FetchBridgeStateFields = 'all' | 'bridgeInCooldown' | 'maxBridgeInAmount' |
 async function fetchBridgeState(
   chainId: number,
   fields: FetchBridgeStateFields = 'all',
-  options: {throwOnError?: boolean} = {},
 ): Promise<void> {
   const chainState = chainStateByChainId.get(chainId)
   if (!chainState) return
@@ -290,8 +289,8 @@ async function fetchBridgeState(
       console.log(`Bridge maxBridgeInAmount fetched for ${chainState.config.name}: ${maxAmountStr}`)
     }
   } catch (error) {
-    if (options.throwOnError) throw error
     console.warn(`Failed to fetch bridge state for chain ${chainId}:`, error)
+    throw error
   }
 }
 
@@ -373,7 +372,11 @@ async function checkMaxBridgeAmount(
 async function refreshBridgeStateOnRevert(reason: string | undefined, chainId: number): Promise<void> {
   if (!reason || (!reason.includes('Bridge-in cooldown not met') && !reason.includes('Amount exceeds bridge-in limit'))) return
   console.log(`Refreshing bridge state for chain ${chainId} due to revert: ${reason}`)
-  await fetchBridgeState(chainId)
+  try {
+    await fetchBridgeState(chainId)
+  } catch (error) {
+    console.warn(`[bridge-state] Failed to refresh state after revert on chain ${chainId}:`, error)
+  }
 }
 
 async function fetchStartupBridgeState(): Promise<void> {
