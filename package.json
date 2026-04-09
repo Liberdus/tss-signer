@@ -22,6 +22,7 @@
     "tss-connectivity-check": "npm run compile && node dist/scripts/tss-connectivity-check.js",
     "tss-regroup-connectivity-check": "npm run compile && node dist/scripts/tss-regroup-connectivity-check.js",
     "tss-regroup-ceremony": "npm run compile && node dist/scripts/tss-regroup-ceremony.js",
+    "inject-liberdus-tx": "npm run compile && node dist/scripts/inject-liberdus-tx.js",
     "update-chain": "bash ./scripts/update-chain.sh",
     "tss-regroup": "npm run compile && node dist/tss-tools/regroup.js",
     "tss-describe": "npm run compile && node dist/tss-tools/describe.js",
