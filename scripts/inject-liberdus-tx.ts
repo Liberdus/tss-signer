@@ -57,13 +57,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 function usage(exitCode = 1): never {
-  console.log('Usage: node scripts/inject-liberdus-tx.js <chainId> <tx-json-file> [options]')
+  console.log(
+    'Usage: npm run inject-liberdus-tx -- --chain-id <chainId> [--party <idx>] --tx-file <path> [--bigint-fields <fields>] [--cal-chatid] [options]',
+  )
+  console.log('       Omit --party to use the default-slot vault path.')
   console.log('')
   console.log('Options:')
-  console.log('  --bigint-fields <fields>  Comma-separated tx fields to convert to BigInt')
-  console.log('                            (default: "amount")')
-  console.log('  --party <idx>             Use explicit party-N vault layout instead of default-slot')
-  console.log('  --use-default-slot-path   Force default-slot vault layout')
+  console.log('  --chain-id <id>           Chain id for the BNB TSS vault to use')
+  console.log('  --party <idx>             Use explicit party-N vault layout')
+  console.log('  --tx-file <path>          Path to the Liberdus tx JSON file')
+  console.log('  --use-default-slot-path   Force default-slot vault layout when --party is omitted')
   console.log('  --password <value>        Override TSS vault password')
   console.log('  --vault <name>            Override vault name (default: "default")')
   console.log('  --home-root <path>        Override keystore root for BNB TSS')
@@ -72,16 +75,18 @@ function usage(exitCode = 1): never {
   console.log('  --channel-password <v>    Override BNB TSS signing channel password')
   console.log('  --sign-discovery-timeout <duration>')
   console.log('                            Native BNB TSS peer discovery window (default: 60s)')
+  console.log('  --bigint-fields <fields>  Comma-separated tx fields to convert to BigInt')
+  console.log('                            (default: "amount")')
   console.log('  --cal-chatid              Compute chatId from from+to and add it to the tx')
   console.log('  --dry-run                 Sign but do not inject')
   console.log('')
   console.log('Examples:')
-  console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json')
-  console.log('  node scripts/inject-liberdus-tx.js 97 ./tx.json --party 1')
-  console.log('  node scripts/inject-liberdus-tx.js 97 ./tx.json --sign-discovery-timeout 60s')
-  console.log('  node scripts/inject-liberdus-tx.js 80002 ./tx.json --dry-run')
+  console.log('  npm run inject-liberdus-tx -- --chain-id 97 --tx-file ./liberdus-tx.json.example')
+  console.log('  npm run inject-liberdus-tx -- --chain-id 97 --tx-file ./liberdus-tx.json.example --bigint-fields amount --cal-chatid')
+  console.log('  npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.json.example --sign-discovery-timeout 60s')
+  console.log('  npm run inject-liberdus-tx -- --chain-id 97 --tx-file ./liberdus-tx.json.example --dry-run')
   console.log('')
-  console.log('transfer tx.json example:')
+  console.log('transfer liberdus-tx.json.example example:')
   console.log(
     JSON.stringify(
       {
@@ -111,14 +116,6 @@ function calculateChatId(from: string, to: string): string {
   return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
 }
 
-function normalizeTxId(txId: string): string {
-  const normalized = txId.trim().toLowerCase().replace(/^0x/, '')
-  if (!/^[a-f0-9]{64}$/.test(normalized)) {
-    throw new Error(`Expected normalized 64-char tx id, got: ${txId}`)
-  }
-  return normalized
-}
-
 function stringifyWithBigInt(value: unknown): string {
   return JSON.stringify(value, (_key, currentValue) =>
     typeof currentValue === 'bigint' ? currentValue.toString() : currentValue,
@@ -136,7 +133,7 @@ function deriveLocalFutureTimestamp(
   while (futureTimestamp < minFuture) {
     futureTimestamp += stepMs
   }
-  const deterministicOffsetSteps = Number.parseInt(normalizeTxId(txId).slice(-2), 16) % 3
+  const deterministicOffsetSteps = Number.parseInt(txId.slice(-2), 16) % 3
   return futureTimestamp + deterministicOffsetSteps * stepMs
 }
 
@@ -211,6 +208,19 @@ function parseArgs(argv: string[]): {positional: string[]; flags: CliFlags} {
   const positional: string[] = []
   const flags: CliFlags = {}
   const booleanFlags = new Set(['cal-chatid', 'dry-run', 'use-default-slot-path'])
+  const valueFlags = new Set([
+    'chain-id',
+    'party',
+    'tx-file',
+    'password',
+    'vault',
+    'home-root',
+    'home-path',
+    'channel-id',
+    'channel-password',
+    'sign-discovery-timeout',
+    'bigint-fields',
+  ])
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -220,9 +230,12 @@ function parseArgs(argv: string[]): {positional: string[]; flags: CliFlags} {
         flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1)
       } else if (booleanFlags.has(arg.slice(2))) {
         flags[arg.slice(2)] = true
-      } else {
+      } else if (valueFlags.has(arg.slice(2))) {
         flags[arg.slice(2)] = argv[i + 1]
         i += 1
+      } else {
+        console.error(`Unknown argument: ${arg}`)
+        usage()
       }
       continue
     }
@@ -245,20 +258,30 @@ function asUnsignedLiberdusTx(value: unknown): UnsignedLiberdusTx {
 }
 
 async function main(): Promise<void> {
-  const {positional, flags} = parseArgs(process.argv.slice(2))
+  const {flags} = parseArgs(process.argv.slice(2))
+  const chainIdArg = requireStringFlag(flags, 'chain-id')
+  const txFileArg = requireStringFlag(flags, 'tx-file')
 
-  if (positional.length < 2) {
+  if (!chainIdArg || !txFileArg) {
     usage()
   }
 
-  const chainId = Number.parseInt(positional[0], 10)
+  const chainId = Number.parseInt(chainIdArg, 10)
   if (!Number.isInteger(chainId)) {
-    throw new Error(`Invalid chainId: "${positional[0]}"`)
+    throw new Error(`Invalid chainId: "${chainIdArg}"`)
   }
 
-  const txFilePath = path.resolve(positional[1])
+  const txFilePath = path.resolve(txFileArg)
   if (!fs.existsSync(txFilePath)) {
     throw new Error(`Tx file not found: ${txFilePath}`)
+  }
+
+  const partyFlag = requireStringFlag(flags, 'party')
+  const partyIdx = partyFlag != null ? Number.parseInt(partyFlag, 10) : undefined
+  const useDefaultSlotPath = flags['use-default-slot-path'] === true || partyFlag == null
+
+  if (partyFlag != null && (!Number.isInteger(partyIdx) || partyIdx < 1)) {
+    throw new Error(`Invalid --party value: "${partyFlag}"`)
   }
 
   const bigintFields = (requireStringFlag(flags, 'bigint-fields') || 'amount')
@@ -267,13 +290,6 @@ async function main(): Promise<void> {
     .filter(Boolean)
   const calChatId = flags['cal-chatid'] === true
   const dryRun = flags['dry-run'] === true
-  const useDefaultSlotPath = flags['use-default-slot-path'] === true || !flags.party
-  const partyFlag = requireStringFlag(flags, 'party')
-  const partyIdx = partyFlag != null ? Number.parseInt(partyFlag, 10) : undefined
-
-  if (partyFlag != null && (!Number.isInteger(partyIdx) || partyIdx < 1)) {
-    throw new Error(`Invalid --party value: "${partyFlag}"`)
-  }
 
   const tx = asUnsignedLiberdusTx(JSON.parse(fs.readFileSync(txFilePath, 'utf8')))
 
@@ -306,7 +322,7 @@ async function main(): Promise<void> {
   }
 
   if (!tx.timestamp) {
-    const timestampSeedTxId = crypto.hashObj(tx, true)
+    const timestampSeedTxId = crypto.hashObj(tx)
     const currentCycleRecord = await getLatestCycleRecord()
     tx.timestamp = deriveLocalFutureTimestamp(timestampSeedTxId, Date.now(), currentCycleRecord)
   }
@@ -320,11 +336,11 @@ async function main(): Promise<void> {
 
   const hashMessage = crypto.hashObj(tx)
   const digest = ethers.utils.hashMessage(hashMessage)
-  const unsignedTxId = crypto.hashObj(tx, true)
+  const unsignedTxId = crypto.hashObj(tx)
   const channelId =
     requireStringFlag(flags, 'channel-id') ||
     process.env.BNB_TSS_CHANNEL_ID ||
-    deriveDeterministicChannelId(normalizeTxId(unsignedTxId), tx.timestamp)
+    deriveDeterministicChannelId(unsignedTxId, tx.timestamp)
   const channelPassword =
     requireStringFlag(flags, 'channel-password') ||
     process.env.BNB_TSS_CHANNEL_PASSWORD ||
