@@ -389,7 +389,7 @@ function buildWhereClause(options?: {
     params.type = options.type;
   }
   if (options?.unprocessed) {
-    clauses.push("status IN (0, 1)");
+    clauses.push("status IN (0, 1, 3)");
   } else if (options?.status !== undefined) {
     clauses.push("status = @status");
     params.status = options.status;

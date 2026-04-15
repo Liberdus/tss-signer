@@ -104,7 +104,7 @@ interface SignedTx {
   }
 }
 
-type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
+type ProcessOutcome = 'completed' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_reverted'
 
 // Receipt is polled only while remaining cooldown time exceeds (bridgeInCooldown - this value).
 // e.g. for a 60s cooldown: poll while remainingMs > 45s, skip receipt checks once < 45s remains —
@@ -614,7 +614,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
       .sort((a, b) => a.txTimestamp - b.txTimestamp)
     if (transactions.length === 0) return
 
-    console.log(`[poll] Found ${transactions.length} pending transactions`)
+    console.log(`[poll] Found ${transactions.length} unprocessed transactions`)
 
     let txAddedToQueue = false
     for (const tx of transactions) {
@@ -630,16 +630,17 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
         console.warn(`[poll] Skipping tx ${tx.txId} — unknown chainId ${tx.chainId}`)
         continue
       }
-      if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED || tx.status === TransactionStatus.REVERTED) {
+      if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.REVERTED) {
         console.log(`[poll] Skipping tx ${tx.txId} — DB reports ${txStatusLabel(tx.status)}`)
         continue
       }
 
       const existingEntry = txQueueMap.get(tx.txId)
       if (existingEntry) {
-        // If we previously marked it failed/reverted but the DB still shows it pending, retry
+        // If we previously marked it failed/reverted locally but the DB still
+        // reports it as unprocessed, queue it again.
         if ((existingEntry.status === 'failed' || existingEntry.status === 'reverted') && !pendingTxQueue.some(t => t.txId === tx.txId)) {
-          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but DB reports pending`)
+          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but DB reports ${txStatusLabel(tx.status)}`)
           // fall through to re-queue below
         } else {
           continue
@@ -762,15 +763,20 @@ const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: numb
 function reconcileTxStatusWithLocalDB(
   txId: string,
   context: 'pre-process' | 'pre-sign' | 'post-sign' | 'pre-submit',
-): null | 'completed' | 'failed' | 'reverted' {
+): null | 'completed' | 'reverted' {
   if (DEBUG_SKIP_TX_STATUS_CHECK) return null
   try {
     const status = checkTxStatusFromLocalDB(txId)
-    if (status == null || status === TransactionStatus.PENDING || status === TransactionStatus.PROCESSING) {
+    if (
+      status == null ||
+      status === TransactionStatus.PENDING ||
+      status === TransactionStatus.PROCESSING ||
+      status === TransactionStatus.FAILED
+    ) {
       return null
     }
     const statusLabel = status === TransactionStatus.COMPLETED ? 'completed' :
-      status === TransactionStatus.REVERTED ? 'reverted' : 'failed'
+      'reverted'
     console.log(`⏩ ${txId} already ${txStatusLabel(status)} in local DB (${context}), skipping`)
     return statusLabel
   } catch (error: any) {
@@ -782,11 +788,10 @@ function reconcileTxStatusWithLocalDB(
 
 // Maps a reconcile skip status to the corresponding ProcessOutcome.
 function dbStatusToSkipOutcome(
-  status: 'completed' | 'failed' | 'reverted',
+  status: 'completed' | 'reverted',
 ): ProcessOutcome {
   if (status === 'completed') return 'skipped_db_completed'
-  if (status === 'reverted') return 'skipped_db_reverted'
-  return 'skipped_db_failed'
+  return 'skipped_db_reverted'
 }
 
 // Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/REVERTED) tx for this sender
@@ -1090,7 +1095,6 @@ async function processCoinToToken(
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${targetChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
-    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
@@ -1353,7 +1357,6 @@ async function processCoinToToken(
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${targetChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, res.reason as string)
-    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
     // Don't increment nonce — tx may not have been broadcast/mined
     // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
@@ -1405,7 +1408,6 @@ async function processVaultBridge(
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${destChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
-    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
@@ -1671,7 +1673,6 @@ async function processVaultBridge(
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed on ${destChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, res.reason as string)
-    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
     // Don't increment nonce — tx may not have been broadcast/mined
     // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
@@ -1788,7 +1789,6 @@ async function processTokenToCoin(
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send failed from ${sourceChainName}`)
     updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, liberdusTssSender, liberdusNonce, res.reason as string)
-    // If 'failed' status is sent, remove it from the queue ( so that we don't process it again )
     pendingTxQueueRemovalSet.add(txId)
     return 'failed'
   }
@@ -2195,9 +2195,6 @@ async function main(): Promise<void> {
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         appendToFailedTxsLogs(validTx, 'already reverted in local DB at pre-process')
-      } else if (preProcess === 'failed') {
-        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        appendToFailedTxsLogs(validTx, 'already failed in local DB at pre-process')
       }
       processingTransactionIds.delete(txId)
       return
@@ -2271,11 +2268,6 @@ async function main(): Promise<void> {
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
-      } else if (outcome === 'skipped_db_failed') {
-        console.log(`Transaction ${validTx.txId} was already failed in local DB during reconcile, skipping`)
-        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
-        pendingTxQueueRemovalSet.add(txId)
-        appendToFailedTxsLogs(validTx, 'already failed in local DB during reconcile')
       }
 
       // Check memory usage after successful transaction
