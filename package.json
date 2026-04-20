@@ -1,6 +1,6 @@
 {
   "name": "tss-server",
-  "version": "0.0.9",
+  "version": "1.0.2",
   "description": "Liberdus Bridge TSS Server",
   "keywords": [
     "tss",
