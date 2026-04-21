@@ -1206,7 +1206,7 @@ async function processCoinToToken(
 
   // Apply gas price logic based on chain configuration
   for (const tierGwei of chainState.gasPriceTiersBN) {
-    if (currentGasPrice.lt(tierGwei)) {
+    if (currentGasPrice.lte(tierGwei)) {
       currentGasPrice = tierGwei
       break
     }
@@ -1519,7 +1519,7 @@ async function processVaultBridge(
 
   // Apply gas price logic based on destination chain configuration
   for (const tierGwei of destChainState.gasPriceTiersBN) {
-    if (currentGasPrice.lt(tierGwei)) {
+    if (currentGasPrice.lte(tierGwei)) {
       currentGasPrice = tierGwei
       break
     }
