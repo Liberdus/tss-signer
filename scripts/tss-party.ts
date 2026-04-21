@@ -752,6 +752,24 @@ async function getChainTransactionReceipt(chainId: number, txHash: string): Prom
     chainId, (provider) => provider.getTransactionReceipt(txHash), { maxRetries: 3 })
 }
 
+// Fetches gas price from a fixed RPC URL so all parties query the same endpoint,
+// avoiding payload divergence from different Chainlist RPCs returning different values.
+async function getGasPriceFromFixedRpc(rpcUrl: string, maxRetries = 3): Promise<ethers.BigNumber> {
+  const provider = new ethers.providers.JsonRpcProvider(rpcUrl)
+  let lastError: unknown
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await provider.getGasPrice()
+    } catch (err) {
+      lastError = err
+      if (attempt < maxRetries) {
+        await new Promise((res) => setTimeout(res, 1000))
+      }
+    }
+  }
+  throw lastError
+}
+
 // ---------------------------------------------------------------------------
 // In-memory signed tx cache — for EVM rebroadcast without re-signing.
 // Keyed by normalized txId. Cleared on completion, revert, or process restart.
@@ -1198,11 +1216,8 @@ async function processCoinToToken(
     signedTxCache.delete(normalizedTxId)
   }
 
-  let currentGasPrice = await chainRpcConfig.withChainHttpProvider(
-    targetChainId,
-    (provider) => provider.getGasPrice(),
-    { maxRetries: 3 },
-  )
+  let currentGasPrice = await getGasPriceFromFixedRpc(chainState.config.rpcUrl)
+  console.log(`[gas] ${targetChainName} live gas price: ${ethersUtils.formatUnits(currentGasPrice, 'gwei')} gwei`)
 
   // Apply gas price logic based on chain configuration
   for (const tierGwei of chainState.gasPriceTiersBN) {
@@ -1211,6 +1226,7 @@ async function processCoinToToken(
       break
     }
   }
+  console.log(`[gas] ${targetChainName} final gas price: ${ethersUtils.formatUnits(currentGasPrice, 'gwei')} gwei`)
 
   const txIdBytes32 = txId.startsWith('0x') ? txId : '0x' + txId
   const data = BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeIn', [
@@ -1511,11 +1527,8 @@ async function processVaultBridge(
     signedTxCache.delete(normalizedTxId)
   }
 
-  let currentGasPrice = await chainRpcConfig.withChainHttpProvider(
-    destinationChainId,
-    (provider) => provider.getGasPrice(),
-    { maxRetries: 3 },
-  )
+  let currentGasPrice = await getGasPriceFromFixedRpc(destChainState.config.rpcUrl)
+  console.log(`[gas] ${destChainName} live gas price: ${ethersUtils.formatUnits(currentGasPrice, 'gwei')} gwei`)
 
   // Apply gas price logic based on destination chain configuration
   for (const tierGwei of destChainState.gasPriceTiersBN) {
@@ -1524,6 +1537,7 @@ async function processVaultBridge(
       break
     }
   }
+  console.log(`[gas] ${destChainName} final gas price: ${ethersUtils.formatUnits(currentGasPrice, 'gwei')} gwei`)
 
   const txIdBytes32 = txId.startsWith('0x') ? txId : '0x' + txId
   const data = BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeIn', [

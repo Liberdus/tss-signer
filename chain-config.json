@@ -10,7 +10,7 @@
   "secondaryChainConfig": {
     "name": "BSC Mainnet",
     "chainId": 56,
-    "rpcUrl": "https://bsc-dataseed.binance.org/",
+    "rpcUrl": "https://bsc-dataseed.bnbchain.org/",
     "contractAddress": "0x5AfdCC93D794762C785Ec14Fb2a24c4aBDbB8aaa",
     "tssSenderAddress": "0x980828D1eb8EABC88Aeb1F7a817dbb0e9fA52269",
     "bridgeAddress": "980828d1eb8eabc88aeb1f7a817dbb0e9fa52269000000000000000000000000",
@@ -37,7 +37,7 @@
     "56": {
       "name": "BSC Mainnet",
       "chainId": 56,
-      "rpcUrl": "https://bsc-dataseed.binance.org/",
+      "rpcUrl": "https://bsc-dataseed.bnbchain.org/",
       "contractAddress": "0x5AfdCC93D794762C785Ec14Fb2a24c4aBDbB8aaa",
       "tssSenderAddress": "0x980828D1eb8EABC88Aeb1F7a817dbb0e9fA52269",
       "bridgeAddress": "980828d1eb8eabc88aeb1f7a817dbb0e9fa52269000000000000000000000000",
