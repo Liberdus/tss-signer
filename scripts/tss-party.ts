@@ -162,6 +162,8 @@ const BNB_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const BNB_SIGN_DISCOVERY_TIMEOUT = `${BNB_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const BNB_SIGN_PROCESS_TIMEOUT_MS = BNB_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
 const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
+const LIBERDUS_TIMESTAMP_STEP_MS = 30_000
+const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = 60_000
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 // Shared bridge contract ABI for state reads and bridgeIn
@@ -1728,7 +1730,7 @@ async function processTokenToCoin(
   }
   tx.chatId = calculateChatId(tx.from, tx.to)
   const currentCycleRecord = await getLatestCycleRecord()
-  tx.timestamp = deriveLocalFutureTimestamp(txId, txTimestampMs, currentCycleRecord)
+  tx.timestamp = deriveLocalFutureTimestamp(currentCycleRecord)
   console.log(
     `Current timestamp: ${new Date(Date.now())}, Future timestamp: ${new Date(tx.timestamp)}, Wait time: ${tx.timestamp - Date.now()}`,
   )
@@ -2030,19 +2032,13 @@ function cleanupStuckTransactions() {
   }
 }
 
-function deriveLocalFutureTimestamp(
-  txId: string,
-  txTimestampMs: number,
-  currentCycleRecord: {start: number; duration: number},
-): number {
-  const stepMs = Math.max((currentCycleRecord.duration || 10) * 1000, 10_000)
+function deriveLocalFutureTimestamp(currentCycleRecord: {start: number; duration: number}): number {
   let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
-  const minFuture = Math.max(txTimestampMs + 60_000, Date.now() + 30_000)
+  const minFuture = Date.now() + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   while (futureTimestamp < minFuture) {
-    futureTimestamp += stepMs
+    futureTimestamp += LIBERDUS_TIMESTAMP_STEP_MS
   }
-  const deterministicOffsetSteps = parseInt(normalizeTxId(txId).slice(-2), 16) % 3
-  return futureTimestamp + deterministicOffsetSteps * stepMs
+  return futureTimestamp
 }
 
 async function getLiberdusReceipt(txId: string, maxRetries = 30): Promise<any> {
