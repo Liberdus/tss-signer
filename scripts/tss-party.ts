@@ -158,12 +158,11 @@ const chainConfigs: ChainConfigs = chainConfigsRaw
 let t = params.threshold
 let n = params.parties
 
-const BNB_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
-const BNB_SIGN_DISCOVERY_TIMEOUT = `${BNB_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
-const BNB_SIGN_PROCESS_TIMEOUT_MS = BNB_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
+const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
+const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
+const TSS_SIGN_PROCESS_TIMEOUT_MS = TSS_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
 const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
-const LIBERDUS_TIMESTAMP_STEP_MS = 30_000
-const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = 60_000
+const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 15 * 1000 // 15s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 // Shared bridge contract ABI for state reads and bridgeIn
@@ -942,8 +941,8 @@ function signDigestWithBnbTss(chainId: number, digest: string, channelId: string
     digest,
     channelId,
     channelPassword,
-    signDiscoveryTimeout: BNB_SIGN_DISCOVERY_TIMEOUT,
-    timeoutMs: BNB_SIGN_PROCESS_TIMEOUT_MS,
+    signDiscoveryTimeout: TSS_SIGN_DISCOVERY_TIMEOUT,
+    timeoutMs: TSS_SIGN_PROCESS_TIMEOUT_MS,
     printLogs: PRINT_TSS_SIGN_LOGS,
   })
 }
@@ -2033,11 +2032,15 @@ function cleanupStuckTransactions() {
 }
 
 function deriveLocalFutureTimestamp(currentCycleRecord: {start: number; duration: number}): number {
-  let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
-  const minFuture = Date.now() + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
-  while (futureTimestamp < minFuture) {
-    futureTimestamp += LIBERDUS_TIMESTAMP_STEP_MS
+  const cycleEndTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
+  let futureTimestamp = cycleEndTimestamp + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
+  console.log(`  Derived future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp}) (cycle start: ${currentCycleRecord.start}, duration: ${currentCycleRecord.duration})`)
+  const currentTimestamp = Date.now()
+  console.log(`  Current timestamp: ${new Date(currentTimestamp).toISOString()} (${currentTimestamp})`)
+  while (futureTimestamp < currentTimestamp) {
+    futureTimestamp += LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   }
+  console.log(`  Final future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp})`)
   return futureTimestamp
 }
 

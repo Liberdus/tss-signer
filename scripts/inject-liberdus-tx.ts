@@ -51,8 +51,10 @@ const proxyServerHost =
   process.env.LIBERDUS_PROXY_URL || chainConfigsRaw.proxyServerHost || 'https://dev.liberdus.com:3030'
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigsRaw.collectorHost || ''
 
-const LIBERDUS_TIMESTAMP_STEP_MS = 30_000
-const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = 60_000
+const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
+const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
+const TSS_SIGN_PROCESS_TIMEOUT_MS = TSS_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
+const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 15 * 1000 // 15s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
 
 crypto.init(CRYPTO_INIT_KEY)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
@@ -147,10 +149,10 @@ function stringifyWithBigInt(value: unknown): string {
 }
 
 function deriveLocalFutureTimestamp(currentCycleRecord: CycleRecord): number {
-  let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
-  const minFuture = Date.now() + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
-  while (futureTimestamp < minFuture) {
-    futureTimestamp += LIBERDUS_TIMESTAMP_STEP_MS
+  let futureTimestamp =
+    currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000 + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
+  while (futureTimestamp < Date.now()) {
+    futureTimestamp += LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   }
   return futureTimestamp
 }
@@ -414,7 +416,7 @@ async function main(): Promise<void> {
     vaultName: requireStringFlag(flags, 'vault'),
     homeRoot: requireStringFlag(flags, 'home-root'),
     homePath: requireStringFlag(flags, 'home-path'),
-    signDiscoveryTimeout: requireStringFlag(flags, 'sign-discovery-timeout') || '60s',
+    signDiscoveryTimeout: requireStringFlag(flags, 'sign-discovery-timeout') || TSS_SIGN_DISCOVERY_TIMEOUT,
     printLogs: true,
   })
 
