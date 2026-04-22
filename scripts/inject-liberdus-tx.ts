@@ -148,12 +148,16 @@ function stringifyWithBigInt(value: unknown): string {
   )
 }
 
-function deriveLocalFutureTimestamp(currentCycleRecord: CycleRecord): number {
-  let futureTimestamp =
-    currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000 + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
-  while (futureTimestamp < Date.now()) {
+function deriveLocalFutureTimestamp(currentCycleRecord: {start: number; duration: number}): number {
+  const cycleEndTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
+  let futureTimestamp = cycleEndTimestamp + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
+  console.log(`  Derived future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp}) (cycle start: ${currentCycleRecord.start}, duration: ${currentCycleRecord.duration})`)
+  const currentTimestamp = Date.now()
+  console.log(`  Current timestamp: ${new Date(currentTimestamp).toISOString()} (${currentTimestamp})`)
+  while (futureTimestamp < currentTimestamp) {
     futureTimestamp += LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   }
+  console.log(`  Final future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp})`)
   return futureTimestamp
 }
 

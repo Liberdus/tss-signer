@@ -26,8 +26,8 @@
       "chainId": 80002,
       "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
       "contractAddress": "0xD5409531c857AfD1b2fF6Cd527038e9981ef4863",
-      "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
-      "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
+      "tssSenderAddress": "0x22BEAC0B1F0F370DB4D50AcEE16E9826964195F7",
+      "bridgeAddress": "22beac0b1f0f370db4d50acee16e9826964195f7000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
