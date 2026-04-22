@@ -21,9 +21,11 @@ type TxObject = {
 }
 
 type UnsignedLiberdusTx = TxObject & {
-  from: string
+  from?: string
   to?: string
   type: string
+  networkId?: string
+  publicKey?: string
   timestamp?: number
   chatId?: string
 }
@@ -48,6 +50,9 @@ const CRYPTO_INIT_KEY = '69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a9650
 const proxyServerHost =
   process.env.LIBERDUS_PROXY_URL || chainConfigsRaw.proxyServerHost || 'https://dev.liberdus.com:3030'
 const collectorHost = process.env.COLLECTOR_HOST || chainConfigsRaw.collectorHost || ''
+
+const LIBERDUS_TIMESTAMP_STEP_MS = 30_000
+const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = 60_000
 
 crypto.init(CRYPTO_INIT_KEY)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
@@ -112,6 +117,25 @@ function toShardusAddress(address: string): string {
   return address
 }
 
+function isZeroAddressPlaceholder(address: string | undefined): boolean {
+  if (!address) return true
+  const normalized = address.trim().toLowerCase()
+  return /^0x0{40}$/.test(normalized) || /^0{64}$/.test(normalized)
+}
+
+function deriveBnbTssIdentity(options: bnbTss.BasePartyOptions): {shardusAddress: string; publicKey: string} {
+  const derived = bnbTss.derivePubkey({
+    ...options,
+    format: 'all',
+  }) as {ethereum_address: string; ethereum_pubkey: string}
+  return {
+    shardusAddress: toShardusAddress(derived.ethereum_address),
+    // Liberdus register expects the uncompressed secp256k1 public key without 0x.
+    // bnbTss returns X+Y only, so add the uncompressed-key 04 prefix.
+    publicKey: `04${derived.ethereum_pubkey}`,
+  }
+}
+
 function calculateChatId(from: string, to: string): string {
   return crypto.hash([from, to].sort((a, b) => a.localeCompare(b)).join(''))
 }
@@ -122,19 +146,13 @@ function stringifyWithBigInt(value: unknown): string {
   )
 }
 
-function deriveLocalFutureTimestamp(
-  txId: string,
-  txTimestampMs: number,
-  currentCycleRecord: CycleRecord,
-): number {
-  const stepMs = Math.max((currentCycleRecord.duration || 10) * 1000, 10_000)
+function deriveLocalFutureTimestamp(currentCycleRecord: CycleRecord): number {
   let futureTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
-  const minFuture = Math.max(txTimestampMs + 60_000, Date.now() + 30_000)
+  const minFuture = Date.now() + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   while (futureTimestamp < minFuture) {
-    futureTimestamp += stepMs
+    futureTimestamp += LIBERDUS_TIMESTAMP_STEP_MS
   }
-  const deterministicOffsetSteps = Number.parseInt(txId.slice(-2), 16) % 3
-  return futureTimestamp + deterministicOffsetSteps * stepMs
+  return futureTimestamp
 }
 
 function verifySignedTx(tx: SignedLiberdusTx): boolean {
@@ -293,14 +311,43 @@ async function main(): Promise<void> {
 
   const tx = asUnsignedLiberdusTx(JSON.parse(fs.readFileSync(txFilePath, 'utf8')))
 
-  if (!tx.from) {
-    throw new Error('Missing required tx field: "from"')
-  }
   if (!tx.type) {
     throw new Error('Missing required tx field: "type"')
   }
 
-  tx.from = toShardusAddress(tx.from)
+  if (!tx.networkId) {
+    tx.networkId = chainConfigsRaw.liberdusNetworkId
+    console.log(`Defaulted tx.networkId from chain-config.json: ${tx.networkId}`)
+  }
+
+  let bnbTssIdentity: {shardusAddress: string; publicKey: string} | undefined
+  const getBnbTssIdentity = (): {shardusAddress: string; publicKey: string} => {
+    if (!bnbTssIdentity) {
+      bnbTssIdentity = deriveBnbTssIdentity({
+        ...(useDefaultSlotPath ? {} : {partyIdx}),
+        chainId,
+        useDefaultSlotPath,
+        password: requireStringFlag(flags, 'password'),
+        vaultName: requireStringFlag(flags, 'vault'),
+        homeRoot: requireStringFlag(flags, 'home-root'),
+        homePath: requireStringFlag(flags, 'home-path'),
+      })
+    }
+    return bnbTssIdentity
+  }
+
+  if (isZeroAddressPlaceholder(tx.from)) {
+    tx.from = getBnbTssIdentity().shardusAddress
+    console.log(`Defaulted tx.from from BNB TSS vault: ${tx.from}`)
+  } else {
+    tx.from = toShardusAddress(tx.from!)
+  }
+
+  if (tx.type === 'register' && !tx.publicKey) {
+    tx.publicKey = getBnbTssIdentity().publicKey
+    console.log(`Defaulted tx.publicKey from BNB TSS vault: ${tx.publicKey}`)
+  }
+
   if (typeof tx.to === 'string') {
     tx.to = toShardusAddress(tx.to)
   }
@@ -322,9 +369,8 @@ async function main(): Promise<void> {
   }
 
   if (!tx.timestamp) {
-    const timestampSeedTxId = crypto.hashObj(tx)
     const currentCycleRecord = await getLatestCycleRecord()
-    tx.timestamp = deriveLocalFutureTimestamp(timestampSeedTxId, Date.now(), currentCycleRecord)
+    tx.timestamp = deriveLocalFutureTimestamp(currentCycleRecord)
   }
 
   console.log(`Timestamp: ${tx.timestamp} (${new Date(tx.timestamp).toISOString()})`)
@@ -332,7 +378,7 @@ async function main(): Promise<void> {
   console.log(stringifyWithBigInt(tx))
   console.log(`\nChainId:      ${chainId}`)
   console.log(`Proxy:        ${proxyServerHost}`)
-  console.log(`Vault mode:   ${useDefaultSlotPath ? 'default-slot' : `party-${partyIdx}`}`)
+  console.log(`Vault Path Mode:   ${useDefaultSlotPath ? 'default-slot' : `party-${partyIdx}`}`)
 
   const hashMessage = crypto.hashObj(tx)
   const digest = ethers.utils.hashMessage(hashMessage)
