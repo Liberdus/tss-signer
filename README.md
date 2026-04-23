@@ -131,7 +131,10 @@ npm run tss-regroup-connectivity-check
 npm run tss-verify -- --party 1
 npm run tss-regroup -- --party 1 --chain-id 97 --is-old --new-threshold 3 --new-parties 5
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.json.example
+npm run inject-liberdus-tx -- --chain-id 97 --tx-file ./liberdus-tx.json.example --dry-run
 ```
+
+For manual Liberdus transaction signing/injection with `npm run inject-liberdus-tx`, see [`tss-tools/guide.md`](tss-tools/guide.md).
 
 `npm run update-chain -- <path-to-chain-config.json> <chainId> '<json-object>'` deep-merges the supplied JSON object into matching entries in `supportedChains`, `vaultChain`, and `secondaryChainConfig`, and writes a `.bak` backup before updating the file. It requires `bash` and `jq`.
 
@@ -176,6 +179,7 @@ These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing h
 | `tss-tools/lib/bnbTss.ts` | Shared TypeScript runtime helper used by the tooling scripts for binary resolution, patch prep, vault paths, committee topology, and signing helpers. |
 | `tss-tools/lib/committeeTopology.ts` | Committee topology helper for deterministic local peer addresses and parsing `tss describe` topology output. |
 | `tss-tools/lib/channelId.ts` | Deterministic signing `channelId` and `channelPassword` derivation helpers. |
+| `scripts/inject-liberdus-tx.ts` | Signs a Liberdus tx payload through native BNB TSS, verifies the signature, and optionally injects it into the Liberdus network. |
 | `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. See [`tss-tools/patches/README.md`](tss-tools/patches/README.md) for a description of every change. |
 | `tss-tools/test-sign-rounds.sh` | Multi-scenario signing test harness. Runs configurable rounds across varying party startup delays and reports PASS/FAIL. Logs to `tss-tools/test-result.log` and `tss-tools/test-party{1..N}.log`. |
 | `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.ts` and post-keygen address derivation. |
