@@ -354,6 +354,10 @@ async function main(): Promise<void> {
     console.log(`Defaulted tx.publicKey from BNB TSS vault: ${tx.publicKey}`)
   }
 
+  if (tx.type === 'create') {
+    tx.to = tx.from
+  }
+
   if (typeof tx.to === 'string') {
     tx.to = toShardusAddress(tx.to)
   }
