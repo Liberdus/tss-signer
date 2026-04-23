@@ -59,15 +59,15 @@ git submodule update --init --recursive
 
 
 # 7) Export shared environment for all participating parties
-export BNB_TSS_PASSWORD=1234567890
+export TSS_PASSWORD_CHAIN_<chainId>=1234567890
 export BNB_TSS_CHANNEL_ID=<replace_with_channel_id>
 export BNB_TSS_CHANNEL_PASSWORD=1234567890
 
 # Required envs by flow:
-# - BNB_TSS_PASSWORD:
+# - TSS_PASSWORD_CHAIN_<chainId>:
 #   required for init, keygen, verify, and tss-party startup validation.
 #   If missing, startup fails with:
-#   BNB TSS vault password is required (BNB_TSS_PASSWORD)
+#   BNB TSS vault password is required (TSS_PASSWORD_CHAIN_<chainId>)
 # - BNB_TSS_CHANNEL_ID:
 #   required for manual native keygen/regroup/sign commands unless passed via flags
 # - BNB_TSS_CHANNEL_PASSWORD:
@@ -259,7 +259,65 @@ npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ethereum-tx.js
 # The final signed transaction payload is still printed as one JSON object on stdout.
 
 
-# 14) Regroup flow
+# 14) Sign and inject a Liberdus transaction with threshold+1 parties
+# Run the same command in separate terminals for participating parties.
+# With params.json threshold 3, that means at least 4 participating parties.
+#
+# Default single-bundle-per-machine flow:
+# - omit --party
+# - uses keystores/bnbtss/chain-<chainId>/default/
+#
+# Explicit indexed local testing / legacy flow:
+# - pass --party N
+# - uses keystores/bnbtss/party-N/chain-<chainId>/default/
+#
+# The tx file is the unsigned Liberdus tx payload before `sign`.
+# The injector fills deterministic fields before signing:
+# - missing networkId from chain-config.json
+# - missing or zero-placeholder `from` from the selected BNB TSS vault address
+# - timestamp from the latest Liberdus cycle end plus the TSS signing buffer
+#
+# For register tx type, the injector also fills:
+# - publicKey from the selected BNB TSS uncompressed public key
+# - aliasHash from alias
+#
+# For transfer txs, keep large numeric values as decimal strings.
+# By default --bigint-fields amount converts amount to BigInt before hashing.
+# Use --cal-chatid when the tx should include chatId derived from from+to.
+#
+# Use --dry-run first to verify the signature without posting to /inject.
+#
+# The injector reads the latest cycle from COLLECTOR_HOST or
+# chain-config.json -> collectorHost, then posts to LIBERDUS_PROXY_URL or
+# chain-config.json -> proxyServerHost.
+
+npm run inject-liberdus-tx -- --chain-id 97 --tx-file ./liberdus-tx.json.example --dry-run
+npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.json.example --dry-run
+
+# Example register tx:
+# tx file payload:
+# {
+#   "type": "register",
+#   "alias": "alice"
+# }
+npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.json.example --sign-discovery-timeout 60s
+npm run inject-liberdus-tx -- --chain-id 97 --party 2 --tx-file ./liberdus-tx.json.example --sign-discovery-timeout 60s
+npm run inject-liberdus-tx -- --chain-id 97 --party 3 --tx-file ./liberdus-tx.json.example --sign-discovery-timeout 60s
+npm run inject-liberdus-tx -- --chain-id 97 --party 4 --tx-file ./liberdus-tx.json.example --sign-discovery-timeout 60s
+
+# Example transfer tx with chatId:
+npm run inject-liberdus-tx -- --chain-id 97 --tx-file ./liberdus-tx.json.example --bigint-fields amount --cal-chatid --dry-run
+
+# Expected output:
+#   unsigned tx hash / digest
+#   derived signing channel id
+#   BNB TSS signing logs
+#   recovered owner verification
+#   signed tx payload
+#   inject response, unless --dry-run is used
+
+
+# 15) Regroup flow
 # For the current params.json:
 # - parties = 5
 # - threshold = 3
@@ -295,23 +353,23 @@ npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --p
 # - parties 1 and 2 are the participating old committee members
 # - parties 1 and 2 remain in the new committee
 # - party 3 is a newly added committee member
-npm run tss-regroup -- --party 1 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
-npm run tss-regroup -- --party 2 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
-npm run tss-regroup -- --party 3 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
+npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
+npm run tss-regroup -- --party 2 --chain-id 97 --is-old --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
+npm run tss-regroup -- --party 3 --chain-id 97 --is-new-member --threshold 1 --parties 3 --new-threshold 1 --new-parties 3
 
 # 3-party / threshold-1 -> 5-party / threshold-3 local example:
 # - parties 1 and 2 are the participating old committee members
 # - new committee is parties 1,2,3,4,5
-npm run tss-init -- --party 4 --chain-id 31338
-npm run tss-init -- --party 5 --chain-id 31338
-npm run tss-regroup -- --party 1 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 2 --chain-id 31338 --is-old --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 3 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 4 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
-npm run tss-regroup -- --party 5 --chain-id 31338 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-init -- --party 4 --chain-id 97
+npm run tss-init -- --party 5 --chain-id 97
+npm run tss-regroup -- --party 1 --chain-id 97 --is-old --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 2 --chain-id 97 --is-old --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 3 --chain-id 97 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 4 --chain-id 97 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
+npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 1 --parties 3 --new-threshold 3 --new-parties 5
 
 
-# 15) Run the long-lived tss-party process in native mode
+# 16) Run the long-lived tss-party process in native mode
 # tss-party.ts uses native BNB TSS signing by default, so normal startup uses native TSS signing.
 # It expects existing BNB TSS vaults and validates them on startup.
 
@@ -326,11 +384,11 @@ node dist/tss-party.js
 npm run tss-party
 
 
-# 16) Important runtime requirements for native mode
+# 17) Important runtime requirements for native mode
 # - The patched binary must exist:
 #     tss/.tooling/bin/tss
 # - Shared env vars must be set for all participating parties:
-#     BNB_TSS_PASSWORD
+#     TSS_PASSWORD_CHAIN_<chainId>
 #     BNB_TSS_CHANNEL_PASSWORD
 # - BNB_TSS_CHANNEL_ID and BNB_TSS_CHANNEL_PASSWORD are still required for manual
 #   native keygen/regroup flows.
@@ -349,7 +407,7 @@ npm run tss-party
 # - Normal committee size comes from params.json unless you explicitly override it
 
 
-# 17) NPM wrappers
+# 18) NPM wrappers
 npm run tss-build
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
@@ -360,9 +418,10 @@ npm run tss-regroup-ceremony -- --nonce 1
 npm run tss-regroup -- --party 4 --chain-id 97 --is-old --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-regroup -- --party 5 --chain-id 97 --is-new-member --threshold 3 --parties 5 --new-threshold 3 --new-parties 5
 npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.json.example
+npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.json.example --dry-run
 
 
-# 18) Sign bootstrap — flexible k-of-n signing and discovery timeout
+# 19) Sign bootstrap — flexible k-of-n signing and discovery timeout
 #
 # The patched tss binary supports flexible k-of-n signing. Once the first peer
 # connects during sign bootstrap, a discovery window opens. If all n parties
@@ -377,13 +436,13 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.js
 #     (still valid if ≥ threshold+1 parties are present)
 #
 # To extend the window (e.g. for high-latency multi-machine setups):
-npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ethereum-tx.json.example --sign_discovery_timeout 10s
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.json.example --sign_discovery_timeout 10s
 #
 # To disable the window and require all n parties (strict mode):
-npm run tss-sign-ethereum-tx -- --party 1 --chain-id 31338 --tx-file ethereum-tx.json.example --sign_discovery_timeout 0
+npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.json.example --sign_discovery_timeout 0
 
 
-# 19) Test harness — verify sign bootstrap across delay scenarios
+# 20) Test harness — verify sign bootstrap across delay scenarios
 #
 # tss-tools/test-sign-rounds.sh runs configurable rounds across 34 startup-delay
 # scenarios for a 7-party (threshold=3, min_sign=4) setup. Results are written to:
@@ -404,7 +463,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 # (threshold signing) as long as at least threshold+1 parties are present.
 
 
-# 20) Patch peer addresses in existing vaults (multi-machine deployment fix)
+# 21) Patch peer addresses in existing vaults (multi-machine deployment fix)
 #
 # If keystores were generated locally (all parties on 127.0.0.1) and then deployed
 # to separate machines, the tss sign command will fail — it dials 127.0.0.1 instead
@@ -430,7 +489,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #     ./tss/.tooling/bin/tss describe \
 #       --home keystores/bnbtss/party-$i/chain-<CHAIN_ID> \
 #       --vault_name default \
-#       --password <BNB_TSS_PASSWORD> 2>/dev/null | grep -E '"Id"|"Moniker"'
+#       --password <vault-password> 2>/dev/null | grep -E '"Id"|"Moniker"'
 #   done
 #
 # Step 2: Patch all vaults at once
@@ -438,7 +497,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #   ./tss/.tooling/bin/patch-peer-addrs \
 #     --keystore-root keystores/<your-keystore-dir>/bnbtss \
 #     --chain-id <CHAIN_ID> \
-#     --password <BNB_TSS_PASSWORD> \
+#     --password <vault-password> \
 #     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
 #     --peer-ids "<party1-Id>,<party2-Id>,<party3-Id>,<party4-Id>,<party5-Id>"
 #
@@ -460,7 +519,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #   ./tss/.tooling/bin/tss describe \
 #     --home ~/tss-signer/keystores/bnbtss/party-N/chain-<CHAIN_ID> \
 #     --vault_name default \
-#     --password <BNB_TSS_PASSWORD> 2>/dev/null | grep -E '"Id"|"Moniker"'
+#     --password <vault-password> 2>/dev/null | grep -E '"Id"|"Moniker"'
 #
 #   Share the "Id" value with all other operators (e.g. secure group chat).
 #   Collect all operators' IPs and peer IDs before proceeding.
@@ -471,7 +530,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #     --keystore-root ~/tss-signer/keystores/bnbtss \
 #     --chain-id <CHAIN_ID> \
 #     --party N \
-#     --password <BNB_TSS_PASSWORD> \
+#     --password <vault-password> \
 #     --ips "<party1-ip>,<party2-ip>,<party3-ip>,<party4-ip>,<party5-ip>" \
 #     --peer-ids "<party1-Id>,<party2-Id>,<party3-Id>,<party4-Id>,<party5-Id>"
 #
@@ -487,7 +546,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #   ~/tss-signer/tss/.tooling/bin/tss sign \
 #     --home ~/tss-signer/keystores/bnbtss/party-N/chain-<CHAIN_ID> \
 #     --vault_name default \
-#     --password <BNB_TSS_PASSWORD> \
+#     --password <vault-password> \
 #     --channel_id <CHANNEL_ID> \
 #     --channel_password <CHANNEL_PASSWORD> \
 #     --message 1 \
@@ -501,7 +560,7 @@ bash tss-tools/test-sign-rounds.sh 1 5
 #   pm2 restart tss-party-N
 
 
-# 21) If verify/sign fails, check these first
+# 22) If verify/sign fails, check these first
 # - Did ./tss-tools/build-tss.sh succeed?
 # - Did you set the three env vars?
 # - Are all parties using the same channel id and channel password?
