@@ -95,9 +95,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
 
             TransactionDB.saveTransaction(tx);
             console.log(
-              `[observer/liberdus] Saved BRIDGE_IN tx ${txId} (${
-                status === TransactionDB.TransactionStatus.PENDING ? "PENDING" : "FAILED"
-              })`
+              `[observer/liberdus] Saved new BRIDGE_IN tx ${txId}})`
             );
           } else {
             const { receiptId, status } = parsed;
@@ -134,14 +132,13 @@ function parseLiberdusBridgeTx(
     const value = ethers.BigNumber.from("0x" + additionalInfo.amount.value);
 
     if (to === bridgeAddress) {
+      if (!success) return null; // Only include the successful ones
       return {
         txType: TransactionDB.TransactionType.BRIDGE_IN,
         sender: from,
         value,
         txId,
-        status: success
-          ? TransactionDB.TransactionStatus.PENDING
-          : TransactionDB.TransactionStatus.FAILED,
+        status: TransactionDB.TransactionStatus.PENDING
       };
     }
 

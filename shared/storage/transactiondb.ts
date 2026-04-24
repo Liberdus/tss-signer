@@ -30,10 +30,11 @@ export interface ExecutionHistoryEntry {
 
 export enum TransactionStatus {
   PENDING = 0,
-  PROCESSING = 1,
-  COMPLETED = 2,
-  FAILED = 3,
-  REVERTED = 4,
+  SUBMITTED = 1,    // Tx submitted to the network
+  COMPLETED = 2,    // Tx successfully executed
+  INCOMPLETED = 3,  // Tx submitted to chain but not processed by the chain
+  FAILED = 4,       // Tx failed in execution on chain
+  REVERTED = 5,     // Tx returned to sender (source bridge tx didn't meet criteria)
 }
 
 export enum TransactionType {
@@ -53,8 +54,9 @@ export function isTransactionType(value: any): value is TransactionType {
 export function isTransactionStatus(value: any): value is TransactionStatus {
   return (
     value === TransactionStatus.PENDING ||
-    value === TransactionStatus.PROCESSING ||
+    value === TransactionStatus.SUBMITTED ||
     value === TransactionStatus.COMPLETED ||
+    value === TransactionStatus.INCOMPLETED ||
     value === TransactionStatus.FAILED ||
     value === TransactionStatus.REVERTED
   );
@@ -194,8 +196,8 @@ export function updateTransactionSource(
  *
  * Guards (in priority order):
  *   1. Idempotent: same status + receiptId already stored → 'duplicate'
- *   2. No COMPLETED → FAILED/REVERTED downgrade → 'no_downgrade'
- *   3. No REVERTED → FAILED downgrade → 'no_downgrade'
+ *   2. No COMPLETED → anything else downgrade → 'no_downgrade'
+ *   3. No FAILED → INCOMPLETED downgrade → 'no_downgrade'
  *
  * Uses BEGIN IMMEDIATE so the read-check-write block is held under a single
  * write lock across both the observer and tss-party processes.
@@ -214,8 +216,8 @@ export function updateTransactionStatus(
     const current = stmtGetById.get(txId) as Transaction | undefined;
     if (!current) return "not_found";
 
-    // FAILED is exempt so a retry with a new reason always overwrites the previous failure message.
-    if (status !== TransactionStatus.FAILED && current.status === status && current.receiptId === receiptId) return "duplicate";
+    // INCOMPLETED is exempt so a retry with a new reason always overwrites the previous failure message.
+    if (status !== TransactionStatus.INCOMPLETED && current.status === status && current.receiptId === receiptId) return "duplicate";
 
     if (
       current.status === TransactionStatus.COMPLETED &&
@@ -224,9 +226,10 @@ export function updateTransactionStatus(
       return "no_downgrade";
     }
 
+    // FAILED (on-chain execution failure) is terminal — cannot downgrade to INCOMPLETED
     if (
-      current.status === TransactionStatus.REVERTED &&
-      status === TransactionStatus.FAILED
+      current.status === TransactionStatus.FAILED &&
+      status === TransactionStatus.INCOMPLETED
     ) {
       return "no_downgrade";
     }
@@ -235,11 +238,11 @@ export function updateTransactionStatus(
     const effectiveTssSender = tssSender ?? current.tssSender;
     const effectiveNonce = nonce ?? current.nonce;
 
-    // Auto-append to executionHistory when transitioning to FAILED or REVERTED
+    // Auto-append to executionHistory when transitioning to INCOMPLETED or FAILED
     // and a nonce is known (meaning a signing attempt was made).
     let updatedHistory = current.executionHistory || "{}";
     if (
-      (status === TransactionStatus.FAILED || status === TransactionStatus.REVERTED) &&
+      (status === TransactionStatus.INCOMPLETED || status === TransactionStatus.FAILED) &&
       effectiveNonce != null
     ) {
       const history: Record<string, ExecutionHistoryEntry> = JSON.parse(updatedHistory);
@@ -300,8 +303,9 @@ export function getTransactionsByPage(
 
 export function getTransactionCountsByStatus(): {
   pending: number;
-  processing: number;
+  submitted: number;
   completed: number;
+  incompleted: number;
   failed: number;
   reverted: number;
 } {
@@ -310,11 +314,12 @@ export function getTransactionCountsByStatus(): {
     .all() as { status: number; count: number }[];
   const map = new Map(rows.map((r) => [r.status, r.count]));
   return {
-    pending:    map.get(TransactionStatus.PENDING)    ?? 0,
-    processing: map.get(TransactionStatus.PROCESSING) ?? 0,
-    completed:  map.get(TransactionStatus.COMPLETED)  ?? 0,
-    failed:     map.get(TransactionStatus.FAILED)     ?? 0,
-    reverted:   map.get(TransactionStatus.REVERTED)   ?? 0,
+    pending:     map.get(TransactionStatus.PENDING)     ?? 0,
+    submitted:   map.get(TransactionStatus.SUBMITTED)   ?? 0,
+    completed:   map.get(TransactionStatus.COMPLETED)   ?? 0,
+    incompleted: map.get(TransactionStatus.INCOMPLETED) ?? 0,
+    failed:      map.get(TransactionStatus.FAILED)      ?? 0,
+    reverted:    map.get(TransactionStatus.REVERTED)    ?? 0,
   };
 }
 
@@ -362,8 +367,8 @@ export function getTransactionsByNonceRange(
 
 export function getMaxNonceForSender(chainId: number, tssSender: string): number | null {
   const row = db
-    .prepare("SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @reverted)")
-    .get({ chainId, tssSender, completed: TransactionStatus.COMPLETED, reverted: TransactionStatus.REVERTED }) as { maxNonce: number | null } | undefined
+    .prepare("SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @failed)")
+    .get({ chainId, tssSender, completed: TransactionStatus.COMPLETED, failed: TransactionStatus.FAILED }) as { maxNonce: number | null } | undefined
   return row?.maxNonce ?? null
 }
 
