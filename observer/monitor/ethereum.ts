@@ -561,7 +561,7 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
       const dbTxs = TransactionDB.getTransactionsByNonceRange(dbChainId, tssSender, lastKnownNonce, chainNonce);
       const dbFinalizedNonces = new Set(
         dbTxs
-          .filter(tx => tx.status === TransactionDB.TransactionStatus.COMPLETED || tx.status === TransactionDB.TransactionStatus.REVERTED)
+          .filter(tx => tx.status === TransactionDB.TransactionStatus.COMPLETED || tx.status === TransactionDB.TransactionStatus.FAILED)
           .map(tx => tx.nonce!)
       );
       const missingNonces: number[] = [];
@@ -623,8 +623,8 @@ export async function monitorRevertedBridgeIns(targetChainId?: number): Promise<
             }
 
             if (txId) {
-              const status = receipt.status === 1 ? TransactionDB.TransactionStatus.COMPLETED : TransactionDB.TransactionStatus.REVERTED;
-              const statusLabel = status === TransactionDB.TransactionStatus.COMPLETED ? 'COMPLETED' : 'REVERTED';
+              const status = receipt.status === 1 ? TransactionDB.TransactionStatus.COMPLETED : TransactionDB.TransactionStatus.FAILED;
+              const statusLabel = status === TransactionDB.TransactionStatus.COMPLETED ? 'COMPLETED' : 'FAILED';
               const result = TransactionDB.updateTransactionStatus(
                 txId,
                 status,
