@@ -99,6 +99,9 @@ Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](t
 
 - **`params.json`** — TSS parameters. Default: `{"parties": 5, "threshold": 3}`
 - **`chain-config.json`** — RPC endpoints, contract addresses, gas config per chain.
+- Optional local dev shortcut: set `observerSkipOldData: true` in `chain-config.json`, run with
+  `OBSERVER_SKIP_OLD_DATA=true`, or pass `--skip-old-data` to the observer to seed monitor
+  cursors to the latest chain tips instead of scanning historical events from `deploymentBlock`.
 
 ### 5. Run keygen (first time only)
 

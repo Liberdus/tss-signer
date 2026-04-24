@@ -7,10 +7,11 @@ import * as TransactionDB from "../shared/storage/transactiondb";
 import { chainConfigsRaw, getChainConfigById } from "../shared/config";
 import { isEthereumAddress, toEthereumAddress } from "../shared/utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "../shared/utils/transformTxId";
-import { initMonitorState, monitorState, setSyncReady, syncReady } from "./monitor/state";
+import { initMonitorState, monitorState, saveMonitorState, setSyncReady, syncReady } from "./monitor/state";
 import {
   monitorEthereumBridgeOutQueryFilter,
   monitorEthereumBridgeInQueryFilter,
+  seedEthereumMonitorStateToLatest,
 } from "./monitor/ethereum";
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "../shared/utils/scheduler";
@@ -58,6 +59,19 @@ console.log(`[observer] HTTP port:   ${PORT}`);
 const ETH_MONITOR_INTERVAL_MS = 60 * 1000;
 const LIB_MONITOR_INTERVAL_MS = 10_000;
 const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
+
+function parseBooleanOption(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function shouldSkipOldData(): boolean {
+  return (
+    parseBooleanOption(process.env.OBSERVER_SKIP_OLD_DATA) ||
+    chainConfigsRaw.observerSkipOldData === true ||
+    process.argv.includes("--skip-old-data")
+  );
+}
 
 // ---------------------------------------------------------------------------
 // /notify-bridgeout state
@@ -274,6 +288,17 @@ app.post("/notify-bridgeout", (req, res) => {
       "[observer] Monitor state loaded. Last Liberdus timestamp:",
       new Date(monitorState.lastLiberdusTimestamp).toISOString()
     );
+
+    if (shouldSkipOldData()) {
+      console.log("[observer] OBSERVER_SKIP_OLD_DATA enabled; seeding monitor cursors to latest data");
+      await seedEthereumMonitorStateToLatest();
+      monitorState.lastLiberdusTimestamp = Date.now();
+      saveMonitorState();
+      console.log(
+        "[observer] Liberdus cursor seeded to:",
+        new Date(monitorState.lastLiberdusTimestamp).toISOString()
+      );
+    }
 
     // Bind HTTP port before sync so tss-party gets syncReady:false instead of ECONNREFUSED
     app.listen(PORT, () => {

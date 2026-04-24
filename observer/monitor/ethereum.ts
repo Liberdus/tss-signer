@@ -701,3 +701,52 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
   }
   return allChainsSeeded;
 }
+
+export async function seedEthereumMonitorStateToLatest(): Promise<void> {
+  for (const chainId of observerChainRpc.chainIds) {
+    const chainConfig = getChainConfigById(chainConfigsRaw, chainId);
+    if (!chainConfig) continue;
+
+    const latestBlock = await observerChainRpc.withChainHttpProvider(
+      chainId,
+      (provider) => provider.getBlockNumber(),
+      { maxRetries: 3 }
+    );
+
+    const chainKey = chainId.toString();
+    const shouldScanBridgeOut = chainConfigsRaw.enableLiberdusNetwork
+      ? true
+      : chainId !== chainConfigsRaw.secondaryChainConfig?.chainId;
+    const shouldScanBridgeIn = chainConfigsRaw.enableLiberdusNetwork
+      ? true
+      : chainId === chainConfigsRaw.secondaryChainConfig?.chainId;
+
+    if (shouldScanBridgeOut) {
+      const blockMap = chainConfigsRaw.enableLiberdusNetwork
+        ? monitorState.blocks
+        : monitorState.vault;
+      blockMap[chainKey] = latestBlock;
+    }
+
+    if (shouldScanBridgeIn) {
+      monitorState.bridgeInBlocks[chainKey] = latestBlock;
+    }
+
+    if (shouldScanBridgeIn && chainConfig.tssSenderAddress) {
+      const tssSender = chainConfig.tssSenderAddress.toLowerCase();
+      const senderKey = `${chainId}:${tssSender}`;
+      const chainNonce = await observerChainRpc.withChainHttpProvider(
+        chainId,
+        (provider) => provider.getTransactionCount(tssSender),
+        { maxRetries: 3 }
+      );
+      monitorState.revertedNonces[senderKey] = chainNonce;
+      monitorState.revertScanBlocks[chainKey] = latestBlock;
+    }
+
+    console.log(
+      `[observer] Seeded ${chainConfig.name} monitor cursors to block ${latestBlock}`
+    );
+  }
+  saveMonitorState();
+}
