@@ -13,8 +13,8 @@ export interface ChainConfig {
 }
 
 export interface LiberdusGuards {
-  maxBridgeInAmount?: string   // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_IN txs (EVM → Liberdus)
-  maxBridgeOutAmount?: string  // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_OUT txs (Liberdus → EVM)
+  maxBridgeInAmount?: string   // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_IN txs (Liberdus → EVM)
+  maxBridgeOutAmount?: string  // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_OUT txs (EVM → Liberdus)
 }
 
 
