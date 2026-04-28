@@ -371,13 +371,13 @@ async function checkMaxBridgeAmount(
   return value.lte(chainState.maxBridgeInAmount)
 }
 
-async function refreshBridgeStateOnRevert(reason: string | undefined, chainId: number): Promise<void> {
+async function refreshBridgeStateOnFailed(reason: string | undefined, chainId: number): Promise<void> {
   if (!reason || (!reason.includes('Bridge-in cooldown not met') && !reason.includes('Amount exceeds bridge-in limit'))) return
-  console.log(`Refreshing bridge state for chain ${chainId} due to revert: ${reason}`)
+  console.log(`Refreshing bridge state for chain ${chainId} due to on-chain failure: ${reason}`)
   try {
     await fetchBridgeState(chainId)
   } catch (error) {
-    console.warn(`[bridge-state] Failed to refresh state after revert on chain ${chainId}:`, error)
+    console.warn(`[bridge-state] Failed to refresh state after on-chain failure on chain ${chainId}:`, error)
   }
 }
 
@@ -639,7 +639,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
 
       const existingEntry = txQueueMap.get(tx.txId)
       if (existingEntry) {
-        // If we previously marked it failed/reverted locally but the DB still
+        // If we previously marked it incompleted/failed locally but the DB still
         // reports it as unprocessed, queue it again.
         if ((existingEntry.status === 'incompleted' || existingEntry.status === 'failed') && !pendingTxQueue.some(t => t.txId === tx.txId)) {
           console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but DB reports ${txStatusLabel(tx.status)}`)
@@ -709,7 +709,7 @@ function checkTxStatusFromLocalDB(txId: string): TransactionStatus | null {
 // ---------------------------------------------------------------------------
 // Nonce manager — tracks the expected next EVM nonce per chain per sender.
 // Initialized from on-chain state at startup, incremented locally on
-// success/revert (nonce consumed), NOT incremented on send failure.
+// success/on-chain failure (nonce consumed), NOT incremented on send failure.
 // ---------------------------------------------------------------------------
 
 const nonceManager: Map<string, number> = new Map() // key: `${chainId}:${tssSender}`
@@ -774,7 +774,7 @@ async function getGasPriceFromFixedRpc(rpcUrl: string, maxRetries = 3): Promise<
 
 // ---------------------------------------------------------------------------
 // In-memory signed tx cache — for EVM rebroadcast without re-signing.
-// Keyed by normalized txId. Cleared on completion, revert, or process restart.
+// Keyed by normalized txId. Cleared on completion, on-chain failure, or process restart.
 // ---------------------------------------------------------------------------
 
 const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: number; cachedAt: number }> = new Map()
@@ -814,7 +814,7 @@ function dbStatusToSkipOutcome(
   return 'skipped_db_failed'
 }
 
-// Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/REVERTED) tx for this sender
+// Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/FAILED) tx for this sender
 // is ahead. chainId is the source chain as stored in the DB. For vaultBridge the nonce manager
 // lives on the destination chain, so nonceCacheChainId is derived from txType.
 function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: number, tssSender: string): void {
@@ -849,7 +849,7 @@ function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: num
 // Checks the local DB for any tx in [fromNonce, toNonce) that matches currentTxId and is
 // already COMPLETED (i.e. another party submitted and it succeeded while we were away).
 // Gap nonces not in the DB are left for the observer to resolve asynchronously;
-// the pre-sign reconcile guard catches REVERTED/COMPLETED on the next retry.
+// the pre-sign reconcile guard catches FAILED/COMPLETED on the next retry.
 // Returns receiptId if currentTxId was found COMPLETED in the DB, null otherwise.
 // ---------------------------------------------------------------------------
 
@@ -1332,7 +1332,7 @@ async function processCoinToToken(
     const reason = error instanceof Error ? error.message : (error as string)
     console.error(`Failed to inject ethereum transaction on ${targetChainName}: ${txHash}`, reason)
     res = {success: false, reason}
-    await refreshBridgeStateOnRevert(reason, targetChainId)
+    await refreshBridgeStateOnFailed(reason, targetChainId)
   }
 
   if (res.success) {
@@ -1369,7 +1369,7 @@ async function processCoinToToken(
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
-      if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on revert
+      if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on on-chain failure
       return 'incompleted'
     }
   } else {
@@ -1651,7 +1651,7 @@ async function processVaultBridge(
     const reason = error instanceof Error ? error.message : (error as string)
     console.error(`Failed to inject EVM-to-EVM transaction on ${destChainName}: ${txHash}`, reason)
     res = {success: false, reason}
-    await refreshBridgeStateOnRevert(reason, destinationChainId)
+    await refreshBridgeStateOnFailed(reason, destinationChainId)
   }
 
   if (res.success) {
@@ -1688,7 +1688,7 @@ async function processVaultBridge(
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
-      if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on revert
+      if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on on-chain failure
       return 'incompleted'
     }
   } else {
@@ -1847,7 +1847,7 @@ async function retryOperation<T>(
         'Nonce too low',
         'nonce has already been used',
         'NONCE_EXPIRED',
-        // Contract reverts (execution failed, retrying won't help)
+        // Contract execution failures (retrying won't help)
         'reverted with reason string',
         'execution reverted',
         'CALL_EXCEPTION',
@@ -2293,7 +2293,7 @@ async function main(): Promise<void> {
         console.log(`Transaction ${validTx.txId} was already failed in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         pendingTxQueueRemovalSet.add(txId)
-        appendToFailedTxsLogs(validTx, 'already reverted in local DB during reconcile')
+        appendToFailedTxsLogs(validTx, 'already failed in local DB during reconcile')
         const tssSender = validTx.type === 'vaultBridge'
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!

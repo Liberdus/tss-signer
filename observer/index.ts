@@ -91,8 +91,8 @@ app.get("/health", (_req, res) => {
         blocks: monitorState.blocks,
         vault: monitorState.vault,
         bridgeInBlocks: monitorState.bridgeInBlocks,
-        revertScanBlocks: monitorState.revertScanBlocks,
-        revertedNonces: monitorState.revertedNonces,
+        failedTxScanBlocks: monitorState.failedTxScanBlocks,
+        failedTxNonces: monitorState.failedTxNonces,
         lastLiberdusTimestamp: new Date(monitorState.lastLiberdusTimestamp).toISOString(),
       },
       transactions: counts,
@@ -311,7 +311,7 @@ app.post("/notify-bridgeout", (req, res) => {
     console.log("[observer] Initial sync complete — syncReady=true");
 
     // Periodic schedulers: BridgedOut and BridgedIn always run as a sequential pair.
-    // monitorRevertedBridgeIns is triggered automatically at the end of each BridgeIn scan.
+    // monitorFailedBridgeIns is triggered automatically at the end of each BridgeIn scan.
     startDriftResistantScheduler(async () => {
       await monitorEthereumBridgeOutQueryFilter();
       await monitorEthereumBridgeInQueryFilter();

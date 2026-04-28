@@ -17,7 +17,7 @@ export interface Transaction {
   tssSender?: string | null;          // TSS sender address used for this tx
   nonce?: number | null;              // EVM sender nonce OR Liberdus tx timestamp
   reason?: string | null;             // Reason for failure
-  executionHistory?: string | null;   // JSON: tracks failed/reverted attempts
+  executionHistory?: string | null;   // JSON: tracks failed/incompleted tx attempts
   createdAt?: number;
   updatedAt?: number;
 }
