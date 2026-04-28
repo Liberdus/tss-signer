@@ -13,8 +13,9 @@ export interface ChainConfig {
 }
 
 export interface LiberdusGuards {
-  maxBridgeInAmount?: string   // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_IN txs (Liberdus → EVM)
-  maxBridgeOutAmount?: string  // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_OUT txs (EVM → Liberdus)
+  maxBridgeInAmount?: string       // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_IN txs (Liberdus → EVM)
+  maxBridgeOutAmount?: string      // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_OUT txs (EVM → Liberdus)
+  enforceRecipientExists?: boolean // When true, refunds BRIDGE_OUT txs whose Liberdus recipient account does not exist
 }
 
 
