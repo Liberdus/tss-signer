@@ -17,17 +17,17 @@ const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
  *
  * - BRIDGE_OUT:
  *   - COMPLETED  => proxy tx.success must be true
- *   - REVERTED   => proxy tx.success must be false
+ *   - FAILED     => proxy tx.success must be false
  * - BRIDGE_IN / BRIDGE_VAULT:
  *   - COMPLETED  => EVM receipt.status must be 1 and BridgedIn event txId must match expectedTxId
- *   - REVERTED   => EVM receipt.status must be 0
+ *   - FAILED     => EVM receipt.status must be 0
  */
 export async function verifyTxOnChain(
   type: TransactionDB.TransactionType,
   chainId: number,
   receiptId: string,
   expectedTxId?: string,
-  isReverted?: boolean,
+  isFailed?: boolean,
 ): Promise<boolean> {
   try {
     if (type === TransactionDB.TransactionType.BRIDGE_OUT) {
@@ -42,10 +42,10 @@ export async function verifyTxOnChain(
           );
           const tx = res.data?.transaction;
           if (typeof tx?.success !== "boolean") continue;
-          if (isReverted) {
+          if (isFailed) {
             if (tx.success !== false) {
               console.error(
-                `[verifyTxOnChain] Discrepancy: reported REVERTED but Liberdus tx indicates success (receiptId=${receiptId})`
+                `[verifyTxOnChain] Discrepancy: reported FAILED but Liberdus tx indicates success (receiptId=${receiptId})`
               );
               return false;
             }
@@ -96,10 +96,10 @@ export async function verifyTxOnChain(
           );
           if (!receipt) continue;
 
-          if (isReverted) {
+          if (isFailed) {
             if (receipt.status !== 0) {
               console.error(
-                `[verifyTxOnChain] Discrepancy: reported REVERTED but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
+                `[verifyTxOnChain] Discrepancy: reported FAILED but EVM receipt.status=${receipt.status} (receiptId=${receiptId})`
               );
               return false;
             }
