@@ -1121,6 +1121,7 @@ async function processCoinToToken(
   if (!isRefund) {
     const localMaxBridgeAmount = chainConfigs.liberdusGuards?.maxBridgeInAmount
       ? ethers.utils.parseEther(chainConfigs.liberdusGuards.maxBridgeInAmount) : null
+    console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${ethersUtils.formatEther(localMaxBridgeAmount)}`)
     if (localMaxBridgeAmount && value.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
       return processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true)
@@ -1752,9 +1753,24 @@ async function processTokenToCoin(
     const valueBN = ethers.BigNumber.from(value.toHexString())
     const localMaxBridgeAmount = chainConfigs.liberdusGuards?.maxBridgeOutAmount
       ? ethers.utils.parseEther(chainConfigs.liberdusGuards.maxBridgeOutAmount) : null
+    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${ethersUtils.formatEther(localMaxBridgeAmount)}`)
     if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
       return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true)
+    }
+
+    if (chainConfigs.liberdusGuards?.enforceRecipientExists) {
+      const shardusTo = toShardusAddress(to)
+      const accountCheck = await checkLiberdusAccountExists(shardusTo)
+      console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient account ${shardusTo} — ${accountCheck}`)
+      if (accountCheck === 'not-found') {
+        console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient ${shardusTo} does not exist on Liberdus network — initiating refund`)
+        return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true)
+      }
+      if (accountCheck === 'error') {
+        console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: could not verify recipient ${shardusTo} — retrying later`)
+        return 'incompleted'
+      }
     }
   }
 
@@ -2144,6 +2160,28 @@ async function getLiberdusAccountBalance(address: string): Promise<string | null
   }
   if (!response || response.data == null || response.data.account == null) return null
   return balance
+}
+
+async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exists' | 'not-found' | 'error'> {
+  const url = proxyServerHost + '/account/' + shardusAddress
+  const maxAttempts = 3
+  let lastResult: 'not-found' | 'error' = 'error'
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await axios.get(url)
+      if (response.status === 200) {
+        if (response.data?.account != null) return 'exists'
+        lastResult = 'not-found'
+      } else {
+        lastResult = 'error'
+      }
+    } catch (e) {
+      console.warn(`[checkLiberdusAccountExists] Attempt ${attempt}/${maxAttempts} failed for ${shardusAddress}:`, e instanceof Error ? e.message : e)
+      lastResult = 'error'
+    }
+    if (attempt < maxAttempts) await sleep(1000)
+  }
+  return lastResult
 }
 
 async function getLatestCycleRecord(): Promise<any> {
