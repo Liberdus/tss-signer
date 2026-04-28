@@ -1197,6 +1197,7 @@ async function processCoinToToken(
         txId: cached.txHash,
         maxRetries: 3,
       })
+      updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, senderNonce, '')
       const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
       if (cachedReceipt?.status === 1) {
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
@@ -1208,7 +1209,7 @@ async function processCoinToToken(
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
-        return 'incompleted'
+        return 'failed'
       }
     } catch (e) {
       console.warn(`[nonce-guard] Rebroadcast failed, will re-sign: ${e instanceof Error ? e.message : e}`)
@@ -1513,6 +1514,7 @@ async function processVaultBridge(
         txId: cached.txHash,
         maxRetries: 3,
       })
+      updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, senderNonce, '')
       const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
       if (receipt?.status === 1) {
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
@@ -1524,7 +1526,7 @@ async function processVaultBridge(
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
-        return 'incompleted'
+        return 'failed'
       }
     } catch (e) {
       console.warn(`[nonce-guard] Rebroadcast failed, will re-sign: ${e instanceof Error ? e.message : e}`)
