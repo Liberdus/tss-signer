@@ -38,8 +38,8 @@ export enum TransactionStatus {
 }
 
 export enum TransactionType {
-  BRIDGE_IN = 0,
-  BRIDGE_OUT = 1,
+  BRIDGE_IN = 0,    // Liberdus → EVM: observer detects Liberdus transfer, party calls bridgeIn on EVM
+  BRIDGE_OUT = 1,   // EVM → Liberdus: observer detects BridgedOut on EVM, party sends coin on Liberdus
   BRIDGE_VAULT = 2,
 }
 
