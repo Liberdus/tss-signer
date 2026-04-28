@@ -1094,6 +1094,7 @@ async function processCoinToToken(
   targetChainId: number,
   txTimestampMs: number,
   isRefund?: boolean,
+  revertReason?: string,
 ): Promise<ProcessOutcome> {
   value = ethers.BigNumber.from(value)
   console.log('Processing coin to token transaction', {
@@ -1124,7 +1125,8 @@ async function processCoinToToken(
     console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${ethersUtils.formatEther(localMaxBridgeAmount)}`)
     if (localMaxBridgeAmount && value.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
-      return processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true)
+      const revertReason = `Amount ${ethersUtils.formatEther(value)} LIB exceeds local BRIDGE_IN limit of ${chainConfigs.liberdusGuards?.maxBridgeInAmount} LIB`
+      return processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true, revertReason)
     }
   }
 
@@ -1315,7 +1317,7 @@ async function processCoinToToken(
     console.log(
       `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}${isRefund ? ' (refund)' : ''}`,
     )
-    const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, '')
+    const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, isRefund ? revertReason ?? '' : '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
     return finalOutcome
@@ -1378,7 +1380,7 @@ async function processCoinToToken(
       console.log(
         `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}${isRefund ? ' (refund)' : ''}`,
       )
-      const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, isRefund ? revertReason ?? '' : '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
       return finalOutcome
@@ -1734,6 +1736,7 @@ async function processTokenToCoin(
   sourceChainId: number,
   txTimestampMs: number,
   isRefund?: boolean,
+  revertReason?: string,
 ): Promise<ProcessOutcome> {
   console.log('Processing token to coin transaction', {to, value, txId, sourceChainId})
 
@@ -1756,7 +1759,8 @@ async function processTokenToCoin(
     console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${ethersUtils.formatEther(localMaxBridgeAmount)}`)
     if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
-      return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true)
+      const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${chainConfigs.liberdusGuards?.maxBridgeOutAmount} LIB`
+      return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
     }
 
     if (chainConfigs.liberdusGuards?.enforceRecipientExists) {
@@ -1765,7 +1769,8 @@ async function processTokenToCoin(
       console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient account ${shardusTo} — ${accountCheck}`)
       if (accountCheck === 'not-found') {
         console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient ${shardusTo} does not exist on Liberdus network — initiating refund`)
-        return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true)
+        const revertReason = `Recipient ${shardusTo} does not exist on Liberdus network`
+        return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
       }
       if (accountCheck === 'error') {
         console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: could not verify recipient ${shardusTo} — retrying later`)
@@ -1852,7 +1857,7 @@ async function processTokenToCoin(
       console.log(
         `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}${isRefund ? ' (refund)' : ''}`,
       )
-      updateTxStatusInLocalDB(txId, finalStatus, signedTxId, liberdusTssSender, liberdusNonce)
+      updateTxStatusInLocalDB(txId, finalStatus, signedTxId, liberdusTssSender, liberdusNonce, isRefund ? revertReason ?? '' : '')
       return finalOutcome
     } else {
       console.log(
