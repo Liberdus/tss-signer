@@ -371,32 +371,6 @@ async function checkMaxBridgeAmount(
   return value.lte(chainState.maxBridgeInAmount)
 }
 
-// Returns a ProcessOutcome if the value exceeds the tightest configured local limit,
-// triggering the refund path. Returns null if within limits (caller continues normally).
-async function checkLocalBridgeLimits(
-  txId: string,
-  value: ethers.BigNumber,
-  liberdusMaxStr: string | undefined,
-  chainMaxStr: string | undefined,
-  label: string,
-  refundFn: () => Promise<ProcessOutcome>,
-): Promise<ProcessOutcome | null> {
-  // Pick the tightest (smallest) limit that has been configured
-  let effectiveMax: ethers.BigNumber | null = null
-  if (liberdusMaxStr) {
-    const bn = ethers.BigNumber.from(liberdusMaxStr)
-    effectiveMax = effectiveMax === null || bn.lt(effectiveMax) ? bn : effectiveMax
-  }
-  if (chainMaxStr) {
-    const bn = ethers.BigNumber.from(chainMaxStr)
-    effectiveMax = effectiveMax === null || bn.lt(effectiveMax) ? bn : effectiveMax
-  }
-  if (effectiveMax === null || value.lte(effectiveMax)) return null
-  console.warn(
-    `[bridge-guards] ${label}: amount ${ethersUtils.formatEther(value)} ETH exceeds local limit ${ethersUtils.formatEther(effectiveMax)} ETH — initiating refund`,
-  )
-  return refundFn()
-}
 
 async function refreshBridgeStateOnFailed(reason: string | undefined, chainId: number): Promise<void> {
   if (!reason || (!reason.includes('Bridge-in cooldown not met') && !reason.includes('Amount exceeds bridge-in limit'))) return
@@ -1145,15 +1119,12 @@ async function processCoinToToken(
 
   // Operator-imposed local limit check — fires before the on-chain check
   if (!isRefund) {
-    const limitResult = await checkLocalBridgeLimits(
-      txId,
-      value,
-      chainConfigs.liberdusGuards?.maxBridgeInAmount,
-      chainConfigs.chainGuards?.[targetChainId]?.maxBridgeInAmount,
-      `BRIDGE_IN on ${targetChainName}`,
-      () => processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true),
-    )
-    if (limitResult != null) return limitResult
+    const localMaxBridgeAmount = chainConfigs.liberdusGuards?.maxBridgeInAmount
+      ? ethers.utils.parseEther(chainConfigs.liberdusGuards.maxBridgeInAmount) : null
+    if (localMaxBridgeAmount && value.gt(localMaxBridgeAmount)) {
+      console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
+      return processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true)
+    }
   }
 
   if (!await checkMaxBridgeAmount(chainState, value)) {
@@ -1779,15 +1750,12 @@ async function processTokenToCoin(
   // Operator-imposed local limit check — only on non-refund calls
   if (!isRefund) {
     const valueBN = ethers.BigNumber.from(value.toHexString())
-    const limitResult = await checkLocalBridgeLimits(
-      txId,
-      valueBN,
-      chainConfigs.liberdusGuards?.maxBridgeOutAmount,
-      chainConfigs.chainGuards?.[sourceChainId]?.maxBridgeOutAmount,
-      `BRIDGE_OUT from ${sourceChainName}`,
-      () => processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true),
-    )
-    if (limitResult != null) return limitResult
+    const localMaxBridgeAmount = chainConfigs.liberdusGuards?.maxBridgeOutAmount
+      ? ethers.utils.parseEther(chainConfigs.liberdusGuards.maxBridgeOutAmount) : null
+    if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
+      console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
+      return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true)
+    }
   }
 
   // convert ethers.BigNumber to bigint

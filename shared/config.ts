@@ -13,14 +13,10 @@ export interface ChainConfig {
 }
 
 export interface LiberdusGuards {
-  maxBridgeInAmount?: string   // Wei string — operator-imposed max for BRIDGE_IN txs
-  maxBridgeOutAmount?: string  // Wei string — operator-imposed max for BRIDGE_OUT txs
+  maxBridgeInAmount?: string   // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_IN txs (EVM → Liberdus)
+  maxBridgeOutAmount?: string  // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_OUT txs (Liberdus → EVM)
 }
 
-export interface ChainGuards {
-  maxBridgeInAmount?: string   // Wei string — operator-imposed max for BRIDGE_IN txs
-  maxBridgeOutAmount?: string  // Wei string — operator-imposed max for BRIDGE_OUT txs
-}
 
 export interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
@@ -36,7 +32,6 @@ export interface ChainConfigs {
   collectorHost?: string
   proxyServerHost?: string
   liberdusGuards?: LiberdusGuards
-  chainGuards?: Record<string, ChainGuards>  // keyed by chainId as string
 }
 
 export interface ParamsConfig {
