@@ -72,7 +72,7 @@ interface TransactionQueueItem {
 
 interface TxQueueEntry {
   txTimestamp: number // milliseconds, from source-chain event/block time
-  status: 'pending' | 'processing' | 'completed' | 'incompleted' | 'failed'
+  status: 'pending' | 'processing' | 'completed' | 'incompleted' | 'failed' | 'reverted'
 }
 
 interface PartyInfo {
@@ -104,7 +104,7 @@ interface SignedTx {
   }
 }
 
-type ProcessOutcome = 'completed' | 'incompleted' | 'failed' | 'skipped_db_completed' | 'skipped_db_failed'
+type ProcessOutcome = 'completed' | 'incompleted' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
 
 // Receipt is polled only while remaining cooldown time exceeds (bridgeInCooldown - this value).
 // e.g. for a 60s cooldown: poll while remainingMs > 45s, skip receipt checks once < 45s remains —
@@ -369,6 +369,33 @@ async function checkMaxBridgeAmount(
   console.log(`[bridge-limits] Cached maxBridgeInAmount check failed, re-fetching for chain ${chainState.config.chainId}`)
   await fetchBridgeState(chainState.config.chainId, 'maxBridgeInAmount')
   return value.lte(chainState.maxBridgeInAmount)
+}
+
+// Returns a ProcessOutcome if the value exceeds the tightest configured local limit,
+// triggering the refund path. Returns null if within limits (caller continues normally).
+async function checkLocalBridgeLimits(
+  txId: string,
+  value: ethers.BigNumber,
+  liberdusMaxStr: string | undefined,
+  chainMaxStr: string | undefined,
+  label: string,
+  refundFn: () => Promise<ProcessOutcome>,
+): Promise<ProcessOutcome | null> {
+  // Pick the tightest (smallest) limit that has been configured
+  let effectiveMax: ethers.BigNumber | null = null
+  if (liberdusMaxStr) {
+    const bn = ethers.BigNumber.from(liberdusMaxStr)
+    effectiveMax = effectiveMax === null || bn.lt(effectiveMax) ? bn : effectiveMax
+  }
+  if (chainMaxStr) {
+    const bn = ethers.BigNumber.from(chainMaxStr)
+    effectiveMax = effectiveMax === null || bn.lt(effectiveMax) ? bn : effectiveMax
+  }
+  if (effectiveMax === null || value.lte(effectiveMax)) return null
+  console.warn(
+    `[bridge-guards] ${label}: amount ${ethersUtils.formatEther(value)} ETH exceeds local limit ${ethersUtils.formatEther(effectiveMax)} ETH — initiating refund`,
+  )
+  return refundFn()
 }
 
 async function refreshBridgeStateOnFailed(reason: string | undefined, chainId: number): Promise<void> {
@@ -783,7 +810,7 @@ const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: numb
 function reconcileTxStatusWithLocalDB(
   txId: string,
   context: 'pre-process' | 'pre-sign' | 'post-sign' | 'pre-submit',
-): null | 'completed' | 'failed' {
+): null | 'completed' | 'failed' | 'reverted' {
   if (DEBUG_SKIP_TX_STATUS_CHECK) return null
   try {
     const status = checkTxStatusFromLocalDB(txId)
@@ -795,7 +822,9 @@ function reconcileTxStatusWithLocalDB(
     ) {
       return null
     }
-    const statusLabel = status === TransactionStatus.COMPLETED ? 'completed' :
+    const statusLabel: 'completed' | 'failed' | 'reverted' =
+      status === TransactionStatus.COMPLETED ? 'completed' :
+      status === TransactionStatus.REVERTED  ? 'reverted' :
       'failed'
     console.log(`⏩ ${txId} already ${txStatusLabel(status)} in local DB (${context}), skipping`)
     return statusLabel
@@ -808,9 +837,10 @@ function reconcileTxStatusWithLocalDB(
 
 // Maps a reconcile skip status to the corresponding ProcessOutcome.
 function dbStatusToSkipOutcome(
-  status: 'completed' | 'failed',
+  status: 'completed' | 'failed' | 'reverted',
 ): ProcessOutcome {
   if (status === 'completed') return 'skipped_db_completed'
+  if (status === 'reverted') return 'skipped_db_reverted'
   return 'skipped_db_failed'
 }
 
@@ -1089,12 +1119,14 @@ async function processCoinToToken(
   txId: string,
   targetChainId: number,
   txTimestampMs: number,
+  isRefund?: boolean,
 ): Promise<ProcessOutcome> {
   value = ethers.BigNumber.from(value)
   console.log('Processing coin to token transaction', {
     to,
     value: value.toString(),
     targetChainId,
+    isRefund,
   })
 
   const chainState = chainStateByChainId.get(targetChainId)
@@ -1110,6 +1142,19 @@ async function processCoinToToken(
   const normalizedTxId = normalizeTxId(txId)
   let senderNonce = getLocalNonce(targetChainId, tssSender)
   console.log(`Processing transaction on ${targetChainName}`)
+
+  // Operator-imposed local limit check — fires before the on-chain check
+  if (!isRefund) {
+    const limitResult = await checkLocalBridgeLimits(
+      txId,
+      value,
+      chainConfigs.liberdusGuards?.maxBridgeInAmount,
+      chainConfigs.chainGuards?.[targetChainId]?.maxBridgeInAmount,
+      `BRIDGE_IN on ${targetChainName}`,
+      () => processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true),
+    )
+    if (limitResult != null) return limitResult
+  }
 
   if (!await checkMaxBridgeAmount(chainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
@@ -1293,13 +1338,15 @@ async function processCoinToToken(
     return cooldownResult.outcome
   }
   if (cooldownResult.receipt?.status === 1) {
+    const finalStatus = isRefund ? TransactionStatus.REVERTED : TransactionStatus.COMPLETED
+    const finalOutcome: ProcessOutcome = isRefund ? 'reverted' : 'completed'
     console.log(
-      `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+      `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}${isRefund ? ' (refund)' : ''}`,
     )
-    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+    const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
-    return 'completed'
+    return finalOutcome
   } else if (cooldownResult.receipt?.status === 0) {
     console.log(
       `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
@@ -1354,13 +1401,15 @@ async function processCoinToToken(
   if (receipt) {
     console.log(`[receipt] Found Ethereum receipt on ${targetChainName} for ${txHash}: status=${receipt.status} block=${receipt.blockNumber}`)
     if (receipt.status === 1) {
+      const finalStatus = isRefund ? TransactionStatus.REVERTED : TransactionStatus.COMPLETED
+      const finalOutcome: ProcessOutcome = isRefund ? 'reverted' : 'completed'
       console.log(
-        `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
+        `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}${isRefund ? ' (refund)' : ''}`,
       )
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
-      return 'completed'
+      return finalOutcome
     } else {
       console.log(
         `Transaction failed in execution - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
@@ -1712,6 +1761,7 @@ async function processTokenToCoin(
   txId: string,
   sourceChainId: number,
   txTimestampMs: number,
+  isRefund?: boolean,
 ): Promise<ProcessOutcome> {
   console.log('Processing token to coin transaction', {to, value, txId, sourceChainId})
 
@@ -1724,7 +1774,21 @@ async function processTokenToCoin(
   }
 
   const sourceChainName = sourceChainState.config.name
-  console.log(`Processing transaction from ${sourceChainName}`)
+  console.log(`Processing transaction from ${sourceChainName}`, { isRefund: isRefund })
+
+  // Operator-imposed local limit check — only on non-refund calls
+  if (!isRefund) {
+    const valueBN = ethers.BigNumber.from(value.toHexString())
+    const limitResult = await checkLocalBridgeLimits(
+      txId,
+      valueBN,
+      chainConfigs.liberdusGuards?.maxBridgeOutAmount,
+      chainConfigs.chainGuards?.[sourceChainId]?.maxBridgeOutAmount,
+      `BRIDGE_OUT from ${sourceChainName}`,
+      () => processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true),
+    )
+    if (limitResult != null) return limitResult
+  }
 
   // convert ethers.BigNumber to bigint
   const amountInBigInt = BigInt(value.toHexString())
@@ -1799,11 +1863,13 @@ async function processTokenToCoin(
   const receipt = await getLiberdusReceipt(signedTxId, fetchReceiptRetry)
   if (receipt) {
     if (receipt.success === true) {
+      const finalStatus = isRefund ? TransactionStatus.REVERTED : TransactionStatus.COMPLETED
+      const finalOutcome: ProcessOutcome = isRefund ? 'reverted' : 'completed'
       console.log(
-        `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
+        `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}${isRefund ? ' (refund)' : ''}`,
       )
-      updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, signedTxId, liberdusTssSender, liberdusNonce)
-      return 'completed'
+      updateTxStatusInLocalDB(txId, finalStatus, signedTxId, liberdusTssSender, liberdusNonce)
+      return finalOutcome
     } else {
       console.log(
         `Transaction failed in execution - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId} with reason ${receipt.reason}`,
@@ -2278,6 +2344,10 @@ async function main(): Promise<void> {
         pendingTxQueueRemovalSet.add(txId)
         appendToFailedTxsLogs(validTx, 'failed on-chain')
         console.warn(`Transaction ${validTx.txId} was executed but failed on-chain`)
+      } else if (outcome === 'reverted') {
+        txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        pendingTxQueueRemovalSet.add(txId)
+        console.log(`Transaction ${validTx.txId} reverted — amount exceeded local limit, refunded to sender`)
       } else if (outcome === 'incompleted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'incompleted' })
         console.warn(`Transaction ${validTx.txId} reported incompleted outcome during processing`)
@@ -2298,6 +2368,10 @@ async function main(): Promise<void> {
           ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
           : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
+      } else if (outcome === 'skipped_db_reverted') {
+        console.log(`Transaction ${validTx.txId} was already reverted in local DB during reconcile, skipping`)
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+        pendingTxQueueRemovalSet.add(txId)
       }
 
       // Check memory usage after successful transaction
@@ -2333,6 +2407,10 @@ async function main(): Promise<void> {
             incrementLocalNonce(nonceCacheChainId, nonceTssSender)
           }
           console.log(`[${timeoutReason}] ${validTx.txId} already COMPLETED in local DB`)
+        } else if (finalStatus === TransactionStatus.REVERTED) {
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
+          pendingTxQueueRemovalSet.add(txId)
+          console.log(`[${timeoutReason}] ${validTx.txId} already REVERTED in local DB`)
         } else {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
           appendToFailedTxsLogs(validTx, timeoutReason)

@@ -226,6 +226,10 @@ export function updateTransactionStatus(
       return "no_downgrade";
     }
 
+    if (current.status === TransactionStatus.REVERTED) {
+      return "no_downgrade";
+    }
+
     // FAILED (on-chain execution failure) is terminal — cannot downgrade to INCOMPLETED
     if (
       current.status === TransactionStatus.FAILED &&
