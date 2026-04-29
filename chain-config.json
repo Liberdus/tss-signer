@@ -1,54 +1,54 @@
 {
   "useInfuraRpcProviders": false,
   "vaultChain": {
-    "name": "Polygon Mainnet",
-    "chainId": 137,
-    "rpcUrl": "https://polygon-rpc.com",
-    "contractAddress": "0x4eC99a17a354E91C3EEF934DC86011c15b013dC0",
-    "deploymentBlock": 85227021
+    "name": "Polygon Amoy Testnet",
+    "chainId": 80002,
+    "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
+    "contractAddress": "0x45F54526165b0dC75E298A560F9a1B1cb06bb41E",
+    "deploymentBlock": 35750122
   },
   "secondaryChainConfig": {
-    "name": "BSC Mainnet",
-    "chainId": 56,
-    "rpcUrl": "https://bsc-dataseed.bnbchain.org/",
-    "contractAddress": "0x5AfdCC93D794762C785Ec14Fb2a24c4aBDbB8aaa",
-    "tssSenderAddress": "0x980828D1eb8EABC88Aeb1F7a817dbb0e9fA52269",
-    "bridgeAddress": "980828d1eb8eabc88aeb1f7a817dbb0e9fa52269000000000000000000000000",
+    "name": "BSC Testnet",
+    "chainId": 97,
+    "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
+    "contractAddress": "0x48463C89254d001Bdc6B5d2af92d531E60FB4f72",
+    "tssSenderAddress": "0xb1325c98Bc338986B64355cD72deC0E5eEa22416",
+    "bridgeAddress": "b1325c98bc338986b64355cd72dec0e5eea22416000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
     },
-    "deploymentBlock": 91165305
+    "deploymentBlock": 96441497
   },
   "supportedChains": {
-    "137": {
-      "name": "Polygon Mainnet",
-      "chainId": 137,
-      "rpcUrl": "https://polygon-rpc.com",
-      "contractAddress": "0x693ed886545970f0a3adf8c59af5ccdb6ddf0a76",
-      "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
-      "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
+    "80002": {
+      "name": "Polygon Amoy Testnet",
+      "chainId": 80002,
+      "rpcUrl": "https://polygon-amoy-bor-rpc.publicnode.com",
+      "contractAddress": "0xD5409531c857AfD1b2fF6Cd527038e9981ef4863",
+      "tssSenderAddress": "0x22BEAC0B1F0F370DB4D50AcEE16E9826964195F7",
+      "bridgeAddress": "22beac0b1f0f370db4d50acee16e9826964195f7000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
       },
-      "deploymentBlock": 64039271
+      "deploymentBlock": 34134604
     },
-    "56": {
-      "name": "BSC Mainnet",
-      "chainId": 56,
-      "rpcUrl": "https://bsc-dataseed.bnbchain.org/",
-      "contractAddress": "0x5AfdCC93D794762C785Ec14Fb2a24c4aBDbB8aaa",
-      "tssSenderAddress": "0x980828D1eb8EABC88Aeb1F7a817dbb0e9fA52269",
-      "bridgeAddress": "980828d1eb8eabc88aeb1f7a817dbb0e9fa52269000000000000000000000000",
+    "97": {
+      "name": "BSC Testnet",
+      "chainId": 97,
+      "rpcUrl": "https://bsc-testnet-rpc.publicnode.com",
+      "contractAddress": "0x48463C89254d001Bdc6B5d2af92d531E60FB4f72",
+      "tssSenderAddress": "0xb1325c98Bc338986B64355cD72deC0E5eEa22416",
+      "bridgeAddress": "b1325c98bc338986b64355cd72dec0e5eea22416000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
       },
-      "deploymentBlock": 91165305
+      "deploymentBlock": 98195184
     }
   },
-  "enableLiberdusNetwork": false,
+  "enableLiberdusNetwork": true,
   "collectorHost": "https://dev.liberdus.com:3035",
   "proxyServerHost": "https://dev.liberdus.com:3030",
   "liberdusNetworkId": "52d545708708f41ed7162ff641626de0568b2bd098e5640233ce4a387d9c5aa8",

@@ -206,16 +206,24 @@ Log files are at `logs/{process-name}-combined.log`.
 
 ## Bridge Transaction Flow
 
-**Token-to-Coin (EVM → Liberdus):**
+Right now there are three TSS execution routes:
+
+1. **BridgeVault:** TSS sends tokens to EVM by calling `bridgeIn` on the destination EVM contract. This is for direct EVM -> EVM bridging.
+2. **Coin-to-Token:** TSS sends tokens to EVM by calling `bridgeIn` on the destination EVM contract. This is for EVM -> Liberdus -> EVM flow.
+3. **Token-to-Coin:** TSS sends coins to a Liberdus Personal Account using the Liberdus chain account.
+
+**EVM -> Liberdus BridgeIn (Token-to-Coin / Liberdus Chain Account - Personal Account BridgeIn):**
 1. Observer detects `BridgedOut` events on the EVM contract and saves them as PENDING in local SQLite
 2. TSS parties poll the paired observer every 10s for unprocessed transactions
 3. Each party independently queues the pending transaction from its local observer
 4. Parties sign through the native BNB TSS flow
 5. Winning party broadcasts the signed tx to Liberdus and updates local status
+6. Winning party gossips Liberdus submission (`sourceTxId`, `liberdusTxId`, `sourceChainId`) to peer observers via `/bridgein/liberdus/submitted` so peers can mark the source tx as SUBMITTED early
 
-**Coin-to-Token (Liberdus → EVM):**
+**Liberdus -> EVM BridgeIn (Coin-to-Token):**
 1. Observer polls the Liberdus collector API for bridge transfers and saves them as PENDING
 2. TSS parties pick up the pending transaction, sign, and submit to the target EVM chain
+3. Winning party gossips EVMChain submission (`bridgeInTxId`, `sourceChainId`, `destinationChainId`, `txHash`) to peer observers via `/bridgein/evm/submitted` so peers can mark the tx as SUBMITTED early
 
 ## Key Files
 
