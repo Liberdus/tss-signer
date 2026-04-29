@@ -409,6 +409,7 @@ export async function monitorEthereumBridgeInQueryFilter(
             ? TransactionDB.TransactionType.BRIDGE_VAULT
             : TransactionDB.TransactionType.BRIDGE_IN;
           const eventTimestamp = (event.args.timestamp as ethers.BigNumber).toNumber();
+          const eventReceiptId = normalizeTxId(event.transactionHash);
 
           const earlyTx: TransactionDB.Transaction = {
             txId,
@@ -417,7 +418,7 @@ export async function monitorEthereumBridgeInQueryFilter(
             type: txType,
             txTimestamp: eventTimestamp * 1000,
             chainId: isVaultMode ? 0 : (event.args.chainId as ethers.BigNumber).toNumber(),
-            receiptId: normalizeTxId(event.transactionHash),
+            receiptId: eventReceiptId,
             status: TransactionDB.TransactionStatus.COMPLETED,
             tssSender: chainConfig.tssSenderAddress.toLowerCase() || null,
           };
