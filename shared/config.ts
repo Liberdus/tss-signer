@@ -33,6 +33,12 @@ export interface ChainConfigs {
   collectorHost?: string
   proxyServerHost?: string
   liberdusBridgeGuards: LiberdusBridgeGuards
+  /**
+   * Observer-only local development option. When true, startup seeds monitor
+   * cursors to current chain tips instead of scanning historical events from
+   * deploymentBlock.
+   */
+  observerSkipOldData?: boolean
 }
 
 export interface ParamsConfig {
