@@ -1120,9 +1120,9 @@ async function processCoinToToken(
 
   // Operator-imposed local limit check — fires before the on-chain check
   if (!isRefund) {
-    const localMaxBridgeAmount = chainConfigs.liberdusGuards?.maxBridgeInAmount
-      ? ethers.utils.parseEther(chainConfigs.liberdusGuards.maxBridgeInAmount) : null
-    console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${ethersUtils.formatEther(localMaxBridgeAmount)}`)
+    const maxBridgeInAmountConfig = chainConfigs.liberdusGuards?.maxBridgeInAmount ?? null
+    const localMaxBridgeAmount = maxBridgeInAmountConfig ? ethers.utils.parseEther(maxBridgeInAmountConfig) : null
+    console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${maxBridgeInAmountConfig ?? 'none'} LIB`)
     if (localMaxBridgeAmount && value.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
       const revertReason = `Amount ${ethersUtils.formatEther(value)} LIB exceeds local BRIDGE_IN limit of ${chainConfigs.liberdusGuards?.maxBridgeInAmount} LIB`
@@ -1754,9 +1754,9 @@ async function processTokenToCoin(
   // Operator-imposed local limit check — only on non-refund calls
   if (!isRefund) {
     const valueBN = ethers.BigNumber.from(value.toHexString())
-    const localMaxBridgeAmount = chainConfigs.liberdusGuards?.maxBridgeOutAmount
-      ? ethers.utils.parseEther(chainConfigs.liberdusGuards.maxBridgeOutAmount) : null
-    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${ethersUtils.formatEther(localMaxBridgeAmount)}`)
+    const maxBridgeOutAmountConfig = chainConfigs.liberdusGuards?.maxBridgeOutAmount ?? null
+    const localMaxBridgeAmount = maxBridgeOutAmountConfig ? ethers.utils.parseEther(maxBridgeOutAmountConfig) : null
+    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${maxBridgeOutAmountConfig ?? 'none'} LIB`)
     if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
       const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${chainConfigs.liberdusGuards?.maxBridgeOutAmount} LIB`
