@@ -12,10 +12,10 @@ export interface ChainConfig {
   deploymentBlock: number
 }
 
-export interface LiberdusGuards {
-  maxBridgeInAmount?: string       // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_IN txs (Liberdus → EVM)
-  maxBridgeOutAmount?: string      // LIB amount, e.g. "100" — operator-imposed max for BRIDGE_OUT txs (EVM → Liberdus)
-  enforceRecipientExists?: boolean // When true, refunds BRIDGE_OUT txs whose Liberdus recipient account does not exist
+export interface LiberdusBridgeGuards {
+  maxBridgeInAmount: string       // LIB amount — operator-imposed max for BRIDGE_IN txs (Liberdus → EVM); "0" disables the limit
+  maxBridgeOutAmount: string      // LIB amount — operator-imposed max for BRIDGE_OUT txs (EVM → Liberdus); "0" disables the limit
+  enforceRecipientExists: boolean // When true, refunds BRIDGE_OUT txs whose Liberdus recipient account does not exist
 }
 
 
@@ -32,7 +32,7 @@ export interface ChainConfigs {
   liberdusNetworkId: string
   collectorHost?: string
   proxyServerHost?: string
-  liberdusGuards?: LiberdusGuards
+  liberdusBridgeGuards: LiberdusBridgeGuards
 }
 
 export interface ParamsConfig {
