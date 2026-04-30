@@ -37,8 +37,12 @@ const isFailedTxScanRunning = new Map<number, boolean>();
 // Max blocks fetched per cycle — keeps each run bounded when catching up after a long gap
 const MAX_FAILED_TX_SCAN_BLOCKS_PER_CYCLE = 500;
 
-function getBridgeInSuccessStatus(txType?: TransactionDB.TransactionType): TransactionDB.TransactionStatus {
-  return txType === TransactionDB.TransactionType.BRIDGE_OUT
+function getBridgeInSuccessStatus(
+  txType: TransactionDB.TransactionType | undefined,
+  sourceChainId: number | undefined,
+  bridgeInChainId: number,
+): TransactionDB.TransactionStatus {
+  return txType === TransactionDB.TransactionType.BRIDGE_OUT && sourceChainId === bridgeInChainId
     ? TransactionDB.TransactionStatus.REVERTED
     : TransactionDB.TransactionStatus.COMPLETED;
 }
@@ -389,7 +393,7 @@ export async function monitorEthereumBridgeInQueryFilter(
           const existing = TransactionDB.getTransactionById(txId);
 
           if (existing) {
-            const successStatus = getBridgeInSuccessStatus(existing.type);
+            const successStatus = getBridgeInSuccessStatus(existing.type, existing.chainId, chainId);
             const successStatusLabel = TransactionDB.getStatusLabel(successStatus);
             if (existing.status === successStatus) {
               if (existing.receiptId && !sameReceiptId(existing.receiptId, event.transactionHash)) {
@@ -654,7 +658,7 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
             if (txId) {
               const existing = TransactionDB.getTransactionById(txId);
               const status = receipt.status === 1
-                ? getBridgeInSuccessStatus(existing?.type)
+                ? getBridgeInSuccessStatus(existing?.type, existing?.chainId, chainId)
                 : TransactionDB.TransactionStatus.FAILED;
               const statusLabel = TransactionDB.getStatusLabel(status);
               const result = TransactionDB.updateTransactionStatus(
