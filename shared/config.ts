@@ -1,4 +1,5 @@
 import fs from 'fs'
+import {ethers} from 'ethers'
 import {resolveRepoConfigPath} from './utils/paths'
 
 export interface ChainConfig {
@@ -64,7 +65,37 @@ export function requireFullChainConfig(config: ChainConfig, label: string): void
   }
 }
 
+function validateBridgeGuardAmount(value: unknown, fieldName: keyof LiberdusBridgeGuards): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`[config] liberdusBridgeGuards.${fieldName} must be a non-empty LIB amount string; use "0" to disable`)
+  }
+  try {
+    const parsed = ethers.utils.parseEther(value)
+    if (parsed.lt(0)) {
+      throw new Error('amount must be non-negative')
+    }
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e)
+    throw new Error(`[config] liberdusBridgeGuards.${fieldName} is invalid: ${reason}`)
+  }
+  return value
+}
+
+function validateLiberdusBridgeGuards(chainConfigs: ChainConfigs): void {
+  const guards = chainConfigs.liberdusBridgeGuards
+  if (!guards || typeof guards !== 'object') {
+    throw new Error('[config] liberdusBridgeGuards is required')
+  }
+  validateBridgeGuardAmount(guards.maxBridgeInAmount, 'maxBridgeInAmount')
+  validateBridgeGuardAmount(guards.maxBridgeOutAmount, 'maxBridgeOutAmount')
+  if (typeof guards.enforceRecipientExists !== 'boolean') {
+    throw new Error('[config] liberdusBridgeGuards.enforceRecipientExists must be a boolean')
+  }
+}
+
 export function validateChainConfigs(chainConfigs: ChainConfigs): ChainConfigs {
+  validateLiberdusBridgeGuards(chainConfigs)
+
   if (chainConfigs.enableLiberdusNetwork) {
     for (const [chainId, config] of Object.entries(chainConfigs.supportedChains)) {
       requireFullChainConfig(config, `supportedChains[${chainId}]`)
