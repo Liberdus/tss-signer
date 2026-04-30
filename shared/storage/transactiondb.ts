@@ -369,21 +369,29 @@ export function getTransactionsByNonceRange(
     .all({ chainId, tssSender, fromNonce, toNonce }) as Transaction[];
 }
 
-// includeRevertedForType: when TransactionType.BRIDGE_OUT, also counts REVERTED rows of that type
-// because BRIDGE_OUT refunds call bridgeIn on EVM and consume an EVM nonce (stored as nonce in the DB).
-// BRIDGE_IN refunds write a Liberdus timestamp as the nonce — those must NOT be included here.
-export function getMaxNonceForSender(chainId: number, tssSender: string, includeRevertedForType?: TransactionType): number | null {
-  const includeReverted = includeRevertedForType === TransactionType.BRIDGE_OUT
-  const sql = includeReverted
-    ? "SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND (status IN (@completed, @failed) OR (status = @reverted AND type = @bridgeOut))"
-    : "SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @failed)"
-  const params: Record<string, number | string> = {
+// Returns the highest EVM nonce stored for the given sender on the given chain.
+// Only rows that actually hold an EVM nonce are included:
+//   BRIDGE_IN/BRIDGE_VAULT COMPLETED or FAILED  → processCoinToToken/processVaultBridge ran bridgeIn on EVM
+//   BRIDGE_OUT REVERTED                          → refund bridgeIn was run on EVM
+// Excluded (they store Liberdus timestamps, not EVM nonces):
+//   BRIDGE_OUT COMPLETED or FAILED               → processTokenToCoin ran a Liberdus sendCoin
+//   BRIDGE_IN REVERTED                           → refund ran a Liberdus sendCoin
+export function getMaxNonceForSender(chainId: number, tssSender: string): number | null {
+  const sql =
+    "SELECT MAX(nonce) AS maxNonce FROM transactions " +
+    "WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND (" +
+      "(status IN (@completed, @failed) AND type IN (@bridgeIn, @bridgeVault)) OR " +
+      "(status = @reverted AND type = @bridgeOut)" +
+    ")"
+  const row = db.prepare(sql).get({
     chainId, tssSender,
     completed: TransactionStatus.COMPLETED,
     failed: TransactionStatus.FAILED,
-    ...(includeReverted ? { reverted: TransactionStatus.REVERTED, bridgeOut: TransactionType.BRIDGE_OUT } : {}),
-  }
-  const row = db.prepare(sql).get(params) as { maxNonce: number | null } | undefined
+    reverted: TransactionStatus.REVERTED,
+    bridgeIn: TransactionType.BRIDGE_IN,
+    bridgeVault: TransactionType.BRIDGE_VAULT,
+    bridgeOut: TransactionType.BRIDGE_OUT,
+  }) as { maxNonce: number | null } | undefined
   return row?.maxNonce ?? null
 }
 
