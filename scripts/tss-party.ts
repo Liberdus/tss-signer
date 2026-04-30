@@ -2304,6 +2304,8 @@ async function main(): Promise<void> {
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
         appendToFailedTxsLogs(validTx, 'already failed in local DB at pre-process')
+      } else if (preProcess === 'reverted') {
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
       }
       processingTransactionIds.delete(txId)
       return
