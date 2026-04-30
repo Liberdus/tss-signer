@@ -49,10 +49,10 @@ export function initMonitorState(statePath: string): void {
       );
       Object.assign(monitorState, saved);
       if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
-      if (!monitorState.failedTxScanBlocks && saved.revertScanBlocks) {
+      if (saved.failedTxScanBlocks == null && saved.revertScanBlocks) {
         monitorState.failedTxScanBlocks = saved.revertScanBlocks;
       }
-      if (!monitorState.failedTxNonces && saved.revertedNonces) {
+      if (saved.failedTxNonces == null && saved.revertedNonces) {
         monitorState.failedTxNonces = saved.revertedNonces;
       }
       if (!monitorState.failedTxScanBlocks) monitorState.failedTxScanBlocks = {};
