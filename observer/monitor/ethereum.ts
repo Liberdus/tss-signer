@@ -47,6 +47,15 @@ function getStatusLabel(status: TransactionDB.TransactionStatus): string {
   return TransactionDB.TransactionStatus[status];
 }
 
+function sameReceiptId(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  try {
+    return normalizeTxId(a) === normalizeTxId(b);
+  } catch {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+}
+
 function getInterBatchDelayMs(nextCursor: number, toBlock: number): number {
   const remaining = toBlock - nextCursor + 1;
   if (remaining > 100_000) return 0;
@@ -387,7 +396,7 @@ export async function monitorEthereumBridgeInQueryFilter(
             const successStatus = getBridgeInSuccessStatus(existing.type);
             const successStatusLabel = getStatusLabel(successStatus);
             if (existing.status === successStatus) {
-              if (existing.receiptId !== normalizeTxId(event.transactionHash)) {
+              if (existing.receiptId && !sameReceiptId(existing.receiptId, event.transactionHash)) {
                 console.error(`[observer/bridgeIn] Duplicate BridgedIn event for ${txId} on ${chainName}, but different receipt ${event.transactionHash} vs ${existing.receiptId}`);
               }
               console.log(`[observer/bridgeIn] Already ${successStatusLabel} ${txId} on ${chainName}`);
