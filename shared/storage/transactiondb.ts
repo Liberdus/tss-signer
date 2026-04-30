@@ -369,10 +369,21 @@ export function getTransactionsByNonceRange(
     .all({ chainId, tssSender, fromNonce, toNonce }) as Transaction[];
 }
 
-export function getMaxNonceForSender(chainId: number, tssSender: string): number | null {
-  const row = db
-    .prepare("SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @failed)")
-    .get({ chainId, tssSender, completed: TransactionStatus.COMPLETED, failed: TransactionStatus.FAILED }) as { maxNonce: number | null } | undefined
+// includeRevertedForType: when TransactionType.BRIDGE_OUT, also counts REVERTED rows of that type
+// because BRIDGE_OUT refunds call bridgeIn on EVM and consume an EVM nonce (stored as nonce in the DB).
+// BRIDGE_IN refunds write a Liberdus timestamp as the nonce — those must NOT be included here.
+export function getMaxNonceForSender(chainId: number, tssSender: string, includeRevertedForType?: TransactionType): number | null {
+  const includeReverted = includeRevertedForType === TransactionType.BRIDGE_OUT
+  const sql = includeReverted
+    ? "SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND (status IN (@completed, @failed) OR (status = @reverted AND type = @bridgeOut))"
+    : "SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @failed)"
+  const params: Record<string, number | string> = {
+    chainId, tssSender,
+    completed: TransactionStatus.COMPLETED,
+    failed: TransactionStatus.FAILED,
+    ...(includeReverted ? { reverted: TransactionStatus.REVERTED, bridgeOut: TransactionType.BRIDGE_OUT } : {}),
+  }
+  const row = db.prepare(sql).get(params) as { maxNonce: number | null } | undefined
   return row?.maxNonce ?? null
 }
 

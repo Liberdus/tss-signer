@@ -818,12 +818,14 @@ function dbStatusToSkipOutcome(
   return 'skipped_db_failed'
 }
 
-// Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/FAILED) tx for this sender
+// Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/FAILED/REVERTED) tx for this sender
 // is ahead. chainId is the source chain as stored in the DB. For vaultBridge the nonce manager
 // lives on the destination chain, so nonceCacheChainId is derived from txType.
+// BRIDGE_OUT REVERTED records (refund bridgeIn calls) also consume an EVM nonce and are included.
 function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: number, tssSender: string): void {
   const normalizedTssSender = toEthereumAddress(tssSender)
-  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, normalizedTssSender)
+  const dbTxType = txType === 'tokenToCoin' ? TransactionType.BRIDGE_OUT : undefined
+  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, normalizedTssSender, dbTxType)
   const nonceCacheChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
   if (maxDbNonce == null) {
     console.log(
@@ -875,11 +877,16 @@ function reconcileNonceDrift(
   let receiptId = ''
 
   for (const tx of driftTxs) {
-    // Only COMPLETED and FAILED (on-chain) txs consumed an on-chain nonce — INCOMPLETED never reached the chain
-    if ((tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED) && tx.receiptId && tx.txId === normalizeTxId(currentTxId)) {
+    // COMPLETED, FAILED, and BRIDGE_OUT REVERTED (refund bridgeIn) all consumed an on-chain nonce.
+    // INCOMPLETED never reached the chain. BRIDGE_IN REVERTED stores a Liberdus timestamp, not an EVM nonce.
+    const isNonceConsumed =
+      tx.status === TransactionStatus.COMPLETED ||
+      tx.status === TransactionStatus.FAILED ||
+      (tx.status === TransactionStatus.REVERTED && tx.type === TransactionType.BRIDGE_OUT)
+    if (isNonceConsumed && tx.receiptId && tx.txId === normalizeTxId(currentTxId)) {
       receiptId = tx.receiptId
     }
-    if ((tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED) && tx.nonce != null) {
+    if (isNonceConsumed && tx.nonce != null) {
       if (latestDbNonce < tx.nonce) {
         latestDbNonce = tx.nonce
       }
