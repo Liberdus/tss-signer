@@ -1204,7 +1204,7 @@ async function processCoinToToken(
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
-      return 'incompleted'
+      return 'failed'
     }
     const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
     if (preSubmit != null) {
@@ -1330,7 +1330,7 @@ async function processCoinToToken(
     const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
-    return 'incompleted'
+    return 'failed'
   }
 
   const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
@@ -1393,7 +1393,7 @@ async function processCoinToToken(
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on on-chain failure
-      return 'incompleted'
+      return 'failed'
     }
   } else {
     console.log(
@@ -1525,7 +1525,7 @@ async function processVaultBridge(
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
-      return 'incompleted'
+      return 'failed'
     }
     const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
     if (preSubmit != null) {
@@ -1649,7 +1649,7 @@ async function processVaultBridge(
     const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
-    return 'incompleted'
+    return 'failed'
   }
 
   const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
@@ -1712,7 +1712,7 @@ async function processVaultBridge(
       const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on on-chain failure
-      return 'incompleted'
+      return 'failed'
     }
   } else {
     console.log(
@@ -1868,7 +1868,7 @@ async function processTokenToCoin(
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, receipt.reason)
       updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, liberdusTssSender, liberdusNonce, receipt.reason)
-      return 'incompleted'
+      return 'failed'
     }
   } else {
     console.log(
