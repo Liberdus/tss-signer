@@ -1120,12 +1120,12 @@ async function processCoinToToken(
 
   // Operator-imposed local limit check — fires before the on-chain check
   if (!isRefund) {
-    const maxBridgeInAmountConfig = chainConfigs.liberdusGuards?.maxBridgeInAmount ?? null
-    const localMaxBridgeAmount = maxBridgeInAmountConfig ? ethers.utils.parseEther(maxBridgeInAmountConfig) : null
-    console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${maxBridgeInAmountConfig ?? 'none'} LIB`)
+    const maxBridgeInAmountConfig = chainConfigs.liberdusBridgeGuards.maxBridgeInAmount
+    const localMaxBridgeAmount = maxBridgeInAmountConfig !== "0" ? ethers.utils.parseEther(maxBridgeInAmountConfig) : null
+    console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${maxBridgeInAmountConfig !== "0" ? maxBridgeInAmountConfig : 'none'} LIB`)
     if (localMaxBridgeAmount && value.gt(localMaxBridgeAmount)) {
-      console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
-      const revertReason = `Amount ${ethersUtils.formatEther(value)} LIB exceeds local BRIDGE_IN limit of ${chainConfigs.liberdusGuards?.maxBridgeInAmount} LIB`
+      console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${maxBridgeInAmountConfig} LIB — initiating refund`)
+      const revertReason = `Amount ${ethersUtils.formatEther(value)} LIB exceeds local BRIDGE_IN limit of ${maxBridgeInAmountConfig} LIB`
       return processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true, revertReason)
     }
   }
@@ -1754,16 +1754,16 @@ async function processTokenToCoin(
   // Operator-imposed local limit check — only on non-refund calls
   if (!isRefund) {
     const valueBN = ethers.BigNumber.from(value.toHexString())
-    const maxBridgeOutAmountConfig = chainConfigs.liberdusGuards?.maxBridgeOutAmount ?? null
-    const localMaxBridgeAmount = maxBridgeOutAmountConfig ? ethers.utils.parseEther(maxBridgeOutAmountConfig) : null
-    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${maxBridgeOutAmountConfig ?? 'none'} LIB`)
+    const maxBridgeOutAmountConfig = chainConfigs.liberdusBridgeGuards.maxBridgeOutAmount
+    const localMaxBridgeAmount = maxBridgeOutAmountConfig !== "0" ? ethers.utils.parseEther(maxBridgeOutAmountConfig) : null
+    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${maxBridgeOutAmountConfig !== "0" ? maxBridgeOutAmountConfig : 'none'} LIB`)
     if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
-      console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${ethersUtils.formatEther(localMaxBridgeAmount)} LIB — initiating refund`)
-      const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${chainConfigs.liberdusGuards?.maxBridgeOutAmount} LIB`
+      console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${maxBridgeOutAmountConfig} LIB — initiating refund`)
+      const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${maxBridgeOutAmountConfig} LIB`
       return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
     }
 
-    if (chainConfigs.liberdusGuards?.enforceRecipientExists) {
+    if (chainConfigs.liberdusBridgeGuards.enforceRecipientExists) {
       const shardusTo = toShardusAddress(to)
       const accountCheck = await checkLiberdusAccountExists(shardusTo)
       console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient account ${shardusTo} — ${accountCheck}`)

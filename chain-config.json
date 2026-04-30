@@ -51,5 +51,10 @@
   "enableLiberdusNetwork": false,
   "collectorHost": "https://dev.liberdus.com:3035",
   "proxyServerHost": "https://dev.liberdus.com:3030",
-  "liberdusNetworkId": "52d545708708f41ed7162ff641626de0568b2bd098e5640233ce4a387d9c5aa8"
+  "liberdusNetworkId": "52d545708708f41ed7162ff641626de0568b2bd098e5640233ce4a387d9c5aa8",
+  "liberdusBridgeGuards": {
+    "maxBridgeInAmount": "0",
+    "maxBridgeOutAmount": "0",
+    "enforceRecipientExists": true
+  }
 }
