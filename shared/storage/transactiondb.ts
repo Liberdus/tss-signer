@@ -167,9 +167,10 @@ export function updateTransactionSource(
     txTimestamp: number;
     sender?: string;
     txType?: TransactionType;
+    status?: TransactionStatus;
   }
 ): void {
-  const { chainId, txTimestamp, sender, txType } = data;
+  const { chainId, txTimestamp, sender, txType, status } = data;
 
   let sql = "UPDATE transactions SET chainId = @chainId, txTimestamp = @txTimestamp";
   const params: Record<string, any> = { chainId, txTimestamp, txId };
@@ -181,6 +182,10 @@ export function updateTransactionSource(
   if (txType !== undefined) {
     sql += ", type = @type";
     params.type = txType;
+  }
+  if (status !== undefined) {
+    sql += ", status = @status";
+    params.status = status;
   }
   sql += " WHERE txId = @txId";
 
