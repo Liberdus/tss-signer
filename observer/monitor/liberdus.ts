@@ -95,7 +95,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
 
             TransactionDB.saveTransaction(tx);
             console.log(
-              `[observer/liberdus] Saved new BRIDGE_IN tx ${txId}})`
+              `[observer/liberdus] Saved new BRIDGE_IN tx ${txId})`
             );
           } else {
             const { receiptId, status } = parsed;
