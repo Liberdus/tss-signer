@@ -740,8 +740,8 @@ export async function seedEthereumMonitorStateToLatest(): Promise<void> {
         (provider) => provider.getTransactionCount(tssSender),
         { maxRetries: 3 }
       );
-      monitorState.revertedNonces[senderKey] = chainNonce;
-      monitorState.revertScanBlocks[chainKey] = latestBlock;
+      monitorState.failedTxNonces[senderKey] = chainNonce;
+      monitorState.failedTxScanBlocks[chainKey] = latestBlock;
     }
 
     console.log(
