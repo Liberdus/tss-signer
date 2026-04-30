@@ -37,6 +37,16 @@ const isFailedTxScanRunning = new Map<number, boolean>();
 // Max blocks fetched per cycle — keeps each run bounded when catching up after a long gap
 const MAX_FAILED_TX_SCAN_BLOCKS_PER_CYCLE = 500;
 
+function getBridgeInSuccessStatus(txType?: TransactionDB.TransactionType): TransactionDB.TransactionStatus {
+  return txType === TransactionDB.TransactionType.BRIDGE_OUT
+    ? TransactionDB.TransactionStatus.REVERTED
+    : TransactionDB.TransactionStatus.COMPLETED;
+}
+
+function getStatusLabel(status: TransactionDB.TransactionStatus): string {
+  return TransactionDB.TransactionStatus[status];
+}
+
 function getInterBatchDelayMs(nextCursor: number, toBlock: number): number {
   const remaining = toBlock - nextCursor + 1;
   if (remaining > 100_000) return 0;
@@ -179,22 +189,30 @@ export async function monitorEthereumBridgeOutQueryFilter(
 
           const existing = TransactionDB.getTransactionById(txId);
           if (existing) {
-            if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
+            if (
+              existing.status === TransactionDB.TransactionStatus.COMPLETED ||
+              existing.status === TransactionDB.TransactionStatus.REVERTED
+            ) {
               const sourceSender = toEthereumAddress(targetAddress);
               const eventTxTimestamp = eventTimestamp * 1000;
               const senderMismatch = existing.sender !== sourceSender;
               const typeMismatch = existing.type !== txType;
               const chainMismatch = existing.chainId !== chainId;
               const timestampMismatch = existing.txTimestamp !== eventTxTimestamp;
-              if (senderMismatch || typeMismatch || chainMismatch || timestampMismatch) {
+              const status = txType === TransactionDB.TransactionType.BRIDGE_OUT && existing.type !== TransactionDB.TransactionType.BRIDGE_OUT
+                ? TransactionDB.TransactionStatus.REVERTED
+                : existing.status;
+              const statusMismatch = existing.status !== status;
+              if (senderMismatch || typeMismatch || chainMismatch || timestampMismatch || statusMismatch) {
                 TransactionDB.updateTransactionSource(txId, {
                   chainId,
                   txTimestamp: eventTxTimestamp,
                   ...(senderMismatch && { sender: sourceSender }),
                   ...(typeMismatch && { txType }),
+                  ...(statusMismatch && { status }),
                 });
                 console.log(
-                  `[observer/bridgeOut] Updated source for early-saved COMPLETED tx ${txId} on ${chainName}`
+                  `[observer/bridgeOut] Updated source for early-saved ${getStatusLabel(status)} tx ${txId} on ${chainName}`
                 );
               }
             }
@@ -366,11 +384,13 @@ export async function monitorEthereumBridgeInQueryFilter(
           const existing = TransactionDB.getTransactionById(txId);
 
           if (existing) {
-            if (existing.status === TransactionDB.TransactionStatus.COMPLETED) {
+            const successStatus = getBridgeInSuccessStatus(existing.type);
+            const successStatusLabel = getStatusLabel(successStatus);
+            if (existing.status === successStatus) {
               if (existing.receiptId !== normalizeTxId(event.transactionHash)) {
                 console.error(`[observer/bridgeIn] Duplicate BridgedIn event for ${txId} on ${chainName}, but different receipt ${event.transactionHash} vs ${existing.receiptId}`);
               }
-              console.log(`[observer/bridgeIn] Already completed ${txId} on ${chainName}`);
+              console.log(`[observer/bridgeIn] Already ${successStatusLabel} ${txId} on ${chainName}`);
               continue;
             }
             let txTssSender: string | null = null;
@@ -392,14 +412,14 @@ export async function monitorEthereumBridgeInQueryFilter(
             }
             const result = TransactionDB.updateTransactionStatus(
               txId,
-              TransactionDB.TransactionStatus.COMPLETED,
+              successStatus,
               normalizeTxId(event.transactionHash),
               txTssSender as string,  // null falls back to current.tssSender in DB
               txNonce as number,       // null falls back to current.nonce in DB
               null,
             );
             if (result === "ok") {
-              console.log(`[observer/bridgeIn] Marked ${txId} COMPLETED on ${chainName}`);
+              console.log(`[observer/bridgeIn] Marked ${txId} ${successStatusLabel} on ${chainName}`);
             }
             continue;
           }
@@ -627,8 +647,11 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
             }
 
             if (txId) {
-              const status = receipt.status === 1 ? TransactionDB.TransactionStatus.COMPLETED : TransactionDB.TransactionStatus.FAILED;
-              const statusLabel = status === TransactionDB.TransactionStatus.COMPLETED ? 'COMPLETED' : 'FAILED';
+              const existing = TransactionDB.getTransactionById(txId);
+              const status = receipt.status === 1
+                ? getBridgeInSuccessStatus(existing?.type)
+                : TransactionDB.TransactionStatus.FAILED;
+              const statusLabel = getStatusLabel(status);
               const result = TransactionDB.updateTransactionStatus(
                 txId,
                 status,
