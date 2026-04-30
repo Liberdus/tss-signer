@@ -15,6 +15,11 @@ export interface MonitorState {
   failedTxNonces: Record<string, number>;
 }
 
+type LegacyMonitorState = Partial<MonitorState> & {
+  revertScanBlocks?: Record<string, number>;
+  revertedNonces?: Record<string, number>;
+};
+
 // Mutable singleton — mutated directly by ethereum.ts and liberdus.ts
 export const monitorState: MonitorState = {
   vault: {},
@@ -39,13 +44,24 @@ export function initMonitorState(statePath: string): void {
 
   if (fs.existsSync(statePath)) {
     try {
-      const saved: Partial<MonitorState> = JSON.parse(
+      const saved: LegacyMonitorState = JSON.parse(
         fs.readFileSync(statePath, "utf8")
       );
       Object.assign(monitorState, saved);
       if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
+      if (!monitorState.failedTxScanBlocks && saved.revertScanBlocks) {
+        monitorState.failedTxScanBlocks = saved.revertScanBlocks;
+      }
+      if (!monitorState.failedTxNonces && saved.revertedNonces) {
+        monitorState.failedTxNonces = saved.revertedNonces;
+      }
       if (!monitorState.failedTxScanBlocks) monitorState.failedTxScanBlocks = {};
       if (!monitorState.failedTxNonces) monitorState.failedTxNonces = {};
+      if (saved.revertScanBlocks || saved.revertedNonces) {
+        delete (monitorState as LegacyMonitorState).revertScanBlocks;
+        delete (monitorState as LegacyMonitorState).revertedNonces;
+        saveMonitorState();
+      }
     } catch (e) {
       console.warn("[observer/monitor] Failed to load monitor state, using defaults:", e);
     }
