@@ -840,10 +840,10 @@ function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: num
 
 // reconcileNonceDrift — called when the chain nonce is ahead of the local nonce tracker.
 // Checks the local DB for any tx in [fromNonce, toNonce) that matches currentTxId and is
-// already COMPLETED (i.e. another party submitted and it succeeded while we were away).
+// already terminal (i.e. another party submitted while we were away).
 // Gap nonces not in the DB are left for the observer to resolve asynchronously;
-// the pre-sign reconcile guard catches FAILED/COMPLETED on the next retry.
-// Returns receiptId if currentTxId was found COMPLETED in the DB, null otherwise.
+// the pre-sign reconcile guard catches terminal statuses on the next retry.
+// Returns outcome if currentTxId was found terminal in the DB, null otherwise.
 // ---------------------------------------------------------------------------
 
 function reconcileNonceDrift(
@@ -852,8 +852,8 @@ function reconcileNonceDrift(
   tssSender: string,
   fromNonce: number,
   toNonce: number,
-): { latestDbNonce: number; receiptId: string | null } {
-  if (DEBUG_SKIP_NONCE_RECONCILIATION) return { latestDbNonce: toNonce - 1, receiptId: null }
+): { latestDbNonce: number; outcome: 'completed' | 'failed' | 'reverted' | null } {
+  if (DEBUG_SKIP_NONCE_RECONCILIATION) return { latestDbNonce: toNonce - 1, outcome: null }
 
   console.log(`[nonce-drift] Reconciling drift for chain=${chainId}: from=${fromNonce}, to=${toNonce}`)
   const normalizedTssSender = toEthereumAddress(tssSender)
@@ -861,7 +861,7 @@ function reconcileNonceDrift(
   console.log(`[nonce-drift] Found ${driftTxs.length} txs in drift range for chain=${chainId}`)
 
   let latestDbNonce = fromNonce - 1  // gap scan starts at latestDbNonce + 1 = fromNonce
-  let receiptId = ''
+  let outcome: 'completed' | 'failed' | 'reverted' | null = null
 
   for (const tx of driftTxs) {
     // Only rows storing an EVM nonce count toward nonce drift resolution.
@@ -873,7 +873,10 @@ function reconcileNonceDrift(
        (tx.type === TransactionType.BRIDGE_IN || tx.type === TransactionType.BRIDGE_VAULT)) ||
       (tx.status === TransactionStatus.REVERTED && tx.type === TransactionType.BRIDGE_OUT)
     if (isNonceConsumed && tx.receiptId && tx.txId === normalizeTxId(currentTxId)) {
-      receiptId = tx.receiptId
+      outcome =
+        tx.status === TransactionStatus.COMPLETED ? 'completed' :
+        tx.status === TransactionStatus.REVERTED ? 'reverted' :
+        'failed'
     }
     if (isNonceConsumed && tx.nonce != null) {
       if (latestDbNonce < tx.nonce) {
@@ -899,7 +902,7 @@ function reconcileNonceDrift(
 
   return {
     latestDbNonce,
-    receiptId: receiptId || null,
+    outcome,
   }
 }
 
@@ -1144,9 +1147,9 @@ async function processCoinToToken(
     console.warn(`[nonce-manager] Drift on ${targetChainName}: local=${localNonce}, chain=${chainNonce}`)
     const driftResult = reconcileNonceDrift(txId, targetChainId, tssSender, localNonce, chainNonce)
     syncLocalNonceFromDB('coinToToken', targetChainId, tssSender)
-    if (driftResult.receiptId) {
-      console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
-      return 'completed'
+    if (driftResult.outcome) {
+      console.log(`[double-exec-guard] ${txId} was ${driftResult.outcome} during nonce drift reconciliation`)
+      return driftResult.outcome
     }
     if (driftResult.latestDbNonce + 1 < chainNonce) {
       console.warn(`[nonce-drift] Gap on ${targetChainName} not yet resolved by observer, retrying later`)
@@ -1465,9 +1468,9 @@ async function processVaultBridge(
     // For vault bridge, sourceChainId is the DB key for nonce lookups
     const driftResult = reconcileNonceDrift(txId, sourceChainId, tssSender, localNonce, chainNonce)
     syncLocalNonceFromDB('vaultBridge', sourceChainId, tssSender)
-    if (driftResult.receiptId) {
-      console.log(`[double-exec-guard] ${txId} was completed during nonce drift reconciliation`)
-      return 'completed'
+    if (driftResult.outcome) {
+      console.log(`[double-exec-guard] ${txId} was ${driftResult.outcome} during nonce drift reconciliation`)
+      return driftResult.outcome
     }
     if (driftResult.latestDbNonce + 1 < chainNonce) {
       console.warn(`[nonce-drift] Gap on ${destChainName} not yet resolved by observer, retrying later`)
@@ -1766,7 +1769,7 @@ async function processTokenToCoin(
       console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient account ${shardusTo} — ${accountCheck}`)
       if (accountCheck === 'not-found') {
         console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient ${shardusTo} does not exist on Liberdus network — initiating refund`)
-        const revertReason = `Recipient ${shardusTo} does not exist on Liberdus network`
+        const revertReason = `Recipient account does not exist on Liberdus network`
         // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
         return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
       }
@@ -2357,7 +2360,7 @@ async function main(): Promise<void> {
       } else if (outcome === 'reverted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         pendingTxQueueRemovalSet.add(txId)
-        console.log(`Transaction ${validTx.txId} reverted — amount exceeded local limit, refunded to sender`)
+        console.log(`Transaction ${validTx.txId} reverted, refunded to sender`)
       } else if (outcome === 'incompleted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'incompleted' })
         console.warn(`Transaction ${validTx.txId} reported incompleted outcome during processing`)
