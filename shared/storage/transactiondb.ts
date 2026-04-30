@@ -62,6 +62,10 @@ export function isTransactionStatus(value: any): value is TransactionStatus {
   );
 }
 
+export function getStatusLabel(status: TransactionStatus): string {
+  return isTransactionStatus(status) ? TransactionStatus[status] : `UNKNOWN(${status})`;
+}
+
 // ---------------------------------------------------------------------------
 // Module-level DB instance — initialized once via initializeTransactionsDatabase
 // ---------------------------------------------------------------------------
