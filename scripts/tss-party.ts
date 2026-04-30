@@ -818,14 +818,13 @@ function dbStatusToSkipOutcome(
   return 'skipped_db_failed'
 }
 
-// Syncs the local nonce to maxDbNonce+1 if any finalized (COMPLETED/FAILED/REVERTED) tx for this sender
-// is ahead. chainId is the source chain as stored in the DB. For vaultBridge the nonce manager
-// lives on the destination chain, so nonceCacheChainId is derived from txType.
-// BRIDGE_OUT REVERTED records (refund bridgeIn calls) also consume an EVM nonce and are included.
+// Syncs the local EVM nonce to maxDbNonce+1 if any EVM-nonce-bearing row for this sender is ahead.
+// chainId is the source chain as stored in the DB. For vaultBridge the nonce manager lives on the
+// destination chain, so nonceCacheChainId is derived from txType.
+// getMaxNonceForSender only returns rows that store a real EVM nonce (see its documentation).
 function syncLocalNonceFromDB(txType: TransactionQueueItem['type'], chainId: number, tssSender: string): void {
   const normalizedTssSender = toEthereumAddress(tssSender)
-  const dbTxType = txType === 'tokenToCoin' ? TransactionType.BRIDGE_OUT : undefined
-  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, normalizedTssSender, dbTxType)
+  const maxDbNonce = TransactionDB.getMaxNonceForSender(chainId, normalizedTssSender)
   const nonceCacheChainId = txType === 'vaultBridge' ? chainConfigs.secondaryChainConfig!.chainId : chainId
   if (maxDbNonce == null) {
     console.log(
@@ -877,11 +876,13 @@ function reconcileNonceDrift(
   let receiptId = ''
 
   for (const tx of driftTxs) {
-    // COMPLETED, FAILED, and BRIDGE_OUT REVERTED (refund bridgeIn) all consumed an on-chain nonce.
-    // INCOMPLETED never reached the chain. BRIDGE_IN REVERTED stores a Liberdus timestamp, not an EVM nonce.
+    // Only rows storing an EVM nonce count toward nonce drift resolution.
+    // BRIDGE_OUT COMPLETED/FAILED store a Liberdus timestamp — excluding them.
+    // BRIDGE_IN REVERTED also stores a Liberdus timestamp (refund via sendCoin) — excluding.
+    // BRIDGE_OUT REVERTED stores an EVM nonce (refund via bridgeIn) — including.
     const isNonceConsumed =
-      tx.status === TransactionStatus.COMPLETED ||
-      tx.status === TransactionStatus.FAILED ||
+      ((tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED) &&
+       (tx.type === TransactionType.BRIDGE_IN || tx.type === TransactionType.BRIDGE_VAULT)) ||
       (tx.status === TransactionStatus.REVERTED && tx.type === TransactionType.BRIDGE_OUT)
     if (isNonceConsumed && tx.receiptId && tx.txId === normalizeTxId(currentTxId)) {
       receiptId = tx.receiptId
