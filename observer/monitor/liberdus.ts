@@ -101,7 +101,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
             const { receiptId, status } = parsed;
             console.log(
               `[observer/liberdus] BRIDGE_OUT delivery observed receiptId=${receiptId} status=${
-                status === TransactionDB.TransactionStatus.COMPLETED ? "COMPLETED" : "FAILED"
+                TransactionDB.getStatusLabel(status)
               } (sourceChain txId unknown — DB update deferred)`
             );
           }

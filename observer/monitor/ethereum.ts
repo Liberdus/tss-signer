@@ -43,10 +43,6 @@ function getBridgeInSuccessStatus(txType?: TransactionDB.TransactionType): Trans
     : TransactionDB.TransactionStatus.COMPLETED;
 }
 
-function getStatusLabel(status: TransactionDB.TransactionStatus): string {
-  return TransactionDB.TransactionStatus[status];
-}
-
 function sameReceiptId(a: string, b: string): boolean {
   if (!a || !b) return false;
   try {
@@ -221,7 +217,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
                   ...(statusMismatch && { status }),
                 });
                 console.log(
-                  `[observer/bridgeOut] Updated source for early-saved ${getStatusLabel(status)} tx ${txId} on ${chainName}`
+                  `[observer/bridgeOut] Updated source for early-saved ${TransactionDB.getStatusLabel(status)} tx ${txId} on ${chainName}`
                 );
               }
             }
@@ -394,7 +390,7 @@ export async function monitorEthereumBridgeInQueryFilter(
 
           if (existing) {
             const successStatus = getBridgeInSuccessStatus(existing.type);
-            const successStatusLabel = getStatusLabel(successStatus);
+            const successStatusLabel = TransactionDB.getStatusLabel(successStatus);
             if (existing.status === successStatus) {
               if (existing.receiptId && !sameReceiptId(existing.receiptId, event.transactionHash)) {
                 console.error(`[observer/bridgeIn] Duplicate BridgedIn event for ${txId} on ${chainName}, but different receipt ${event.transactionHash} vs ${existing.receiptId}`);
@@ -660,7 +656,7 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
               const status = receipt.status === 1
                 ? getBridgeInSuccessStatus(existing?.type)
                 : TransactionDB.TransactionStatus.FAILED;
-              const statusLabel = getStatusLabel(status);
+              const statusLabel = TransactionDB.getStatusLabel(status);
               const result = TransactionDB.updateTransactionStatus(
                 txId,
                 status,

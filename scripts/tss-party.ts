@@ -112,18 +112,6 @@ type ProcessOutcome = 'completed' | 'incompleted' | 'failed' | 'reverted' | 'ski
 const BRIDGE_COOLDOWN_RECEIPT_SKIP_TAIL_SEC = 15
 const BRIDGE_COOLDOWN_DB_POLL_INTERVAL_MS = 3_000
 
-function txStatusLabel(status: TransactionStatus): string {
-  switch (status) {
-    case TransactionStatus.PENDING:     return 'PENDING'
-    case TransactionStatus.SUBMITTED:   return 'SUBMITTED'
-    case TransactionStatus.COMPLETED:   return 'COMPLETED'
-    case TransactionStatus.INCOMPLETED: return 'INCOMPLETED'
-    case TransactionStatus.FAILED:      return 'FAILED'
-    case TransactionStatus.REVERTED:    return 'REVERTED'
-    default: return `UNKNOWN(${status})`
-  }
-}
-
 const argv2 = process.argv[2]
 const parsedIdx = argv2 != null && /^\d+$/.test(`${argv2}`.trim()) ? argv2 : undefined
 const useDefaultSlotPath = parsedIdx == null || `${parsedIdx}`.trim() === ''
@@ -634,7 +622,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
         continue
       }
       if (tx.status === TransactionStatus.COMPLETED || tx.status === TransactionStatus.FAILED) {
-        console.log(`[poll] Skipping tx ${tx.txId} — DB reports ${txStatusLabel(tx.status)}`)
+        console.log(`[poll] Skipping tx ${tx.txId} — DB reports ${TransactionDB.getStatusLabel(tx.status)}`)
         continue
       }
 
@@ -643,7 +631,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
         // If we previously marked it incompleted/failed locally but the DB still
         // reports it as unprocessed, queue it again.
         if ((existingEntry.status === 'incompleted' || existingEntry.status === 'failed') && !pendingTxQueue.some(t => t.txId === tx.txId)) {
-          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but DB reports ${txStatusLabel(tx.status)}`)
+          console.log(`[poll] Retrying tx ${tx.txId} — previously ${existingEntry.status} locally but DB reports ${TransactionDB.getStatusLabel(tx.status)}`)
           // fall through to re-queue below
         } else {
           continue
@@ -800,7 +788,7 @@ function reconcileTxStatusWithLocalDB(
       status === TransactionStatus.COMPLETED ? 'completed' :
       status === TransactionStatus.REVERTED  ? 'reverted' :
       'failed'
-    console.log(`⏩ ${txId} already ${txStatusLabel(status)} in local DB (${context}), skipping`)
+    console.log(`⏩ ${txId} already ${TransactionDB.getStatusLabel(status)} in local DB (${context}), skipping`)
     return statusLabel
   } catch (error: any) {
     const errorMessage = error instanceof Error ? error.message : String(error)
