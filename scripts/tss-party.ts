@@ -2182,7 +2182,7 @@ async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exis
   let lastResult: 'not-found' | 'error' = 'error'
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await axios.get(url)
+      const response = await axios.get(url, { timeout: 2000 })
       if (response.status === 200) {
         if (response.data?.account != null) return 'exists'
         lastResult = 'not-found'
@@ -2193,7 +2193,6 @@ async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exis
       console.warn(`[checkLiberdusAccountExists] Attempt ${attempt}/${maxAttempts} failed for ${shardusAddress}:`, e instanceof Error ? e.message : e)
       lastResult = 'error'
     }
-    if (attempt < maxAttempts) await sleep(1000)
   }
   return lastResult
 }
