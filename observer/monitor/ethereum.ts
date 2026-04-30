@@ -561,7 +561,11 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
       const dbTxs = TransactionDB.getTransactionsByNonceRange(dbChainId, tssSender, lastKnownNonce, chainNonce);
       const dbFinalizedNonces = new Set(
         dbTxs
-          .filter(tx => tx.status === TransactionDB.TransactionStatus.COMPLETED || tx.status === TransactionDB.TransactionStatus.FAILED)
+          .filter(tx =>
+            ((tx.status === TransactionDB.TransactionStatus.COMPLETED || tx.status === TransactionDB.TransactionStatus.FAILED) &&
+              (tx.type === TransactionDB.TransactionType.BRIDGE_IN || tx.type === TransactionDB.TransactionType.BRIDGE_VAULT)) ||
+            (tx.status === TransactionDB.TransactionStatus.REVERTED && tx.type === TransactionDB.TransactionType.BRIDGE_OUT)
+          )
           .map(tx => tx.nonce!)
       );
       const missingNonces: number[] = [];
