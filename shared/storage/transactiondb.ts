@@ -225,8 +225,21 @@ export function updateTransactionStatus(
     const current = stmtGetById.get(txId) as Transaction | undefined;
     if (!current) return "not_found";
 
+    const currentReason = current.reason ?? null;
+    const nextReason = reason ?? null;
+    const revertedReasonChanged =
+      current.status === TransactionStatus.REVERTED &&
+      status === TransactionStatus.REVERTED &&
+      nextReason !== null &&
+      currentReason !== nextReason;
+
     // INCOMPLETED is exempt so a retry with a new reason always overwrites the previous failure message.
-    if (status !== TransactionStatus.INCOMPLETED && current.status === status && current.receiptId === receiptId) return "duplicate";
+    if (
+      status !== TransactionStatus.INCOMPLETED &&
+      !revertedReasonChanged &&
+      current.status === status &&
+      current.receiptId === receiptId
+    ) return "duplicate";
 
     if (
       current.status === TransactionStatus.COMPLETED &&
@@ -235,7 +248,7 @@ export function updateTransactionStatus(
       return "no_downgrade";
     }
 
-    if (current.status === TransactionStatus.REVERTED) {
+    if (current.status === TransactionStatus.REVERTED && !revertedReasonChanged) {
       return "no_downgrade";
     }
 
