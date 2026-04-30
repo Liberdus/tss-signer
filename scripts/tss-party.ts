@@ -1140,11 +1140,11 @@ async function processCoinToToken(
   if (!await checkMaxBridgeAmount(chainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${targetChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, '', tssSender, senderNonce as number, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
-    return 'incompleted'
+    return 'failed'
   }
   // Fetch chain nonce and compare with local nonce manager
   const chainNonce = await getLatestChainNonce(targetChainId, tssSender)
@@ -1189,12 +1189,12 @@ async function processCoinToToken(
     if (!await checkMaxBridgeAmount(chainState, value, true)) {
       const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
       console.error(`${reason} on ${targetChainName} (post-sign)`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, '', tssSender, senderNonce as number, reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
       pendingTxQueueRemovalSet.add(txId)
       signedTxCache.delete(normalizedTxId)
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${targetChainName}`)
-      return 'incompleted'
+      return 'failed'
     }
     const cooldownResult = await waitForBridgeCooldown(chainState, targetChainName, txId, cached.txHash)
     if (cooldownResult.outcome != null) {
@@ -1306,12 +1306,12 @@ async function processCoinToToken(
   if (!await checkMaxBridgeAmount(chainState, value, true)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${targetChainName} (post-sign)`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, '', tssSender, senderNonce as number, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     pendingTxQueueRemovalSet.add(txId)
     signedTxCache.delete(normalizedTxId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${targetChainName}`)
-    return 'incompleted'
+    return 'failed'
   }
   const cooldownResult = await waitForBridgeCooldown(chainState, targetChainName, txId, txHash)
   if (cooldownResult.outcome != null) {
@@ -1460,11 +1460,11 @@ async function processVaultBridge(
   if (!await checkMaxBridgeAmount(destChainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${destChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, '', tssSender, senderNonce, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
     pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
-    return 'incompleted'
+    return 'failed'
   }
   // Fetch chain nonce and compare with local nonce manager
   const chainNonce = await getLatestChainNonce(destinationChainId, tssSender)
@@ -1510,12 +1510,12 @@ async function processVaultBridge(
     if (!await checkMaxBridgeAmount(destChainState, value, true)) {
       const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
       console.error(`${reason} on ${destChainName} (post-sign)`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, '', tssSender, senderNonce as number, reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
       pendingTxQueueRemovalSet.add(txId)
       signedTxCache.delete(normalizedTxId)
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${destChainName}`)
-      return 'incompleted'
+      return 'failed'
     }
     const cooldownResult = await waitForBridgeCooldown(destChainState, destChainName, txId, cached.txHash)
     if (cooldownResult.outcome != null) {
@@ -1627,12 +1627,12 @@ async function processVaultBridge(
   if (!await checkMaxBridgeAmount(destChainState, value, true)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${destChainName} (post-sign)`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, '', tssSender, senderNonce as number, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
     pendingTxQueueRemovalSet.add(txId)
     signedTxCache.delete(normalizedTxId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed post-sign on ${destChainName}`)
-    return 'incompleted'
+    return 'failed'
   }
   const cooldownResult = await waitForBridgeCooldown(destChainState, destChainName, txId, txHash)
   if (cooldownResult.outcome != null) {
@@ -2113,7 +2113,7 @@ function cleanupStuckTransactions() {
 
 function deriveLocalFutureTimestamp(currentCycleRecord: {start: number; duration: number}): number {
   const cycleEndTimestamp = currentCycleRecord.start * 1000 + currentCycleRecord.duration * 1000
-  console.log(`  Cycle end timestamp: ${new Date(cycleEndTimestamp).toISOString()} (${cycleEndTimestamp}) (cycle start: ${currentCycleRecord.start}, duration: ${currentCycleRecord.duration}))`)
+  console.log(`  Cycle end timestamp: ${new Date(cycleEndTimestamp).toISOString()} (${cycleEndTimestamp}) (cycle start: ${currentCycleRecord.start}, duration: ${currentCycleRecord.duration})`)
   let futureTimestamp = cycleEndTimestamp + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   console.log(`  Derived future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp})`)
   const currentTimestamp = Date.now()
