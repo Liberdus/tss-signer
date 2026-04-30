@@ -1760,6 +1760,7 @@ async function processTokenToCoin(
     if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${maxBridgeOutAmountConfig} LIB — initiating refund`)
       const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${maxBridgeOutAmountConfig} LIB`
+      // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
       return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
     }
 
@@ -1770,6 +1771,7 @@ async function processTokenToCoin(
       if (accountCheck === 'not-found') {
         console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient ${shardusTo} does not exist on Liberdus network — initiating refund`)
         const revertReason = `Recipient ${shardusTo} does not exist on Liberdus network`
+        // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
         return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
       }
       if (accountCheck === 'error') {
