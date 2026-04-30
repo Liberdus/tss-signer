@@ -1314,7 +1314,9 @@ async function processCoinToToken(
     const finalStatus = isRefund ? TransactionStatus.REVERTED : TransactionStatus.COMPLETED
     const finalOutcome: ProcessOutcome = isRefund ? 'reverted' : 'completed'
     console.log(
-      `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}${isRefund ? ' (refund)' : ''}`,
+      isRefund
+        ? `Refund is successful - original tx ${txId} - refund ethereum tx ${txHash} on original source chain ${targetChainName}`
+        : `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
     )
     const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, isRefund ? revertReason ?? '' : '')
     signedTxCache.delete(normalizedTxId)
@@ -1377,7 +1379,9 @@ async function processCoinToToken(
       const finalStatus = isRefund ? TransactionStatus.REVERTED : TransactionStatus.COMPLETED
       const finalOutcome: ProcessOutcome = isRefund ? 'reverted' : 'completed'
       console.log(
-        `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}${isRefund ? ' (refund)' : ''}`,
+        isRefund
+          ? `Refund is successful - original tx ${txId} - refund ethereum tx ${txHash} on original source chain ${targetChainName}`
+          : `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
       const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, isRefund ? revertReason ?? '' : '')
       signedTxCache.delete(normalizedTxId)
@@ -1856,7 +1860,9 @@ async function processTokenToCoin(
       const finalStatus = isRefund ? TransactionStatus.REVERTED : TransactionStatus.COMPLETED
       const finalOutcome: ProcessOutcome = isRefund ? 'reverted' : 'completed'
       console.log(
-        `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}${isRefund ? ' (refund)' : ''}`,
+        isRefund
+          ? `Refund is successful - original tx ${txId} - refund liberdus tx ${signedTxId} back to Liberdus (associated EVM chain ${sourceChainName})`
+          : `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
       )
       updateTxStatusInLocalDB(txId, finalStatus, signedTxId, liberdusTssSender, liberdusNonce, isRefund ? revertReason ?? '' : '')
       return finalOutcome
@@ -2360,7 +2366,8 @@ async function main(): Promise<void> {
       } else if (outcome === 'reverted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         pendingTxQueueRemovalSet.add(txId)
-        console.log(`Transaction ${validTx.txId} reverted, refunded to sender`)
+        const sourceChainName = getChainConfigById(chainConfigs, validTx.chainId)?.name ?? `chain ${validTx.chainId}`
+        console.log(`Transaction ${validTx.txId} reverted, refunded to sender on original source chain ${sourceChainName}`)
       } else if (outcome === 'incompleted') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'incompleted' })
         console.warn(`Transaction ${validTx.txId} reported incompleted outcome during processing`)
