@@ -208,7 +208,9 @@ export async function monitorEthereumBridgeOutQueryFilter(
               const typeMismatch = existing.type !== txType;
               const chainMismatch = existing.chainId !== chainId;
               const timestampMismatch = existing.txTimestamp !== eventTxTimestamp;
-              const status = txType === TransactionDB.TransactionType.BRIDGE_OUT && existing.type !== TransactionDB.TransactionType.BRIDGE_OUT
+              const status = txType === TransactionDB.TransactionType.BRIDGE_OUT &&
+                existing.type !== TransactionDB.TransactionType.BRIDGE_OUT &&
+                existing.chainId === chainId
                 ? TransactionDB.TransactionStatus.REVERTED
                 : existing.status;
               const statusMismatch = existing.status !== status;
