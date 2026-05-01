@@ -22,9 +22,9 @@ export async function gossipBridgeIn(
   route: GossipBridgeInRoute,
   payload: GossipBridgeInPayload,
   peerCount: number,
-  senderPartyIdx: number,
+  selfObserverUrl?: string,
 ): Promise<void> {
-  const peerUrls = getCachedPeerObserverUrls(peerCount, senderPartyIdx);
+  const peerUrls = getCachedPeerObserverUrls(peerCount, { selfObserverUrl });
   if (peerUrls.length === 0) return;
 
   const isLiberdusPayload = route === "liberdus";
@@ -42,8 +42,8 @@ export async function gossipBridgeIn(
     ? "Liberdus"
     : `${getChainName(evmPayload.destinationChainId)}(${evmPayload.destinationChainId})`;
   const startMsg = isLiberdusPayload
-    ? `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout start sourceTxId=${liberdusPayload.sourceTxId} liberdusTxId=${liberdusPayload.liberdusTxId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peerUrls.length} senderParty=${liberdusPayload.senderPartyIdx}`
-    : `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout start txId=${evmPayload.bridgeInTxId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peerUrls.length} senderParty=${evmPayload.senderPartyIdx}`;
+    ? `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout start txId=${liberdusPayload.txId} receiptId=${liberdusPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peerUrls.length}`
+    : `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout start txId=${evmPayload.txId} receiptId=${evmPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peerUrls.length}`;
 
   console.log(startMsg);
   let delivered = 0;
@@ -56,11 +56,11 @@ export async function gossipBridgeIn(
       const reason = getAxiosErrorMessage(error);
       if (isLiberdusPayload) {
         console.warn(
-          `[gossip/${routeTag}] failed to send submitted ${routeLabel} BridgeIn tx sourceTxId=${liberdusPayload.sourceTxId} liberdusTxId=${liberdusPayload.liberdusTxId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${endpoint}: ${reason}`,
+          `[gossip/${routeTag}] failed to send submitted ${routeLabel} BridgeIn tx txId=${liberdusPayload.txId} receiptId=${liberdusPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${endpoint}: ${reason}`,
         );
       } else {
         console.warn(
-          `[gossip/${routeTag}] failed to send submitted ${routeLabel} BridgeIn tx ${evmPayload.bridgeInTxId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${endpoint}: ${reason}`,
+          `[gossip/${routeTag}] failed to send submitted ${routeLabel} BridgeIn tx txId=${evmPayload.txId} receiptId=${evmPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${endpoint}: ${reason}`,
         );
       }
     }
@@ -68,11 +68,11 @@ export async function gossipBridgeIn(
   await Promise.all(requests);
   if (isLiberdusPayload) {
     console.log(
-      `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout complete sourceTxId=${liberdusPayload.sourceTxId} liberdusTxId=${liberdusPayload.liberdusTxId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${delivered}/${peerUrls.length}`,
+      `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout complete txId=${liberdusPayload.txId} receiptId=${liberdusPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${delivered}/${peerUrls.length}`,
     );
   } else {
     console.log(
-      `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout complete txId=${evmPayload.bridgeInTxId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${delivered}/${peerUrls.length}`,
+      `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout complete txId=${evmPayload.txId} receiptId=${evmPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${delivered}/${peerUrls.length}`,
     );
   }
 }

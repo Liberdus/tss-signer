@@ -8,14 +8,13 @@ const BRIDGE_IN_FUNCTION_ABI =
 const bridgeInIface = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 export interface EVMBridgeInGossipPayload {
-  bridgeInTxId: string;
+  txId: string;
   sourceChainId: number;
   destinationChainId: number;
-  txHash: string;
+  receiptId: string;
   signedTx: string;
   nonce: number;
   txTimestamp: number;
-  senderPartyIdx: number;
 }
 
 export function normalizeEVMBridgeInGossipPayload(
@@ -23,13 +22,12 @@ export function normalizeEVMBridgeInGossipPayload(
 ): EVMBridgeInGossipPayload {
   return {
     ...payload,
-    bridgeInTxId: normalizeTxId(payload.bridgeInTxId),
-    txHash: normalizeTxId(payload.txHash),
+    txId: normalizeTxId(payload.txId),
+    receiptId: normalizeTxId(payload.receiptId),
     sourceChainId: Number(payload.sourceChainId),
     destinationChainId: Number(payload.destinationChainId),
     nonce: Number(payload.nonce),
     txTimestamp: Number(payload.txTimestamp),
-    senderPartyIdx: Number(payload.senderPartyIdx),
   };
 }
 
@@ -40,11 +38,11 @@ export function verifyEVMBridgeInGossipPayload(
   try {
     const normalized = normalizeEVMBridgeInGossipPayload(payload);
 
-    if (!isNormalizedTxId(normalized.bridgeInTxId)) {
-      return { ok: false, reason: "invalid_bridgeInTxId" };
+    if (!isNormalizedTxId(normalized.txId)) {
+      return { ok: false, reason: "invalid_txId" };
     }
-    if (!isNormalizedTxId(normalized.txHash)) {
-      return { ok: false, reason: "invalid_txHash" };
+    if (!isNormalizedTxId(normalized.receiptId)) {
+      return { ok: false, reason: "invalid_receiptId" };
     }
     if (!Number.isInteger(normalized.destinationChainId)) {
       return { ok: false, reason: "invalid_destinationChainId" };
@@ -61,8 +59,8 @@ export function verifyEVMBridgeInGossipPayload(
 
     const parsed = ethers.utils.parseTransaction(normalized.signedTx);
     const parsedHash = normalizeTxId(parsed.hash ?? "");
-    if (parsedHash !== normalized.txHash) {
-      return { ok: false, reason: "txHash_mismatch" };
+    if (parsedHash !== normalized.receiptId) {
+      return { ok: false, reason: "receiptId_mismatch" };
     }
     if (parsed.nonce !== normalized.nonce) {
       return { ok: false, reason: "nonce_mismatch" };
@@ -81,8 +79,8 @@ export function verifyEVMBridgeInGossipPayload(
     if (decodedDestChainId !== normalized.destinationChainId) {
       return { ok: false, reason: "destinationChainId_mismatch" };
     }
-    if (decodedTxId !== normalized.bridgeInTxId) {
-      return { ok: false, reason: "bridgeInTxId_mismatch" };
+    if (decodedTxId !== normalized.txId) {
+      return { ok: false, reason: "txId_mismatch" };
     }
 
     return { ok: true };
