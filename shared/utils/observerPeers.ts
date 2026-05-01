@@ -6,6 +6,8 @@ interface KeygenConfigLike {
   partyIps: string[];
 }
 
+let cachedPeerObserverUrls: string[] | null = null;
+
 function parseObserverUrlsFromEnv(): string[] {
   const raw = `${process.env.TSS_OBSERVER_URLS ?? ""}`.trim();
   if (!raw) return [];
@@ -48,5 +50,20 @@ export function getPeerObserverUrls(
   const urls = buildObserverUrls(parties, rootDir);
   const selfIndex = Math.max(1, selfPartyIdx) - 1;
   return urls.filter((_, index) => index !== selfIndex);
+}
+
+export function getCachedPeerObserverUrls(
+  parties: number,
+  selfPartyIdx: number,
+  rootDir = resolveProjectRoot(),
+): string[] {
+  if (cachedPeerObserverUrls == null) {
+    cachedPeerObserverUrls = getPeerObserverUrls(parties, selfPartyIdx, rootDir);
+  }
+  return cachedPeerObserverUrls;
+}
+
+export function resetCachedPeerObserverUrls(): void {
+  cachedPeerObserverUrls = null;
 }
 

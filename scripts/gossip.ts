@@ -2,7 +2,7 @@ import axios from "axios";
 import { chainConfigsRaw, getChainConfigById } from "../shared/config";
 import { EVMBridgeInGossipPayload } from "../shared/utils/evmBridgeInGossip";
 import { LiberdusBridgeInGossipPayload } from "../shared/utils/liberdusBridgeInGossip";
-import { getPeerObserverUrls } from "../shared/utils/observerPeers";
+import { getCachedPeerObserverUrls } from "../shared/utils/observerPeers";
 
 function getAxiosErrorMessage(error: unknown): string {
   return axios.isAxiosError(error)
@@ -24,7 +24,7 @@ export async function gossipBridgeIn(
   peerCount: number,
   senderPartyIdx: number,
 ): Promise<void> {
-  const peerUrls = getPeerObserverUrls(peerCount, senderPartyIdx);
+  const peerUrls = getCachedPeerObserverUrls(peerCount, senderPartyIdx);
   if (peerUrls.length === 0) return;
 
   const isLiberdusPayload = route === "liberdus";
