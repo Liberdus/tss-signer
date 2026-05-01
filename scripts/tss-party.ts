@@ -1892,6 +1892,7 @@ async function processTokenToCoin(
       sourceTxId: normalizeTxId(txId),
       sourceChainId,
       liberdusTxId: normalizeTxId(signedTxId),
+      liberdusSignedTx: stringify(signedTx as SignedTx),
       txTimestamp: txTimestampMs,
       senderPartyIdx: ourParty.idx,
     }, n, ourParty.idx)
