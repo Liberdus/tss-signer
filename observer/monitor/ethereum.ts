@@ -5,6 +5,7 @@ import { toEthereumAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
 import { observerChainRpc } from "../chainRpc";
 import { monitorState, saveMonitorState } from "./state";
+import { reconcileMissingBridgeInFromPeers } from "./updateMissingBridgeIn";
 
 const BRIDGE_OUT_EVENT_ABI =
   "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)";
@@ -441,6 +442,17 @@ export async function monitorEthereumBridgeInQueryFilter(
             : TransactionDB.TransactionType.BRIDGE_IN;
           const eventTimestamp = (event.args.timestamp as ethers.BigNumber).toNumber();
           const eventReceiptId = normalizeTxId(event.transactionHash);
+
+          const reconciledFromPeer = await reconcileMissingBridgeInFromPeers(
+            txId,
+            chainId,
+            eventReceiptId,
+            chainName,
+            chainConfig.tssSenderAddress.toLowerCase(),
+          );
+          if (reconciledFromPeer) {
+            continue;
+          }
 
           const earlyTx: TransactionDB.Transaction = {
             txId,
