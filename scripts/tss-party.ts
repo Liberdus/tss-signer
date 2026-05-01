@@ -1220,15 +1220,14 @@ async function processCoinToToken(
       })
       updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, senderNonce, '')
       await gossipBridgeIn('evm', {
-        bridgeInTxId: normalizeTxId(txId),
+        txId: normalizeTxId(txId),
         sourceChainId: 0,
         destinationChainId: targetChainId,
-        txHash: normalizeTxId(cached.txHash),
+        receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
         nonce: senderNonce,
         txTimestamp: txTimestampMs,
-        senderPartyIdx: ourParty.idx,
-      }, n, ourParty.idx)
+      }, n, observerUrl)
       const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
       if (cachedReceipt?.status === 1) {
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
@@ -1373,15 +1372,14 @@ async function processCoinToToken(
   if (res.success) {
     updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, senderNonce, '')
     await gossipBridgeIn('evm', {
-      bridgeInTxId: normalizeTxId(txId),
+      txId: normalizeTxId(txId),
       sourceChainId: 0,
       destinationChainId: targetChainId,
-      txHash: normalizeTxId(txHash),
+      receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,
       nonce: senderNonce,
       txTimestamp: txTimestampMs,
-      senderPartyIdx: ourParty.idx,
-    }, n, ourParty.idx)
+    }, n, observerUrl)
   }
 
   let receipt: ethers.providers.TransactionReceipt | null = null
@@ -1565,15 +1563,14 @@ async function processVaultBridge(
       })
       updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, senderNonce, '')
       await gossipBridgeIn('evm', {
-        bridgeInTxId: normalizeTxId(txId),
+        txId: normalizeTxId(txId),
         sourceChainId,
         destinationChainId,
-        txHash: normalizeTxId(cached.txHash),
+        receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
         nonce: senderNonce,
         txTimestamp: txTimestampMs,
-        senderPartyIdx: ourParty.idx,
-      }, n, ourParty.idx)
+      }, n, observerUrl)
       const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
       if (receipt?.status === 1) {
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
@@ -1716,15 +1713,14 @@ async function processVaultBridge(
   if (res.success) {
     updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, senderNonce, '')
     await gossipBridgeIn('evm', {
-      bridgeInTxId: normalizeTxId(txId),
+      txId: normalizeTxId(txId),
       sourceChainId,
       destinationChainId,
-      txHash: normalizeTxId(txHash),
+      receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,
       nonce: senderNonce,
       txTimestamp: txTimestampMs,
-      senderPartyIdx: ourParty.idx,
-    }, n, ourParty.idx)
+    }, n, observerUrl)
   }
 
   let receipt: ethers.providers.TransactionReceipt | null = null
@@ -1889,13 +1885,12 @@ async function processTokenToCoin(
   if (res.success) {
     updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, signedTxId, liberdusTssSender, liberdusNonce, '')
     await gossipBridgeIn('liberdus', {
-      sourceTxId: normalizeTxId(txId),
+      txId: normalizeTxId(txId),
       sourceChainId,
-      liberdusTxId: normalizeTxId(signedTxId),
+      receiptId: normalizeTxId(signedTxId),
       liberdusSignedTx: stringify(signedTx as SignedTx),
       txTimestamp: txTimestampMs,
-      senderPartyIdx: ourParty.idx,
-    }, n, ourParty.idx)
+    }, n, observerUrl)
   }
 
   let fetchReceiptRetry = 3

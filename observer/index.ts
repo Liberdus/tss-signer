@@ -295,14 +295,13 @@ app.post("/bridgein/evm/submitted", (req, res) => {
     let payload: EVMBridgeInGossipPayload;
     try {
       payload = normalizeEVMBridgeInGossipPayload({
-        bridgeInTxId: `${raw.bridgeInTxId ?? ""}`,
+        txId: `${raw.txId ?? ""}`,
         sourceChainId: Number(raw.sourceChainId),
         destinationChainId: Number(raw.destinationChainId),
-        txHash: `${raw.txHash ?? ""}`,
+        receiptId: `${raw.receiptId ?? ""}`,
         signedTx: `${raw.signedTx ?? ""}`,
         nonce: Number(raw.nonce),
         txTimestamp: Number(raw.txTimestamp),
-        senderPartyIdx: Number(raw.senderPartyIdx),
       });
     } catch (error) {
       console.warn("[observer/gossip/evm] rejected payload: invalid encoding");
@@ -312,7 +311,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
     const destinationChain = getChainConfigById(chainConfigsRaw, payload.destinationChainId);
     if (!destinationChain?.tssSenderAddress) {
       console.warn(
-        `[observer/gossip/evm] rejected txId=${payload.bridgeInTxId}: unknown destinationChainId=${payload.destinationChainId}`
+        `[observer/gossip/evm] rejected txId=${payload.txId}: unknown destinationChainId=${payload.destinationChainId}`
       );
       return res.status(400).json({ Err: "Unknown destinationChainId or missing tssSenderAddress" });
     }
@@ -320,58 +319,40 @@ app.post("/bridgein/evm/submitted", (req, res) => {
     const verified = verifyEVMBridgeInGossipPayload(payload, destinationChain.tssSenderAddress);
     if (!verified.ok) {
       console.warn(
-        `[observer/gossip/evm] rejected txId=${payload.bridgeInTxId}: verification failed (${verified.reason})`
+        `[observer/gossip/evm] rejected txId=${payload.txId}: verification failed (${verified.reason})`
       );
       return res.status(400).json({ Err: `Invalid bridgeIn gossip payload: ${verified.reason}` });
     }
 
-    const existing = TransactionDB.getTransactionById(payload.bridgeInTxId);
+    const existing = TransactionDB.getTransactionById(payload.txId);
     if (existing) {
       if (
         existing.status === TransactionDB.TransactionStatus.COMPLETED ||
         existing.status === TransactionDB.TransactionStatus.REVERTED
       ) {
         console.log(
-          `[observer/gossip/evm] ignored finalized txId=${payload.bridgeInTxId} status=${existing.status}`
+          `[observer/gossip/evm] ignored finalized txId=${payload.txId} status=${existing.status}`
         );
         return res.json({ Ok: "ignored_finalized" });
       }
       const updateResult = TransactionDB.updateTransactionStatus(
-        payload.bridgeInTxId,
+        payload.txId,
         TransactionDB.TransactionStatus.SUBMITTED,
-        payload.txHash,
+        payload.receiptId,
         toEthereumAddress(destinationChain.tssSenderAddress),
         payload.nonce,
         null,
       );
       console.log(
-        `[observer/gossip/evm] updated txId=${payload.bridgeInTxId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId} senderParty=${payload.senderPartyIdx}`
+        `[observer/gossip/evm] updated txId=${payload.txId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId}`
       );
       return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
     }
 
-    const txType = !chainConfigsRaw.enableLiberdusNetwork
-      ? TransactionDB.TransactionType.BRIDGE_VAULT
-      : TransactionDB.TransactionType.BRIDGE_IN;
-
-    const tx: TransactionDB.Transaction = {
-      txId: payload.bridgeInTxId,
-      sender: "",
-      value: "0x0",
-      type: txType,
-      txTimestamp: payload.txTimestamp,
-      chainId: payload.sourceChainId,
-      receiptId: payload.txHash,
-      status: TransactionDB.TransactionStatus.SUBMITTED,
-      tssSender: toEthereumAddress(destinationChain.tssSenderAddress),
-      nonce: payload.nonce,
-    };
-
-    TransactionDB.saveTransaction(tx);
     console.log(
-      `[observer/gossip/evm] saved txId=${payload.bridgeInTxId} as SUBMITTED sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId} senderParty=${payload.senderPartyIdx}`
+      `[observer/gossip/evm] ignored unknown txId=${payload.txId} sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId}`
     );
-    return res.json({ Ok: "saved_submitted" });
+    return res.json({ Ok: "ignored_missing_local_tx" });
   } catch (error) {
     console.error("[observer] /bridgein/evm/submitted failed:", error);
     return res.status(500).json({ Err: "Failed to ingest bridgeIn submitted gossip" });
@@ -389,12 +370,11 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
     let payload: LiberdusBridgeInGossipPayload;
     try {
       payload = normalizeLiberdusBridgeInGossipPayload({
-        sourceTxId: `${raw.sourceTxId ?? ""}`,
+        txId: `${raw.txId ?? ""}`,
         sourceChainId: Number(raw.sourceChainId),
-        liberdusTxId: `${raw.liberdusTxId ?? ""}`,
+        receiptId: `${raw.receiptId ?? ""}`,
         liberdusSignedTx: `${raw.liberdusSignedTx ?? ""}`,
         txTimestamp: Number(raw.txTimestamp),
-        senderPartyIdx: Number(raw.senderPartyIdx),
       });
     } catch (_error) {
       console.warn("[observer/gossip/liberdus] rejected payload: invalid encoding");
@@ -404,7 +384,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
     const sourceChain = getChainConfigById(chainConfigsRaw, payload.sourceChainId);
     if (!sourceChain?.tssSenderAddress) {
       console.warn(
-        `[observer/gossip/liberdus] rejected sourceTxId=${payload.sourceTxId}: unknown sourceChainId=${payload.sourceChainId}`
+        `[observer/gossip/liberdus] rejected txId=${payload.txId}: unknown sourceChainId=${payload.sourceChainId}`
       );
       return res.status(400).json({ Err: "Unknown sourceChainId or missing tssSenderAddress" });
     }
@@ -412,53 +392,40 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
     const verified = verifyLiberdusBridgeInGossipPayload(payload, sourceChain.tssSenderAddress);
     if (!verified.ok) {
       console.warn(
-        `[observer/gossip/liberdus] rejected sourceTxId=${payload.sourceTxId}: verification failed (${verified.reason})`
+        `[observer/gossip/liberdus] rejected txId=${payload.txId}: verification failed (${verified.reason})`
       );
       return res.status(400).json({ Err: `Invalid liberdus bridgeIn gossip payload: ${verified.reason}` });
     }
 
-    const existing = TransactionDB.getTransactionById(payload.sourceTxId);
+    const existing = TransactionDB.getTransactionById(payload.txId);
     if (existing) {
       if (
         existing.status === TransactionDB.TransactionStatus.COMPLETED ||
         existing.status === TransactionDB.TransactionStatus.REVERTED
       ) {
         console.log(
-          `[observer/gossip/liberdus] ignored finalized sourceTxId=${payload.sourceTxId} status=${existing.status}`
+          `[observer/gossip/liberdus] ignored finalized txId=${payload.txId} status=${existing.status}`
         );
         return res.json({ Ok: "ignored_finalized" });
       }
       const updateResult = TransactionDB.updateTransactionStatus(
-        payload.sourceTxId,
+        payload.txId,
         TransactionDB.TransactionStatus.SUBMITTED,
-        payload.liberdusTxId,
+        payload.receiptId,
         toEthereumAddress(sourceChain.tssSenderAddress),
         payload.txTimestamp,
         null,
       );
       console.log(
-        `[observer/gossip/liberdus] updated sourceTxId=${payload.sourceTxId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId} senderParty=${payload.senderPartyIdx}`
+        `[observer/gossip/liberdus] updated txId=${payload.txId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId}`
       );
       return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
     }
 
-    const tx: TransactionDB.Transaction = {
-      txId: payload.sourceTxId,
-      sender: "",
-      value: "0x0",
-      type: TransactionDB.TransactionType.BRIDGE_OUT,
-      txTimestamp: payload.txTimestamp,
-      chainId: payload.sourceChainId,
-      receiptId: payload.liberdusTxId,
-      status: TransactionDB.TransactionStatus.SUBMITTED,
-      tssSender: toEthereumAddress(sourceChain.tssSenderAddress),
-      nonce: payload.txTimestamp,
-    };
-    TransactionDB.saveTransaction(tx);
     console.log(
-      `[observer/gossip/liberdus] saved sourceTxId=${payload.sourceTxId} as SUBMITTED sigVerified=true sourceChain=${payload.sourceChainId} senderParty=${payload.senderPartyIdx}`
+      `[observer/gossip/liberdus] ignored unknown txId=${payload.txId} sigVerified=true sourceChain=${payload.sourceChainId}`
     );
-    return res.json({ Ok: "saved_submitted" });
+    return res.json({ Ok: "ignored_missing_local_tx" });
   } catch (error) {
     console.error("[observer] /bridgein/liberdus/submitted failed:", error);
     return res.status(500).json({ Err: "Failed to ingest liberdus bridgeIn submitted gossip" });

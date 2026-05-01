@@ -1,5 +1,6 @@
 {
   "useInfuraRpcProviders": false,
+  "observerUrls": [],
   "vaultChain": {
     "name": "Polygon Mainnet",
     "chainId": 137,

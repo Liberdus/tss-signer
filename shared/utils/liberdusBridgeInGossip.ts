@@ -19,24 +19,22 @@ interface SignedLiberdusTx {
 }
 
 export interface LiberdusBridgeInGossipPayload {
-  sourceTxId: string;
+  txId: string;
   sourceChainId: number;
-  liberdusTxId: string;
+  receiptId: string;
   liberdusSignedTx: string;
   txTimestamp: number;
-  senderPartyIdx: number;
 }
 
 export function normalizeLiberdusBridgeInGossipPayload(
   payload: LiberdusBridgeInGossipPayload,
 ): LiberdusBridgeInGossipPayload {
   return {
-    sourceTxId: normalizeTxId(payload.sourceTxId),
+    txId: normalizeTxId(payload.txId),
     sourceChainId: Number(payload.sourceChainId),
-    liberdusTxId: normalizeTxId(payload.liberdusTxId),
+    receiptId: normalizeTxId(payload.receiptId),
     liberdusSignedTx: `${payload.liberdusSignedTx ?? ""}`,
     txTimestamp: Number(payload.txTimestamp),
-    senderPartyIdx: Number(payload.senderPartyIdx),
   };
 }
 
@@ -46,11 +44,11 @@ export function verifyLiberdusBridgeInGossipPayload(
 ): { ok: boolean; reason?: string } {
   try {
     const normalized = normalizeLiberdusBridgeInGossipPayload(payload);
-    if (!isNormalizedTxId(normalized.sourceTxId)) {
-      return { ok: false, reason: "invalid_sourceTxId" };
+    if (!isNormalizedTxId(normalized.txId)) {
+      return { ok: false, reason: "invalid_txId" };
     }
-    if (!isNormalizedTxId(normalized.liberdusTxId)) {
-      return { ok: false, reason: "invalid_liberdusTxId" };
+    if (!isNormalizedTxId(normalized.receiptId)) {
+      return { ok: false, reason: "invalid_receiptId" };
     }
     if (!normalized.liberdusSignedTx || typeof normalized.liberdusSignedTx !== "string") {
       return { ok: false, reason: "missing_liberdusSignedTx" };
@@ -61,10 +59,6 @@ export function verifyLiberdusBridgeInGossipPayload(
     if (!Number.isInteger(normalized.txTimestamp) || normalized.txTimestamp <= 0) {
       return { ok: false, reason: "invalid_txTimestamp" };
     }
-    if (!Number.isInteger(normalized.senderPartyIdx) || normalized.senderPartyIdx < 1) {
-      return { ok: false, reason: "invalid_senderPartyIdx" };
-    }
-
     const parsedSignedTx = parse(normalized.liberdusSignedTx) as SignedLiberdusTx;
     if (!parsedSignedTx || typeof parsedSignedTx !== "object") {
       return { ok: false, reason: "invalid_liberdusSignedTx_format" };
@@ -74,8 +68,8 @@ export function verifyLiberdusBridgeInGossipPayload(
     }
 
     const computedSignedTxId = normalizeTxId(crypto.hashObj(parsedSignedTx, true));
-    if (computedSignedTxId !== normalized.liberdusTxId) {
-      return { ok: false, reason: "liberdusTxId_mismatch" };
+    if (computedSignedTxId !== normalized.receiptId) {
+      return { ok: false, reason: "receiptId_mismatch" };
     }
 
     const unsignedTx = { ...parsedSignedTx };
