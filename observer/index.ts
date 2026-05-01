@@ -345,7 +345,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
         null,
       );
       console.log(
-        `[observer/gossip/evm] updated txId=${payload.bridgeInTxId} -> SUBMITTED result=${updateResult} sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId} senderParty=${payload.senderPartyIdx}`
+        `[observer/gossip/evm] updated txId=${payload.bridgeInTxId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId} senderParty=${payload.senderPartyIdx}`
       );
       return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
     }
@@ -369,7 +369,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
 
     TransactionDB.saveTransaction(tx);
     console.log(
-      `[observer/gossip/evm] saved txId=${payload.bridgeInTxId} as SUBMITTED sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId} senderParty=${payload.senderPartyIdx}`
+      `[observer/gossip/evm] saved txId=${payload.bridgeInTxId} as SUBMITTED sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId} senderParty=${payload.senderPartyIdx}`
     );
     return res.json({ Ok: "saved_submitted" });
   } catch (error) {
@@ -392,6 +392,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
         sourceTxId: `${raw.sourceTxId ?? ""}`,
         sourceChainId: Number(raw.sourceChainId),
         liberdusTxId: `${raw.liberdusTxId ?? ""}`,
+        liberdusSignedTx: `${raw.liberdusSignedTx ?? ""}`,
         txTimestamp: Number(raw.txTimestamp),
         senderPartyIdx: Number(raw.senderPartyIdx),
       });
@@ -400,20 +401,20 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
       return res.status(400).json({ Err: "Invalid payload encoding" });
     }
 
-    const verified = verifyLiberdusBridgeInGossipPayload(payload);
-    if (!verified.ok) {
-      console.warn(
-        `[observer/gossip/liberdus] rejected sourceTxId=${payload.sourceTxId}: verification failed (${verified.reason})`
-      );
-      return res.status(400).json({ Err: `Invalid liberdus bridgeIn gossip payload: ${verified.reason}` });
-    }
-
     const sourceChain = getChainConfigById(chainConfigsRaw, payload.sourceChainId);
     if (!sourceChain?.tssSenderAddress) {
       console.warn(
         `[observer/gossip/liberdus] rejected sourceTxId=${payload.sourceTxId}: unknown sourceChainId=${payload.sourceChainId}`
       );
       return res.status(400).json({ Err: "Unknown sourceChainId or missing tssSenderAddress" });
+    }
+
+    const verified = verifyLiberdusBridgeInGossipPayload(payload, sourceChain.tssSenderAddress);
+    if (!verified.ok) {
+      console.warn(
+        `[observer/gossip/liberdus] rejected sourceTxId=${payload.sourceTxId}: verification failed (${verified.reason})`
+      );
+      return res.status(400).json({ Err: `Invalid liberdus bridgeIn gossip payload: ${verified.reason}` });
     }
 
     const existing = TransactionDB.getTransactionById(payload.sourceTxId);
@@ -436,7 +437,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
         null,
       );
       console.log(
-        `[observer/gossip/liberdus] updated sourceTxId=${payload.sourceTxId} -> SUBMITTED result=${updateResult} sourceChain=${payload.sourceChainId} senderParty=${payload.senderPartyIdx}`
+        `[observer/gossip/liberdus] updated sourceTxId=${payload.sourceTxId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId} senderParty=${payload.senderPartyIdx}`
       );
       return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
     }
@@ -455,7 +456,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
     };
     TransactionDB.saveTransaction(tx);
     console.log(
-      `[observer/gossip/liberdus] saved sourceTxId=${payload.sourceTxId} as SUBMITTED sourceChain=${payload.sourceChainId} senderParty=${payload.senderPartyIdx}`
+      `[observer/gossip/liberdus] saved sourceTxId=${payload.sourceTxId} as SUBMITTED sigVerified=true sourceChain=${payload.sourceChainId} senderParty=${payload.senderPartyIdx}`
     );
     return res.json({ Ok: "saved_submitted" });
   } catch (error) {
