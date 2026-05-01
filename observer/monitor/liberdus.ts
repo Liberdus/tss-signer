@@ -188,11 +188,7 @@ function parseLiberdusBridgeTx(
 }
 
 async function fetchPeerTransactionByReceiptId(receiptId: string): Promise<TransactionDB.Transaction | null> {
-  const selfPartyIdx = Number.parseInt(process.env.PARTY_INDEX ?? "1", 10);
-  const peerUrls = getCachedPeerObserverUrls(
-    paramsConfigRaw.parties,
-    Number.isFinite(selfPartyIdx) ? selfPartyIdx : 1,
-  );
+  const peerUrls = getCachedPeerObserverUrls(paramsConfigRaw.parties);
   for (const baseUrl of peerUrls) {
     try {
       const response = await axios.get(`${baseUrl}/transaction`, {
