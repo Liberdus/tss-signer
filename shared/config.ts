@@ -24,6 +24,7 @@ export interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
   vaultChain?: ChainConfig
   secondaryChainConfig?: ChainConfig
+  observerUrls?: string[]
   enableLiberdusNetwork: boolean
   /**
    * When true, the observer prefers Infura-based RPC URLs (when supported for the

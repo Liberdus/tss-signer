@@ -31,11 +31,10 @@ function toSignedEvmTx(rawTx: ethers.providers.TransactionResponse): string | nu
 }
 
 async function fetchPeerTransactionById(txId: string): Promise<TransactionDB.Transaction | null> {
-  const selfPartyIdx = Number.parseInt(process.env.PARTY_INDEX ?? "1", 10);
-  const peerUrls = getCachedPeerObserverUrls(
-    paramsConfigRaw.parties,
-    Number.isFinite(selfPartyIdx) ? selfPartyIdx : 1,
-  );
+  // Remote: set TSS_SELF_OBSERVER_URL for explicit self exclusion.
+  // Local: when unset, peer selection falls back to PARTY_INDEX-based exclusion.
+  const selfObserverUrl = process.env.TSS_SELF_OBSERVER_URL;
+  const peerUrls = getCachedPeerObserverUrls(paramsConfigRaw.parties, { selfObserverUrl });
   for (const baseUrl of peerUrls) {
     try {
       const response = await axios.get(`${baseUrl}/transaction`, {
@@ -79,14 +78,13 @@ async function validatePeerBridgeInPayload(
       if (!signedTx) return { ok: false, reason: "failed_to_serialize_signed_tx" };
       return verifyEVMBridgeInGossipPayload(
         {
-          bridgeInTxId: peerTx.txId,
+          txId: peerTx.txId,
           sourceChainId: peerTx.chainId,
           destinationChainId,
-          txHash: peerTx.receiptId,
+          receiptId: peerTx.receiptId,
           signedTx,
           nonce: peerTx.nonce,
           txTimestamp: peerTx.txTimestamp,
-          senderPartyIdx: 1,
         },
         destinationChain.tssSenderAddress,
       );
