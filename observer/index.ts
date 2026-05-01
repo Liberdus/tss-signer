@@ -145,6 +145,7 @@ function parseIntQuery(value: unknown): number | undefined {
 app.get(["/transaction", "/transactions"], (req, res) => {
   try {
     let txId = typeof req.query.txId === "string" ? req.query.txId.trim() : undefined;
+    let receiptId = typeof req.query.receiptId === "string" ? req.query.receiptId.trim() : undefined;
     let sender = typeof req.query.sender === "string" ? req.query.sender.trim() : undefined;
     let type: TransactionDB.TransactionType | undefined;
     let status: TransactionDB.TransactionStatus | undefined;
@@ -164,6 +165,16 @@ app.get(["/transaction", "/transactions"], (req, res) => {
       txId = normalizeTxId(txId);
       if (!isNormalizedTxId(txId)) {
         return res.status(400).json({ Err: "Invalid txId" });
+      }
+    }
+
+    if (receiptId) {
+      if (receiptId.length !== 64 && !(receiptId.startsWith("0x") && receiptId.length === 66)) {
+        return res.status(400).json({ Err: "Invalid receiptId" });
+      }
+      receiptId = normalizeTxId(receiptId);
+      if (!isNormalizedTxId(receiptId)) {
+        return res.status(400).json({ Err: "Invalid receiptId" });
       }
     }
 
@@ -204,7 +215,18 @@ app.get(["/transaction", "/transactions"], (req, res) => {
       return res.json({
         Ok: {
           transactions: tx ? [tx] : [],
-          totalTranactions: tx ? 1 : 0,
+          totalTransactions: tx ? 1 : 0,
+          totalPages: 1,
+        },
+      });
+    }
+
+    if (receiptId) {
+      const tx = TransactionDB.getTransactionByReceiptId(receiptId);
+      return res.json({
+        Ok: {
+          transactions: tx ? [tx] : [],
+          totalTransactions: tx ? 1 : 0,
           totalPages: 1,
         },
       });
@@ -229,7 +251,7 @@ app.get(["/transaction", "/transactions"], (req, res) => {
     return res.json({
       Ok: {
         transactions,
-        totalTranactions: total,
+        totalTransactions: total,
         totalPages,
       },
     });
