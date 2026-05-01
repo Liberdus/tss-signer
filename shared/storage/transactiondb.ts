@@ -74,6 +74,7 @@ let db: Database.Database;
 
 // Prepared statements (set up during initialization for hot-path queries)
 let stmtGetById: Database.Statement;
+let stmtGetByReceiptId: Database.Statement;
 let stmtInsert: Database.Statement;
 let stmtUpdateStatus: Database.Statement;
 
@@ -118,6 +119,8 @@ export function initializeTransactionsDatabase(dbPath: string): void {
       ON transactions(sender);
     CREATE INDEX IF NOT EXISTS idx_transactions_type
       ON transactions(type);
+    CREATE INDEX IF NOT EXISTS idx_transactions_receiptId
+      ON transactions(receiptId);
     CREATE INDEX IF NOT EXISTS idx_transactions_chain_tssSender_nonce
       ON transactions(chainId, tssSender, nonce);
     CREATE INDEX IF NOT EXISTS idx_transactions_chain_tssSender_status_nonce
@@ -125,6 +128,7 @@ export function initializeTransactionsDatabase(dbPath: string): void {
   `);
 
   stmtGetById = db.prepare("SELECT * FROM transactions WHERE txId = ?");
+  stmtGetByReceiptId = db.prepare("SELECT * FROM transactions WHERE receiptId = ? ORDER BY updatedAt DESC LIMIT 1");
 
   stmtInsert = db.prepare(`
     INSERT OR IGNORE INTO transactions
@@ -297,6 +301,11 @@ export function updateTransactionStatus(
 
 export function getTransactionById(txId: string): Transaction | null {
   return (stmtGetById.get(txId) as Transaction) ?? null;
+}
+
+export function getTransactionByReceiptId(receiptId: string): Transaction | null {
+  if (!receiptId) return null;
+  return (stmtGetByReceiptId.get(receiptId) as Transaction) ?? null;
 }
 
 export function getTotalTransactions(options?: {
