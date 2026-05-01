@@ -280,7 +280,8 @@ async function verifyLiberdusTx(
       timeout: 10_000,
     });
     const tx = response.data?.transaction;
-    const success = tx?.success;
+    if (!tx) return { ok: false, reason: "missing_liberdus_tx" };
+    const success = tx.success;
     if (typeof success !== "boolean") {
       return { ok: false, reason: "missing_liberdus_tx_success" };
     }
@@ -291,7 +292,7 @@ async function verifyLiberdusTx(
       };
     }
 
-    const { from, additionalInfo } = tx?.data ?? {};
+    const { from, additionalInfo } = tx;
     if (typeof from !== "string" || !from.trim()) {
       return { ok: false, reason: "missing_liberdus_tx_from" };
     }
@@ -387,7 +388,7 @@ async function verifyObservedTx(
   tx: TransactionDB.Transaction,
   receiptId: string,
   observedStatus: TransactionDB.TransactionStatus,
-  txTimestamp: number,
+  receiptTxTimestamp: number,
 ): Promise<{ ok: boolean; finalStatus?: TransactionDB.TransactionStatus; reason?: string }> {
   if (!isSupportedObservedTx(tx)) {
     return { ok: false, reason: `unsupported_tx_type_${tx.type}` };
@@ -399,9 +400,9 @@ async function verifyObservedTx(
   if (toEthereumAddress(tx.tssSender ?? "") !== toEthereumAddress(chainConfig.tssSenderAddress)) {
     return { ok: false, reason: "tssSender_mismatch" };
   }
-  if (tx.nonce !== txTimestamp) {
+  if (tx.nonce !== receiptTxTimestamp) {
     console.warn(
-      `[observer/liberdus] nonce_mismatch txId=${tx.txId} tx.nonce=${tx.nonce} txTimestamp=${txTimestamp}`,
+      `[observer/liberdus] nonce_mismatch txId=${tx.txId} tx.nonce=${tx.nonce} receiptTxTimestamp=${receiptTxTimestamp}`,
     );
     return { ok: false, reason: "nonce_mismatch" };
   }
@@ -421,7 +422,7 @@ function updateObservedTransactionStatus(
   tx: TransactionDB.Transaction,
   receiptId: string,
   status: TransactionDB.TransactionStatus,
-  txTimestamp: number,
+  receiptTxTimestamp: number,
 ): boolean {
   const chainConfig = getChainConfigById(chainConfigsRaw, tx.chainId);
   if (!chainConfig?.tssSenderAddress) {
@@ -434,7 +435,7 @@ function updateObservedTransactionStatus(
     status,
     receiptId,
     toEthereumAddress(chainConfig.tssSenderAddress),
-    txTimestamp,
+    receiptTxTimestamp,
     tx.reason ?? null,
   );
   console.log(
@@ -446,13 +447,13 @@ function updateObservedTransactionStatus(
 async function reconcileObservedLiberdusBridgeOut(
   receiptId: string,
   status: TransactionDB.TransactionStatus,
-  txTimestamp: number,
+  receiptTxTimestamp: number,
 ): Promise<boolean> {
   const normalizedReceiptId = normalizeTxId(receiptId);
 
   const localTx = TransactionDB.getTransactionByReceiptId(normalizedReceiptId);
   if (localTx) {
-    const verified = await verifyObservedTx(localTx, normalizedReceiptId, status, txTimestamp);
+    const verified = await verifyObservedTx(localTx, normalizedReceiptId, status, receiptTxTimestamp);
     if (!verified.ok || verified.finalStatus == null) {
       console.warn(
         `[observer/liberdus] Local tx found for receiptId=${normalizedReceiptId} but verification failed (${verified.reason})`,
@@ -462,7 +463,7 @@ async function reconcileObservedLiberdusBridgeOut(
         `[observer/liberdus] Local tx for receiptId=${normalizedReceiptId} is non-terminal; trying verified peer backfill`,
       );
     } else {
-      return updateObservedTransactionStatus(localTx, normalizedReceiptId, verified.finalStatus, txTimestamp);
+      return updateObservedTransactionStatus(localTx, normalizedReceiptId, verified.finalStatus, receiptTxTimestamp);
     }
   }
 
@@ -486,7 +487,7 @@ async function reconcileObservedLiberdusBridgeOut(
     return false;
   }
 
-  const verified = await verifyObservedTx(peerTx, normalizedReceiptId, status, txTimestamp);
+  const verified = await verifyObservedTx(peerTx, normalizedReceiptId, status, receiptTxTimestamp);
   if (!verified.ok || verified.finalStatus == null) {
     console.warn(
       `[observer/liberdus] Peer tx found for receiptId=${normalizedReceiptId} but verification failed (${verified.reason})`,
@@ -496,7 +497,7 @@ async function reconcileObservedLiberdusBridgeOut(
 
   const existingByTxId = TransactionDB.getTransactionById(normalizeTxId(peerTx.txId));
   if (existingByTxId) {
-    return updateObservedTransactionStatus(existingByTxId, normalizedReceiptId, verified.finalStatus, txTimestamp);
+    return updateObservedTransactionStatus(existingByTxId, normalizedReceiptId, verified.finalStatus, receiptTxTimestamp);
   }
 
   const reconciledTx: TransactionDB.Transaction = {
@@ -509,7 +510,7 @@ async function reconcileObservedLiberdusBridgeOut(
     receiptId: normalizedReceiptId,
     status: verified.finalStatus,
     tssSender: toEthereumAddress(peerTx.tssSender!),
-    nonce: txTimestamp,
+    nonce: receiptTxTimestamp,
     reason: peerTx.reason ?? null,
     executionHistory: peerTx.executionHistory ?? "{}",
   };
