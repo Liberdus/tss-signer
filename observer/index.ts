@@ -323,7 +323,6 @@ app.post("/bridgein/evm/submitted", (req, res) => {
         receiptId: `${raw.receiptId ?? ""}`,
         signedTx: `${raw.signedTx ?? ""}`,
         nonce: Number(raw.nonce),
-        txTimestamp: Number(raw.txTimestamp),
       });
     } catch (error) {
       console.warn("[observer/gossip/evm] rejected payload: invalid encoding");
