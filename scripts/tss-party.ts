@@ -1226,7 +1226,6 @@ async function processCoinToToken(
         receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
         nonce: senderNonce,
-        txTimestamp: txTimestampMs,
       }, n, observerUrl)
       const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
       if (cachedReceipt?.status === 1) {
@@ -1378,7 +1377,6 @@ async function processCoinToToken(
       receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,
       nonce: senderNonce,
-      txTimestamp: txTimestampMs,
     }, n, observerUrl)
   }
 
@@ -1569,7 +1567,6 @@ async function processVaultBridge(
         receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
         nonce: senderNonce,
-        txTimestamp: txTimestampMs,
       }, n, observerUrl)
       const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
       if (receipt?.status === 1) {
@@ -1719,7 +1716,6 @@ async function processVaultBridge(
       receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,
       nonce: senderNonce,
-      txTimestamp: txTimestampMs,
     }, n, observerUrl)
   }
 
@@ -1889,7 +1885,7 @@ async function processTokenToCoin(
       sourceChainId,
       receiptId: normalizeTxId(signedTxId),
       liberdusSignedTx: stringify(signedTx as SignedTx),
-      txTimestamp: txTimestampMs,
+      txTimestamp: liberdusNonce,
     }, n, observerUrl)
   }
 
