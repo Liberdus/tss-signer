@@ -10,17 +10,29 @@ export interface Transaction {
   sender: string;
   value: string;
   type: TransactionType;
-  txTimestamp: number;
+  txTimestamp: number;                // Source bridge tx timestamp (ms)
   chainId: number;
   status: TransactionStatus;
   receiptId: string;
   tssSender?: string | null;          // TSS sender address used for this tx
-  nonce?: number | null;              // EVM sender nonce OR Liberdus tx timestamp
+  nonce?: number | null;              // EVM tssSender account nonce from the on-chain receipt; null for Liberdus txs
+  receiptTimestamp?: number | null;   // Liberdus tssSender receipt timestamp (ms); null for EVM txs
   reason?: string | null;             // Reason for failure
   executionHistory?: string | null;   // JSON: tracks failed/incompleted tx attempts
   createdAt?: number;
   updatedAt?: number;
 }
+
+// Chain-native receipt reference:
+//   - 'nonce'            → EVM tssSender account nonce
+//   - 'receiptTimestamp' → Liberdus receipt timestamp (ms)
+export type TxReceiptRef =
+  | { type: 'nonce'; value: number }
+  | { type: 'receiptTimestamp'; value: number }
+  | null;
+
+export const txNonce = (value: number): TxReceiptRef => ({ type: 'nonce', value });
+export const txReceiptTimestamp = (value: number): TxReceiptRef => ({ type: 'receiptTimestamp', value });
 
 export interface ExecutionHistoryEntry {
   status: TransactionStatus;
@@ -101,6 +113,7 @@ export function initializeTransactionsDatabase(dbPath: string): void {
       status           INTEGER NOT NULL,
       tssSender        TEXT,
       nonce            INTEGER,
+      receiptTimestamp BIGINT,
       reason           TEXT,
       executionHistory TEXT DEFAULT '{}',
       createdAt        INTEGER DEFAULT (strftime('%s','now')),
@@ -127,18 +140,30 @@ export function initializeTransactionsDatabase(dbPath: string): void {
       ON transactions(chainId, tssSender, status, nonce);
   `);
 
+  // Migration: add receiptTimestamp column to existing databases (must run before the index below)
+  try {
+    db.exec("ALTER TABLE transactions ADD COLUMN receiptTimestamp BIGINT");
+  } catch {
+    // Column already exists — expected on all but first run after this deploy
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_transactions_receiptTimestamp
+      ON transactions(receiptTimestamp);
+  `);
+
   stmtGetById = db.prepare("SELECT * FROM transactions WHERE txId = ?");
   stmtGetByReceiptId = db.prepare("SELECT * FROM transactions WHERE receiptId = ? ORDER BY updatedAt DESC LIMIT 1");
 
   stmtInsert = db.prepare(`
     INSERT OR IGNORE INTO transactions
-      (txId, sender, value, type, txTimestamp, receiptId, chainId, status, tssSender, nonce, reason, executionHistory)
+      (txId, sender, value, type, txTimestamp, receiptId, chainId, status, tssSender, nonce, receiptTimestamp, reason, executionHistory)
     VALUES
-      (@txId, @sender, @value, @type, @txTimestamp, @receiptId, @chainId, @status, @tssSender, @nonce, @reason, @executionHistory)
+      (@txId, @sender, @value, @type, @txTimestamp, @receiptId, @chainId, @status, @tssSender, @nonce, @receiptTimestamp, @reason, @executionHistory)
   `);
 
   stmtUpdateStatus = db.prepare(
-    "UPDATE transactions SET status = @status, receiptId = @receiptId, tssSender = @tssSender, nonce = @nonce, reason = @reason, executionHistory = @executionHistory WHERE txId = @txId"
+    "UPDATE transactions SET status = @status, receiptId = @receiptId, tssSender = @tssSender, nonce = @nonce, receiptTimestamp = @receiptTimestamp, reason = @reason, executionHistory = @executionHistory WHERE txId = @txId"
   );
 
   console.log("[db] initialized");
@@ -160,6 +185,7 @@ export function saveTransaction(transaction: Transaction): void {
     status: transaction.status,
     tssSender: transaction.tssSender ?? null,
     nonce: transaction.nonce ?? null,
+    receiptTimestamp: transaction.receiptTimestamp ?? null,
     reason: transaction.reason ?? null,
     executionHistory: transaction.executionHistory ?? "{}",
   });
@@ -222,7 +248,7 @@ export function updateTransactionStatus(
   status: TransactionStatus,
   receiptId: string,
   tssSender: string,
-  nonce: number,
+  receiptRef: TxReceiptRef,
   reason: string | null,
 ): UpdateStatusResult {
   const run = db.transaction((): UpdateStatusResult => {
@@ -264,9 +290,12 @@ export function updateTransactionStatus(
       return "no_downgrade";
     }
 
-    // Use the passed-in nonce if provided, otherwise fall back to the row's existing nonce
+    // Use the passed-in nonce/timestamp if provided, otherwise fall back to the row's existing values
     const effectiveTssSender = tssSender ?? current.tssSender;
-    const effectiveNonce = nonce ?? current.nonce;
+    const effectiveNonce =
+      receiptRef?.type === 'nonce' ? receiptRef.value : current.nonce;
+    const effectiveReceiptTimestamp =
+      receiptRef?.type === 'receiptTimestamp' ? receiptRef.value : current.receiptTimestamp;
 
     // Auto-append to executionHistory when transitioning to INCOMPLETED or FAILED
     // and a nonce is known (meaning a signing attempt was made).
@@ -289,6 +318,7 @@ export function updateTransactionStatus(
       receiptId,
       tssSender: effectiveTssSender ?? null,
       nonce: effectiveNonce ?? null,
+      receiptTimestamp: effectiveReceiptTimestamp ?? null,
       reason,
       executionHistory: updatedHistory,
       txId,
