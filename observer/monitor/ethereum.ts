@@ -426,7 +426,7 @@ export async function monitorEthereumBridgeInQueryFilter(
               successStatus,
               normalizeTxId(event.transactionHash),
               txTssSender as string,  // null falls back to current.tssSender in DB
-              txNonce as number,       // null falls back to current.nonce in DB
+              txNonce == null ? null : { type: "nonce", value: txNonce },
               null,
             );
             if (result === "ok") {
@@ -669,7 +669,7 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
                 status,
                 tx.hash,
                 tssSender,
-                tx.nonce,
+                { type: "nonce", value: tx.nonce },
                 null,
               );
               pendingMissingNonces.delete(tx.nonce);

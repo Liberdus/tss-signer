@@ -361,7 +361,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
         TransactionDB.TransactionStatus.SUBMITTED,
         payload.receiptId,
         toEthereumAddress(destinationChain.tssSenderAddress),
-        payload.nonce,
+        { type: "nonce", value: payload.nonce },
         null,
       );
       console.log(
@@ -434,7 +434,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
         TransactionDB.TransactionStatus.SUBMITTED,
         payload.receiptId,
         toEthereumAddress(sourceChain.tssSenderAddress),
-        payload.txTimestamp,
+        { type: "receiptTimestamp", value: payload.txTimestamp },
         null,
       );
       console.log(
