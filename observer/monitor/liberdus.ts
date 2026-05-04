@@ -400,11 +400,11 @@ async function verifyObservedTx(
   if (toEthereumAddress(tx.tssSender ?? "") !== toEthereumAddress(chainConfig.tssSenderAddress)) {
     return { ok: false, reason: "tssSender_mismatch" };
   }
-  if (tx.nonce !== receiptTxTimestamp) {
+  if (tx.receiptTimestamp !== receiptTxTimestamp) {
     console.warn(
-      `[observer/liberdus] nonce_mismatch txId=${tx.txId} tx.nonce=${tx.nonce} receiptTxTimestamp=${receiptTxTimestamp}`,
+      `[observer/liberdus] receiptTimestamp_mismatch txId=${tx.txId} tx.receiptTimestamp=${tx.receiptTimestamp} receiptTxTimestamp=${receiptTxTimestamp}`,
     );
-    return { ok: false, reason: "nonce_mismatch" };
+    return { ok: false, reason: "receiptTimestamp_mismatch" };
   }
 
   const finalStatus = terminalStatusFromObservation(tx, observedStatus);
@@ -435,7 +435,7 @@ function updateObservedTransactionStatus(
     status,
     receiptId,
     toEthereumAddress(chainConfig.tssSenderAddress),
-    receiptTxTimestamp,
+    { type: "receiptTimestamp", value: receiptTxTimestamp },
     tx.reason ?? null,
   );
   console.log(
@@ -510,7 +510,7 @@ async function reconcileObservedLiberdusBridgeOut(
     receiptId: normalizedReceiptId,
     status: verified.finalStatus,
     tssSender: toEthereumAddress(peerTx.tssSender!),
-    nonce: receiptTxTimestamp,
+    receiptTimestamp: receiptTxTimestamp,
     reason: peerTx.reason ?? null,
     executionHistory: peerTx.executionHistory ?? "{}",
   };
