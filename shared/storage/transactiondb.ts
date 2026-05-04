@@ -431,28 +431,11 @@ export function getTransactionsByNonceRange(
 }
 
 // Returns the highest EVM nonce stored for the given sender on the given chain.
-// Only rows that actually hold an EVM nonce are included:
-//   BRIDGE_IN/BRIDGE_VAULT COMPLETED or FAILED  → processCoinToToken/processVaultBridge ran bridgeIn on EVM
-//   BRIDGE_OUT REVERTED                          → refund bridgeIn was run on EVM
-// Excluded (they store Liberdus timestamps, not EVM nonces):
-//   BRIDGE_OUT COMPLETED or FAILED               → processTokenToCoin ran a Liberdus sendCoin
-//   BRIDGE_IN REVERTED                           → refund ran a Liberdus sendCoin
+// INCOMPLETED is excluded — its nonce is in-flight and not yet confirmed.
 export function getMaxNonceForSender(chainId: number, tssSender: string): number | null {
-  const sql =
-    "SELECT MAX(nonce) AS maxNonce FROM transactions " +
-    "WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND (" +
-      "(status IN (@completed, @failed) AND type IN (@bridgeIn, @bridgeVault)) OR " +
-      "(status = @reverted AND type = @bridgeOut)" +
-    ")"
-  const row = db.prepare(sql).get({
-    chainId, tssSender,
-    completed: TransactionStatus.COMPLETED,
-    failed: TransactionStatus.FAILED,
-    reverted: TransactionStatus.REVERTED,
-    bridgeIn: TransactionType.BRIDGE_IN,
-    bridgeVault: TransactionType.BRIDGE_VAULT,
-    bridgeOut: TransactionType.BRIDGE_OUT,
-  }) as { maxNonce: number | null } | undefined
+  const row = db.prepare(
+    "SELECT MAX(nonce) AS maxNonce FROM transactions WHERE chainId = @chainId AND tssSender = @tssSender AND nonce IS NOT NULL AND status IN (@completed, @failed, @reverted)"
+  ).get({ chainId, tssSender, completed: TransactionStatus.COMPLETED, failed: TransactionStatus.FAILED, reverted: TransactionStatus.REVERTED }) as { maxNonce: number | null } | undefined
   return row?.maxNonce ?? null
 }
 
