@@ -555,7 +555,7 @@ function updateTxStatusInLocalDB(
   status: TransactionStatus,
   receiptId: string,
   tssSender: string,
-  nonce: number,
+  receiptRef: TransactionDB.TxReceiptRef,
   failedReason = '',
 ): ReturnType<typeof TransactionDB.updateTransactionStatus> {
   try {
@@ -569,7 +569,7 @@ function updateTxStatusInLocalDB(
       status,
       normalizedReceiptId,
       normalizedTssSender,
-      nonce,
+      receiptRef,
       failedReason || null,
     )
 
@@ -1135,7 +1135,7 @@ async function processCoinToToken(
   if (!await checkMaxBridgeAmount(chainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${targetChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, TransactionDB.txNonce(senderNonce as number), reason)
     pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${targetChainName}`)
@@ -1184,7 +1184,7 @@ async function processCoinToToken(
     if (!await checkMaxBridgeAmount(chainState, value, true)) {
       const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
       console.error(`${reason} on ${targetChainName} (post-sign)`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, TransactionDB.txNonce(senderNonce as number), reason)
       pendingTxQueueRemovalSet.add(txId)
       signedTxCache.delete(normalizedTxId)
       const txData = processingTransactionIds.get(txId)
@@ -1197,13 +1197,13 @@ async function processCoinToToken(
       return cooldownResult.outcome
     }
     if (cooldownResult.receipt?.status === 1) {
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
       return 'completed'
     } else if (cooldownResult.receipt?.status === 0) {
       console.log(`[nonce-guard] Cached tx failed on ${targetChainName}: ${cached.txHash}`)
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
       return 'failed'
@@ -1218,7 +1218,7 @@ async function processCoinToToken(
         txId: cached.txHash,
         maxRetries: 3,
       })
-      updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, senderNonce, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
       await gossipBridgeIn('evm', {
         txId: normalizeTxId(txId),
         sourceChainId: 0,
@@ -1229,13 +1229,13 @@ async function processCoinToToken(
       }, n, observerUrl)
       const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
       if (cachedReceipt?.status === 1) {
-        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
         return 'completed'
       } else if (cachedReceipt?.status === 0) {
         console.log(`[nonce-guard] Cached tx failed on ${targetChainName}: ${cached.txHash}`)
-        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
         return 'failed'
@@ -1309,7 +1309,7 @@ async function processCoinToToken(
   if (!await checkMaxBridgeAmount(chainState, value, true)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(chainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${targetChainName} (post-sign)`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, TransactionDB.txNonce(senderNonce as number), reason)
     pendingTxQueueRemovalSet.add(txId)
     signedTxCache.delete(normalizedTxId)
     const txData = processingTransactionIds.get(txId)
@@ -1329,7 +1329,7 @@ async function processCoinToToken(
         ? `Refund is successful - original tx ${txId} - refund ethereum tx ${txHash} on original source chain ${targetChainName}`
         : `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
     )
-    const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, isRefund ? revertReason ?? '' : '')
+    const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, TransactionDB.txNonce(senderNonce), isRefund ? revertReason ?? '' : '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
     return finalOutcome
@@ -1339,7 +1339,7 @@ async function processCoinToToken(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
     return 'failed'
@@ -1369,7 +1369,7 @@ async function processCoinToToken(
   }
 
   if (res.success) {
-    updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, senderNonce, '')
+    updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
     await gossipBridgeIn('evm', {
       txId: normalizeTxId(txId),
       sourceChainId: 0,
@@ -1402,7 +1402,7 @@ async function processCoinToToken(
           ? `Refund is successful - original tx ${txId} - refund ethereum tx ${txHash} on original source chain ${targetChainName}`
           : `Transaction is successful - liberdus tx ${txId} - ethereum tx ${txHash} on ${targetChainName}`,
       )
-      const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, senderNonce, isRefund ? revertReason ?? '' : '')
+      const updateResult = updateTxStatusInLocalDB(txId, finalStatus, txHash, tssSender, TransactionDB.txNonce(senderNonce), isRefund ? revertReason ?? '' : '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)
       return finalOutcome
@@ -1412,7 +1412,7 @@ async function processCoinToToken(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${targetChainName}`)
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(targetChainId, tssSender)  // nonce consumed even on on-chain failure
       return 'failed'
@@ -1424,7 +1424,7 @@ async function processCoinToToken(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send incompleted on ${targetChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, txHash, tssSender, senderNonce, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, txHash, tssSender, TransactionDB.txNonce(senderNonce), res.reason as string)
     pendingTxQueueRemovalSet.add(txId)
     // Don't increment nonce — tx may not have been broadcast/mined
     // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
@@ -1475,7 +1475,7 @@ async function processVaultBridge(
   if (!await checkMaxBridgeAmount(destChainState, value)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${destChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, TransactionDB.txNonce(senderNonce), reason)
     pendingTxQueueRemovalSet.add(txId)
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `max bridge amount check failed on ${destChainName}`)
@@ -1525,7 +1525,7 @@ async function processVaultBridge(
     if (!await checkMaxBridgeAmount(destChainState, value, true)) {
       const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
       console.error(`${reason} on ${destChainName} (post-sign)`)
-      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, TransactionDB.txNonce(senderNonce as number), reason)
       pendingTxQueueRemovalSet.add(txId)
       signedTxCache.delete(normalizedTxId)
       const txData = processingTransactionIds.get(txId)
@@ -1538,13 +1538,13 @@ async function processVaultBridge(
       return cooldownResult.outcome
     }
     if (cooldownResult.receipt?.status === 1) {
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
       return 'completed'
     } else if (cooldownResult.receipt?.status === 0) {
       console.log(`[nonce-guard] Cached tx failed on ${destChainName}: ${cached.txHash}`)
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
       return 'failed'
@@ -1559,7 +1559,7 @@ async function processVaultBridge(
         txId: cached.txHash,
         maxRetries: 3,
       })
-      updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, senderNonce, '')
+      updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
       await gossipBridgeIn('evm', {
         txId: normalizeTxId(txId),
         sourceChainId,
@@ -1570,13 +1570,13 @@ async function processVaultBridge(
       }, n, observerUrl)
       const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
       if (receipt?.status === 1) {
-        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
         return 'completed'
       } else if (receipt?.status === 0) {
         console.log(`[nonce-guard] Cached tx failed on ${destChainName}: ${cached.txHash}`)
-        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, senderNonce)
+        const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
         signedTxCache.delete(normalizedTxId)
         if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
         return 'failed'
@@ -1650,7 +1650,7 @@ async function processVaultBridge(
   if (!await checkMaxBridgeAmount(destChainState, value, true)) {
     const reason = `Amount ${ethersUtils.formatEther(value)} exceeds bridge-in limit ${ethersUtils.formatEther(destChainState.maxBridgeInAmount)}`
     console.error(`${reason} on ${destChainName} (post-sign)`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, senderNonce as number, reason)
+    updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, '', tssSender, TransactionDB.txNonce(senderNonce as number), reason)
     pendingTxQueueRemovalSet.add(txId)
     signedTxCache.delete(normalizedTxId)
     const txData = processingTransactionIds.get(txId)
@@ -1666,7 +1666,7 @@ async function processVaultBridge(
     console.log(
       `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
     )
-    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
     return 'completed'
@@ -1676,7 +1676,7 @@ async function processVaultBridge(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
+    const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
     signedTxCache.delete(normalizedTxId)
     if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
     return 'failed'
@@ -1708,7 +1708,7 @@ async function processVaultBridge(
   }
 
   if (res.success) {
-    updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, senderNonce, '')
+    updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
     await gossipBridgeIn('evm', {
       txId: normalizeTxId(txId),
       sourceChainId,
@@ -1737,7 +1737,7 @@ async function processVaultBridge(
       console.log(
         `EVM-to-EVM transaction successful - source tx ${txId} on ${sourceChainName} - dest tx ${txHash} on ${destChainName}`,
       )
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)
       return 'completed'
@@ -1747,7 +1747,7 @@ async function processVaultBridge(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, `failed in execution on ${destChainName}`)
-      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, senderNonce, '')
+      const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
       signedTxCache.delete(normalizedTxId)
       if (updateResult === 'ok') incrementLocalNonce(destinationChainId, tssSender)  // nonce consumed even on on-chain failure
       return 'failed'
@@ -1759,7 +1759,7 @@ async function processVaultBridge(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send incompleted on ${destChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, txHash, tssSender, senderNonce, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, txHash, tssSender, TransactionDB.txNonce(senderNonce), res.reason as string)
     pendingTxQueueRemovalSet.add(txId)
     // Don't increment nonce — tx may not have been broadcast/mined
     // signedTxCache is NOT cleared — we may want to rebroadcast on next attempt
@@ -1876,16 +1876,16 @@ async function processTokenToCoin(
   }
 
   const liberdusTssSender = sourceChainState.config.tssSenderAddress
-  const liberdusNonce = tx.timestamp
+  const liberdusReceiptTimestamp = tx.timestamp
 
   if (res.success) {
-    updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, signedTxId, liberdusTssSender, liberdusNonce, '')
+    updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, signedTxId, liberdusTssSender, TransactionDB.txReceiptTimestamp(liberdusReceiptTimestamp), '')
     await gossipBridgeIn('liberdus', {
       txId: normalizeTxId(txId),
       sourceChainId,
       receiptId: normalizeTxId(signedTxId),
       liberdusSignedTx: stringify(signedTx as SignedTx),
-      txTimestamp: liberdusNonce,
+      txTimestamp: liberdusReceiptTimestamp,
     }, n, observerUrl)
   }
 
@@ -1906,7 +1906,7 @@ async function processTokenToCoin(
           ? `Refund is successful - original tx ${txId} - refund liberdus tx ${signedTxId} back to Liberdus (associated EVM chain ${sourceChainName})`
           : `Transaction is successful - ethereum tx ${txId} from ${sourceChainName} - liberdus tx ${signedTxId}`,
       )
-      updateTxStatusInLocalDB(txId, finalStatus, signedTxId, liberdusTssSender, liberdusNonce, isRefund ? revertReason ?? '' : '')
+      updateTxStatusInLocalDB(txId, finalStatus, signedTxId, liberdusTssSender, TransactionDB.txReceiptTimestamp(liberdusReceiptTimestamp), isRefund ? revertReason ?? '' : '')
       return finalOutcome
     } else {
       console.log(
@@ -1914,7 +1914,7 @@ async function processTokenToCoin(
       )
       const txData = processingTransactionIds.get(txId)
       if (txData) appendToFailedTxsLogs(txData, receipt.reason)
-      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, liberdusTssSender, liberdusNonce, receipt.reason)
+      updateTxStatusInLocalDB(txId, TransactionStatus.FAILED, signedTxId, liberdusTssSender, TransactionDB.txReceiptTimestamp(liberdusReceiptTimestamp), receipt.reason)
       return 'failed'
     }
   } else {
@@ -1923,7 +1923,7 @@ async function processTokenToCoin(
     )
     const txData = processingTransactionIds.get(txId)
     if (txData) appendToFailedTxsLogs(txData, res.reason ?? `send incompleted from ${sourceChainName}`)
-    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, signedTxId, liberdusTssSender, liberdusNonce, res.reason as string)
+    updateTxStatusInLocalDB(txId, TransactionStatus.INCOMPLETED, signedTxId, liberdusTssSender, TransactionDB.txReceiptTimestamp(liberdusReceiptTimestamp), res.reason as string)
     pendingTxQueueRemovalSet.add(txId)
     return 'incompleted'
   }
