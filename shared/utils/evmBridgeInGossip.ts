@@ -14,7 +14,6 @@ export interface EVMBridgeInGossipPayload {
   receiptId: string;
   signedTx: string;
   nonce: number;
-  txTimestamp: number;
 }
 
 export function normalizeEVMBridgeInGossipPayload(
@@ -27,7 +26,6 @@ export function normalizeEVMBridgeInGossipPayload(
     sourceChainId: Number(payload.sourceChainId),
     destinationChainId: Number(payload.destinationChainId),
     nonce: Number(payload.nonce),
-    txTimestamp: Number(payload.txTimestamp),
   };
 }
 
@@ -52,9 +50,6 @@ export function verifyEVMBridgeInGossipPayload(
     }
     if (!Number.isInteger(normalized.nonce) || normalized.nonce < 0) {
       return { ok: false, reason: "invalid_nonce" };
-    }
-    if (!Number.isInteger(normalized.txTimestamp) || normalized.txTimestamp <= 0) {
-      return { ok: false, reason: "invalid_txTimestamp" };
     }
 
     const parsed = ethers.utils.parseTransaction(normalized.signedTx);
