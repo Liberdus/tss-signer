@@ -217,8 +217,9 @@ Right now there are three TSS execution routes:
 2. TSS parties poll the paired observer every 10s for unprocessed transactions
 3. Each party independently queues the pending transaction from its local observer
 4. Parties sign through the native BNB TSS flow
-5. Winning party broadcasts the signed tx to Liberdus and updates local status
+5. Winning party broadcasts the signed tx to Liberdus and sets status to SUBMITTED with `receiptTimestamp`
 6. Winning party gossips Liberdus submission (`txId`, `receiptId`, `sourceChainId`) to peer observers via `/bridgein/liberdus/submitted` so peers can mark the source tx as SUBMITTED early (`txId` is source `bridgeOut` tx id, `receiptId` is destination `bridgeIn` tx id)
+7. Observer detects the delivery receipt from the Liberdus collector API and reconciles the final status (COMPLETED/FAILED/REVERTED); parties do not retry once `receiptTimestamp` is set
 
 **Liberdus -> EVM BridgeIn (Coin-to-Token):**
 1. Observer polls the Liberdus collector API for bridge transfers and saves them as PENDING
