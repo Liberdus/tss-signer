@@ -290,7 +290,7 @@ export function updateTransactionStatus(
       return "no_downgrade";
     }
 
-    // Use the passed-in nonce/timestamp if provided, otherwise fall back to the row's existing values
+    // Use the passed-in nonce/receiptTimestamp if provided, otherwise fall back to the row's existing values
     const effectiveTssSender = tssSender ?? current.tssSender;
     const effectiveNonce =
       receiptRef?.type === 'nonce' ? receiptRef.value : current.nonce;
