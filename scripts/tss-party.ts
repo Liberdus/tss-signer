@@ -594,7 +594,7 @@ function updateTxStatusInLocalDB(
 async function pollPendingTransactionsFromLocalDB(): Promise<void> {
   if (verboseLogs) console.log('Polling pending transactions from local DB...', new Date().toISOString())
   try {
-    const dbTxs = TransactionDB.getTransactionsByPage(10, 0, { unprocessed: true })
+    const dbTxs = TransactionDB.getTransactionsByPage(10, 0, { unprocessed: true, partyRetryable: true })
     const transactions: Transaction[] = dbTxs
       .slice()
       .sort((a, b) => a.txTimestamp - b.txTimestamp)
@@ -678,17 +678,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
 }
 
 
-function checkTxStatusFromLocalDB(txId: string): TransactionStatus | null {
-  try {
-    const normalizedTxId = normalizeTxId(txId)
-    const tx = TransactionDB.getTransactionById(normalizedTxId)
-    if (!tx) return null
-    return tx.status
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    throw new Error(`[checkTxStatus] DB read failed for ${txId}: ${errorMessage}`)
-  }
-}
+
 
 // ---------------------------------------------------------------------------
 // Nonce manager — tracks the expected next EVM nonce per chain per sender.
@@ -766,7 +756,7 @@ const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: numb
 // ---------------------------------------------------------------------------
 function reconcileTxStatusWithLocalDB(
   txId: string,
-  context: 'pre-process' | 'pre-sign' | 'post-sign' | 'pre-submit',
+  context: 'pre-process' | 'pre-sign' | 'post-sign' | 'pre-submit' | 'timeout',
 // 'submitted' is Liberdus-only: EVM txs in SUBMITTED/INCOMPLETED are retried by the party.
 ): null | 'submitted' | 'completed' | 'failed' | 'reverted' {
   if (DEBUG_SKIP_TX_STATUS_CHECK) return null
@@ -2478,8 +2468,12 @@ async function main(): Promise<void> {
           console.warn('Transaction processing timed out', validTx.txId)
         }
 
-        const finalStatus = checkTxStatusFromLocalDB(validTx.txId)
-        if (finalStatus === TransactionStatus.COMPLETED) {
+        const dbStatus = reconcileTxStatusWithLocalDB(validTx.txId, 'timeout')
+        if (dbStatus === 'submitted') {
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'submitted' })
+          pendingTxQueueRemovalSet.add(txId)
+          console.log(`[${timeoutReason}] ${validTx.txId} already submitted to Liberdus`)
+        } else if (dbStatus === 'completed') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           pendingTxQueueRemovalSet.add(txId)
           // Another party submitted this tx — nonce was consumed, advance local tracker
@@ -2493,12 +2487,16 @@ async function main(): Promise<void> {
             incrementLocalNonce(nonceCacheChainId, nonceTssSender)
           }
           console.log(`[${timeoutReason}] ${validTx.txId} already COMPLETED in local DB`)
-        } else if (finalStatus === TransactionStatus.REVERTED) {
+        } else if (dbStatus === 'reverted') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
           pendingTxQueueRemovalSet.add(txId)
           console.log(`[${timeoutReason}] ${validTx.txId} already REVERTED in local DB`)
-        } else {
+        } else if (dbStatus === 'failed') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
+          pendingTxQueueRemovalSet.add(txId)
+          console.warn(`[${timeoutReason}] ${validTx.txId} already FAILED in local DB`)
+        } else {
+          txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'incompleted' })
           appendToFailedTxsLogs(validTx, timeoutReason)
           console.warn(`[${timeoutReason}] ${validTx.txId} not completed in local DB`)
         }

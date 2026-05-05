@@ -343,6 +343,7 @@ export function getTotalTransactions(options?: {
   type?: TransactionType;
   status?: TransactionStatus;
   unprocessed?: boolean;
+  partyRetryable?: boolean;
 }): number {
   const { sql, params } = buildWhereClause(options);
   const query = `SELECT COUNT(*) as count FROM transactions${sql ? ` WHERE ${sql}` : ""}`;
@@ -358,6 +359,7 @@ export function getTransactionsByPage(
     type?: TransactionType;
     status?: TransactionStatus;
     unprocessed?: boolean;
+    partyRetryable?: boolean;
   }
 ): Transaction[] {
   const { sql, params } = buildWhereClause(options);
@@ -448,6 +450,7 @@ function buildWhereClause(options?: {
   type?: TransactionType;
   status?: TransactionStatus;
   unprocessed?: boolean;
+  partyRetryable?: boolean;
 }): { sql: string; params: Record<string, any> } {
   const clauses: string[] = [];
   const params: Record<string, any> = {};
@@ -461,9 +464,13 @@ function buildWhereClause(options?: {
     params.type = options.type;
   }
   if (options?.unprocessed) {
-    // receiptTimestamp IS NULL excludes Liberdus txs already in SUBMITTED/INCOMPLETED — they've been
-    // submitted to the Liberdus network and should not be retried by the party.
-    clauses.push(`status IN (${TransactionStatus.PENDING}, ${TransactionStatus.SUBMITTED}, ${TransactionStatus.INCOMPLETED}) AND receiptTimestamp IS NULL`);
+    // Not yet in a terminal state (COMPLETED/FAILED/REVERTED).
+    clauses.push(`status IN (${TransactionStatus.PENDING}, ${TransactionStatus.SUBMITTED}, ${TransactionStatus.INCOMPLETED})`);
+    if (options.partyRetryable) {
+      // receiptTimestamp IS NULL excludes Liberdus txs already in SUBMITTED/INCOMPLETED — they've been
+      // submitted to the Liberdus network and should not be retried by the party.
+      clauses.push("receiptTimestamp IS NULL");
+    }
   } else if (options?.status !== undefined) {
     clauses.push("status = @status");
     params.status = options.status;
