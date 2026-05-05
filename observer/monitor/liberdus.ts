@@ -1,14 +1,12 @@
 import { ethers } from "ethers";
 import axios from "axios";
 import * as TransactionDB from "../../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById, paramsConfigRaw } from "../../shared/config";
+import { ChainConfig, chainConfigsRaw, getChainConfigById, paramsConfigRaw } from "../../shared/config";
 import { getCachedPeerObserverUrls } from "../../shared/utils/observerPeers";
 import { toEthereumAddress, toShardusAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
 import { observerChainRpc } from "../chainRpc";
 import { monitorState, saveMonitorState } from "./state";
-
-const PEER_TX_LOOKUP_TIMEOUT_MS = 4_000;
 
 const BRIDGE_OUT_EVENT_ABI =
   "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)";
@@ -23,17 +21,21 @@ type ParsedLiberdusBridgeTxBase = {
 
 type ParsedLiberdusBridgeTx =
   | (ParsedLiberdusBridgeTxBase & {
-      txType: TransactionDB.TransactionType.BRIDGE_IN;
-      txId: string;
-    })
+    txType: TransactionDB.TransactionType.BRIDGE_IN;
+    txId: string;
+  })
   | (ParsedLiberdusBridgeTxBase & {
-      txType: TransactionDB.TransactionType.BRIDGE_OUT;
-      receiptId: string;
-    });
+    txType: TransactionDB.TransactionType.BRIDGE_OUT;
+    receiptId: string;
+  });
 
 type VerificationResult = { ok: boolean; reason?: string };
+type ObservationVerification = VerificationResult & {
+  finalStatus?: TransactionDB.TransactionStatus;
+};
 
-function isTerminalStatus(status: TransactionDB.TransactionStatus): boolean {
+
+function isFinalizedStatus(status: TransactionDB.TransactionStatus): boolean {
   return (
     status === TransactionDB.TransactionStatus.COMPLETED ||
     status === TransactionDB.TransactionStatus.FAILED ||
@@ -56,7 +58,8 @@ export async function monitorLiberdusTransactions(): Promise<void> {
       chainConfigsRaw.supportedChains
     )) {
       const chainId = parseInt(chainIdStr);
-      const { bridgeAddress } = chainConfig as any;
+      const { tssSenderAddress } = chainConfig as ChainConfig;
+      const bridgeAddress = toShardusAddress(tssSenderAddress);
 
       let page = 1;
       while (true) {
@@ -118,13 +121,81 @@ export async function monitorLiberdusTransactions(): Promise<void> {
             );
           } else {
             const { receiptId, status, txTimestamp } = parsed;
-            const reconciled = await reconcileObservedLiberdusBridgeOut(receiptId, status, txTimestamp);
-            if (!reconciled) {
-              console.log(
-                `[observer/liberdus] Liberdus bridge delivery observed receiptId=${receiptId} status=${
-                  TransactionDB.getStatusLabel(status)
-                } (sourceChain txId not found locally or from verified peers)`
+
+            const existingTx = TransactionDB.getTransactionByReceiptId(receiptId);
+            if (existingTx) {
+              const expectedStatus = getFinalizedTxStatus(existingTx.type, status);
+              const isFinalized = isFinalizedStatus(existingTx.status);
+              const tssSenderMismatch =
+                existingTx.tssSender &&
+                toEthereumAddress(existingTx.tssSender ?? "") !==
+                toEthereumAddress(tssSenderAddress);
+              const statusMismatch =
+                existingTx.status && existingTx.status !== expectedStatus;
+              const receiptIdMismatch =
+                existingTx.receiptId && existingTx.receiptId !== receiptId;
+              const receiptTimestampMismatch =
+                existingTx.receiptTimestamp &&
+                existingTx.receiptTimestamp !== txTimestamp;
+              if (isFinalized) {
+                // Already settled — verify the observed delivery matches what we recorded.
+                if (statusMismatch) {
+                  console.warn(
+                    `[observer/liberdus] Status mismatch for settled ${TransactionDB.TransactionType[existingTx.type]} txId=${existingTx.txId}: stored=${TransactionDB.getStatusLabel(existingTx.status)} expected=${TransactionDB.getStatusLabel(expectedStatus)}`,
+                  );
+                }
+                if (receiptIdMismatch) {
+                  console.warn(
+                    `[observer/liberdus] ReceiptId mismatch for settled ${TransactionDB.TransactionType[existingTx.type]} txId=${existingTx.txId}: stored=${existingTx.receiptId} expected=${receiptId}`,
+                  );
+                }
+                if (receiptTimestampMismatch) {
+                  console.warn(
+                    `[observer/liberdus] ReceiptTimestamp mismatch for settled ${TransactionDB.TransactionType[existingTx.type]} txId=${existingTx.txId}: stored=${existingTx.receiptTimestamp} expected=${txTimestamp}`,
+                  );
+                }
+                if (!tssSenderMismatch && !statusMismatch && !receiptIdMismatch && !receiptTimestampMismatch) {
+                  console.log(
+                    `[observer/liberdus] Already saved ${TransactionDB.TransactionType[existingTx.type]} txId=${existingTx.txId} status=${TransactionDB.getStatusLabel(existingTx.status)}`,
+                  );
+                  continue;
+                }
+              }
+              const result = TransactionDB.updateTransactionStatus(
+                existingTx.txId,
+                expectedStatus,
+                receiptId,
+                toEthereumAddress(tssSenderAddress),
+                { type: "receiptTimestamp", value: txTimestamp },
+                null,
               );
+              if (result === "ok") {
+                console.log(
+                  `[observer/liberdus] Updated status for existing txId=${existingTx.txId} to ${TransactionDB.getStatusLabel(expectedStatus)}`,
+                );
+              } else {
+                console.warn(
+                  `[observer/liberdus] Failed to update status for existing txId=${existingTx.txId} to ${TransactionDB.getStatusLabel(expectedStatus)}: ${result}`,
+                );
+              }
+            } else {
+              console.warn(
+                `[observer/liberdus] Liberdus bridge delivery observed receiptId=${receiptId} status=${TransactionDB.getStatusLabel(
+                  status,
+                )} (sourceChain txId not found locally)`,
+              )
+              const reconciled = await reconcileObservedLiberdusBridgeOut(
+                receiptId,
+                status,
+                txTimestamp,
+              );
+              if (!reconciled) {
+                console.log(
+                  `[observer/liberdus] Liberdus bridge delivery observed receiptId=${receiptId} status=${TransactionDB.getStatusLabel(
+                    status,
+                  )} (sourceChain txId not found locally or from verified peers)`,
+                );
+              }
             }
           }
         }
@@ -193,14 +264,14 @@ async function fetchPeerTransactionByReceiptId(receiptId: string): Promise<Trans
     try {
       const response = await axios.get(`${baseUrl}/transaction`, {
         params: { receiptId },
-        timeout: PEER_TX_LOOKUP_TIMEOUT_MS,
+        timeout: 3_000,
       });
       const txs = response.data?.Ok?.transactions;
       if (Array.isArray(txs) && txs.length > 0) {
         const tx = txs[0] as TransactionDB.Transaction;
-        if (!isTerminalStatus(tx.status)) {
+        if (!isFinalizedStatus(tx.status)) {
           console.warn(
-            `[observer/liberdus] Peer tx found for receiptId=${receiptId} but status=${TransactionDB.getStatusLabel(tx.status)} is not terminal`,
+            `[observer/liberdus] Peer tx found for receiptId=${receiptId} but status=${TransactionDB.getStatusLabel(tx.status)} is not finalized`,
           );
           continue;
         }
@@ -213,7 +284,9 @@ async function fetchPeerTransactionByReceiptId(receiptId: string): Promise<Trans
   return null;
 }
 
-async function verifyEvmBridgeOutSourceTx(tx: TransactionDB.Transaction): Promise<VerificationResult> {
+async function verifyEvmBridgeOutSourceTx(
+  tx: TransactionDB.Transaction,
+): Promise<VerificationResult> {
   const sourceChain = getChainConfigById(chainConfigsRaw, tx.chainId);
   if (!sourceChain?.contractAddress) {
     return { ok: false, reason: "missing_source_chain_contract" };
@@ -268,6 +341,25 @@ async function verifyEvmBridgeOutSourceTx(tx: TransactionDB.Transaction): Promis
   }
 }
 
+async function retryFetch<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  delayMs = 500,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function verifyLiberdusTx(
   txId: string,
   expected: { success: boolean; from: string; amount: string },
@@ -276,9 +368,9 @@ async function verifyLiberdusTx(
     process.env.PROXY_SERVER_HOST || chainConfigsRaw.proxyServerHost || "http://127.0.0.1:3030";
 
   try {
-    const response = await axios.get(`${proxyServerHost}/transaction/${txId}`, {
-      timeout: 10_000,
-    });
+    const response = await retryFetch(() =>
+      axios.get(`${proxyServerHost}/transaction/${txId}`, { timeout: 5_000 }),
+    );
     const tx = response.data?.transaction;
     if (!tx) return { ok: false, reason: "missing_liberdus_tx" };
     const success = tx.success;
@@ -323,74 +415,30 @@ async function verifyLiberdusTx(
   }
 }
 
-function terminalStatusFromObservation(
-  tx: TransactionDB.Transaction,
+function getFinalizedTxStatus(
+  txType: TransactionDB.TransactionType,
   observedStatus: TransactionDB.TransactionStatus,
 ): TransactionDB.TransactionStatus {
-  if (isTerminalStatus(tx.status)) {
-    return tx.status;
-  }
-  if (
-    tx.type === TransactionDB.TransactionType.BRIDGE_IN &&
+  // BRIDGE_IN + observed COMPLETED means a successful refund, stored as REVERTED.
+  return txType === TransactionDB.TransactionType.BRIDGE_IN &&
     observedStatus === TransactionDB.TransactionStatus.COMPLETED
-  ) {
-    return TransactionDB.TransactionStatus.REVERTED;
-  }
-  return observedStatus;
+    ? TransactionDB.TransactionStatus.REVERTED
+    : observedStatus;
 }
 
-function isSupportedObservedTx(tx: TransactionDB.Transaction): boolean {
+function isReconcilableTxType(tx: TransactionDB.Transaction): boolean {
   return (
     tx.type === TransactionDB.TransactionType.BRIDGE_OUT ||
     tx.type === TransactionDB.TransactionType.BRIDGE_IN
   );
 }
 
-async function verifyObservedLiberdusReceipt(
+async function verifySourceBridgeTx(
   tx: TransactionDB.Transaction,
-  observedReceiptId: string,
-  finalStatus: TransactionDB.TransactionStatus,
-): Promise<VerificationResult> {
-  const liberdusBridgeAddress = getChainConfigById(chainConfigsRaw, tx.chainId)?.bridgeAddress;
-  if (!liberdusBridgeAddress) {
-    return { ok: false, reason: "missing_liberdus_bridge_address" };
-  }
-
-  const receiptVerification = await verifyLiberdusTx(observedReceiptId, {
-    success: finalStatus !== TransactionDB.TransactionStatus.FAILED,
-    from: liberdusBridgeAddress,
-    amount: tx.value,
-  });
-  if (!receiptVerification.ok) return receiptVerification;
-
-  if (tx.type === TransactionDB.TransactionType.BRIDGE_OUT) {
-    return verifyEvmBridgeOutSourceTx(tx);
-  }
-
-  if (
-    tx.type === TransactionDB.TransactionType.BRIDGE_IN &&
-    (
-      finalStatus === TransactionDB.TransactionStatus.REVERTED ||
-      finalStatus === TransactionDB.TransactionStatus.FAILED
-    )
-  ) {
-    return verifyLiberdusTx(tx.txId, {
-      success: true,
-      from: tx.sender,
-      amount: tx.value,
-    });
-  }
-
-  return { ok: false, reason: "unsupported_tx_type_or_status_for_liberdus_receipt" };
-}
-
-async function verifyObservedTx(
-  tx: TransactionDB.Transaction,
-  receiptId: string,
   observedStatus: TransactionDB.TransactionStatus,
   receiptTxTimestamp: number,
-): Promise<{ ok: boolean; finalStatus?: TransactionDB.TransactionStatus; reason?: string }> {
-  if (!isSupportedObservedTx(tx)) {
+): Promise<ObservationVerification> {
+  if (!isReconcilableTxType(tx)) {
     return { ok: false, reason: `unsupported_tx_type_${tx.type}` };
   }
   const chainConfig = getChainConfigById(chainConfigsRaw, tx.chainId);
@@ -407,66 +455,33 @@ async function verifyObservedTx(
     return { ok: false, reason: "receiptTimestamp_mismatch" };
   }
 
-  const finalStatus = terminalStatusFromObservation(tx, observedStatus);
-  const verification = await verifyObservedLiberdusReceipt(
-    tx,
-    receiptId,
-    finalStatus,
-  );
-  return verification.ok
-    ? { ok: true, finalStatus }
-    : { ok: false, reason: verification.reason };
-}
+  const expectedStatus = getFinalizedTxStatus(tx.type, observedStatus);
+  if (tx.status !== expectedStatus) {
+    return { ok: false, reason: `observed_status_mismatch(expected=${expectedStatus}, found=${tx.status})` };
+  }
+  const finalStatus = expectedStatus;
 
-function updateObservedTransactionStatus(
-  tx: TransactionDB.Transaction,
-  receiptId: string,
-  status: TransactionDB.TransactionStatus,
-  receiptTxTimestamp: number,
-): boolean {
-  const chainConfig = getChainConfigById(chainConfigsRaw, tx.chainId);
-  if (!chainConfig?.tssSenderAddress) {
-    console.warn(`[observer/liberdus] Cannot update ${TransactionDB.TransactionType[tx.type]} txId=${tx.txId}: missing chain tssSenderAddress`);
-    return false;
+  if (tx.type === TransactionDB.TransactionType.BRIDGE_OUT) {
+    // Verify the original EVM source tx that triggered this bridge-out delivery.
+    const evmVerification = await verifyEvmBridgeOutSourceTx(tx);
+    return evmVerification.ok ? { ok: true, finalStatus } : evmVerification;
   }
 
-  const result = TransactionDB.updateTransactionStatus(
-    tx.txId,
-    status,
-    receiptId,
-    toEthereumAddress(chainConfig.tssSenderAddress),
-    { type: "receiptTimestamp", value: receiptTxTimestamp },
-    tx.reason ?? null,
-  );
-  console.log(
-    `[observer/liberdus] Updated ${TransactionDB.TransactionType[tx.type]} txId=${tx.txId} receiptId=${receiptId} -> ${TransactionDB.getStatusLabel(status)} result=${result}`,
-  );
-  return result !== "not_found";
+  // BRIDGE_IN: delivery is a refund — verify the original Liberdus source tx (user → bridge).
+  const sourceVerification = await verifyLiberdusTx(tx.txId, {
+    success: true,
+    from: tx.sender,
+    amount: tx.value,
+  });
+  return sourceVerification.ok ? { ok: true, finalStatus } : sourceVerification;
 }
 
+
 async function reconcileObservedLiberdusBridgeOut(
-  receiptId: string,
+  normalizedReceiptId: string,
   status: TransactionDB.TransactionStatus,
   receiptTxTimestamp: number,
 ): Promise<boolean> {
-  const normalizedReceiptId = normalizeTxId(receiptId);
-
-  const localTx = TransactionDB.getTransactionByReceiptId(normalizedReceiptId);
-  if (localTx) {
-    const verified = await verifyObservedTx(localTx, normalizedReceiptId, status, receiptTxTimestamp);
-    if (!verified.ok || verified.finalStatus == null) {
-      console.warn(
-        `[observer/liberdus] Local tx found for receiptId=${normalizedReceiptId} but verification failed (${verified.reason})`,
-      );
-      if (isTerminalStatus(localTx.status)) return false;
-      console.warn(
-        `[observer/liberdus] Local tx for receiptId=${normalizedReceiptId} is non-terminal; trying verified peer backfill`,
-      );
-    } else {
-      return updateObservedTransactionStatus(localTx, normalizedReceiptId, verified.finalStatus, receiptTxTimestamp);
-    }
-  }
-
   const peerTx = await fetchPeerTransactionByReceiptId(normalizedReceiptId);
   if (!peerTx) return false;
 
@@ -487,7 +502,11 @@ async function reconcileObservedLiberdusBridgeOut(
     return false;
   }
 
-  const verified = await verifyObservedTx(peerTx, normalizedReceiptId, status, receiptTxTimestamp);
+  const verified = await verifySourceBridgeTx(
+    peerTx,
+    status,
+    receiptTxTimestamp,
+  );
   if (!verified.ok || verified.finalStatus == null) {
     console.warn(
       `[observer/liberdus] Peer tx found for receiptId=${normalizedReceiptId} but verification failed (${verified.reason})`,
@@ -495,13 +514,36 @@ async function reconcileObservedLiberdusBridgeOut(
     return false;
   }
 
-  const existingByTxId = TransactionDB.getTransactionById(normalizeTxId(peerTx.txId));
+  const normalizedTxId = normalizeTxId(peerTx.txId);
+  const existingByTxId = TransactionDB.getTransactionById(normalizedTxId);
   if (existingByTxId) {
-    return updateObservedTransactionStatus(existingByTxId, normalizedReceiptId, verified.finalStatus, receiptTxTimestamp);
+    const chainConfig = getChainConfigById(chainConfigsRaw, existingByTxId.chainId);
+    if (!chainConfig?.tssSenderAddress) {
+      console.warn(`[observer/liberdus] Cannot update ${TransactionDB.TransactionType[existingByTxId.type]} txId=${existingByTxId.txId}: missing chain tssSenderAddress`);
+      return false;
+    }
+    const result = TransactionDB.updateTransactionStatus(
+      existingByTxId.txId,
+      verified.finalStatus,
+      normalizedReceiptId,
+      toEthereumAddress(chainConfig.tssSenderAddress),
+      { type: "receiptTimestamp", value: receiptTxTimestamp },
+      existingByTxId.reason ?? null,
+    );
+    if (result === "ok") {
+      console.log(
+        `[observer/liberdus] Updated ${TransactionDB.TransactionType[existingByTxId.type]} txId=${existingByTxId.txId} receiptId=${normalizedReceiptId} -> ${TransactionDB.getStatusLabel(verified.finalStatus)}`,
+      );
+    } else {
+      console.warn(
+        `[observer/liberdus] Failed to update ${TransactionDB.TransactionType[existingByTxId.type]} txId=${existingByTxId.txId} -> ${TransactionDB.getStatusLabel(verified.finalStatus)}: ${result}`,
+      );
+    }
+    return result !== "not_found";
   }
 
   const reconciledTx: TransactionDB.Transaction = {
-    txId: normalizeTxId(peerTx.txId),
+    txId: normalizedTxId,
     sender: peerTx.sender,
     value: peerTx.value,
     type: peerTx.type,
