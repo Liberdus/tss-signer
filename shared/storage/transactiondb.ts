@@ -461,7 +461,9 @@ function buildWhereClause(options?: {
     params.type = options.type;
   }
   if (options?.unprocessed) {
-    clauses.push(`status IN (${TransactionStatus.PENDING}, ${TransactionStatus.SUBMITTED}, ${TransactionStatus.INCOMPLETED})`);
+    // receiptTimestamp IS NULL excludes Liberdus txs already in SUBMITTED/INCOMPLETED — they've been
+    // submitted to the Liberdus network and should not be retried by the party.
+    clauses.push(`status IN (${TransactionStatus.PENDING}, ${TransactionStatus.SUBMITTED}, ${TransactionStatus.INCOMPLETED}) AND receiptTimestamp IS NULL`);
   } else if (options?.status !== undefined) {
     clauses.push("status = @status");
     params.status = options.status;
