@@ -73,7 +73,7 @@ interface TransactionQueueItem {
 
 interface TxQueueEntry {
   txTimestamp: number // milliseconds, from source-chain event/block time
-  status: 'pending' | 'processing' | 'completed' | 'incompleted' | 'failed' | 'reverted'
+  status: 'pending' | 'processing' | 'submitted' | 'completed' | 'incompleted' | 'failed' | 'reverted'
 }
 
 interface PartyInfo {
@@ -105,7 +105,7 @@ interface SignedTx {
   }
 }
 
-type ProcessOutcome = 'completed' | 'incompleted' | 'failed' | 'reverted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
+type ProcessOutcome = 'completed' | 'incompleted' | 'failed' | 'reverted' | 'skipped_db_submitted' | 'skipped_db_completed' | 'skipped_db_failed' | 'skipped_db_reverted'
 
 // Receipt is polled only while remaining cooldown time exceeds (bridgeInCooldown - this value).
 // e.g. for a 60s cooldown: poll while remainingMs > 45s, skip receipt checks once < 45s remains —
@@ -767,12 +767,27 @@ const signedTxCache: Map<string, { signedTx: string; txHash: string; nonce: numb
 function reconcileTxStatusWithLocalDB(
   txId: string,
   context: 'pre-process' | 'pre-sign' | 'post-sign' | 'pre-submit',
-): null | 'completed' | 'failed' | 'reverted' {
+// 'submitted' is Liberdus-only: EVM txs in SUBMITTED/INCOMPLETED are retried by the party.
+): null | 'submitted' | 'completed' | 'failed' | 'reverted' {
   if (DEBUG_SKIP_TX_STATUS_CHECK) return null
   try {
-    const status = checkTxStatusFromLocalDB(txId)
+    const normalizedTxId = normalizeTxId(txId)
+    const tx = TransactionDB.getTransactionById(normalizedTxId)
+    if (!tx) return null
+
+    const { status } = tx
+
+    // Liberdus txs (receiptTimestamp set) in SUBMITTED/INCOMPLETED have been delivered
+    // to the Liberdus network — the party should not retry them.
     if (
-      status == null ||
+      (status === TransactionStatus.SUBMITTED || status === TransactionStatus.INCOMPLETED) &&
+      tx.receiptTimestamp != null
+    ) {
+      console.log(`⏩ ${txId} already submitted to Liberdus (${context}), skipping`)
+      return 'submitted'
+    }
+
+    if (
       status === TransactionStatus.PENDING ||
       status === TransactionStatus.SUBMITTED ||
       status === TransactionStatus.INCOMPLETED
@@ -794,8 +809,9 @@ function reconcileTxStatusWithLocalDB(
 
 // Maps a reconcile skip status to the corresponding ProcessOutcome.
 function dbStatusToSkipOutcome(
-  status: 'completed' | 'failed' | 'reverted',
+  status: 'submitted' | 'completed' | 'failed' | 'reverted',
 ): ProcessOutcome {
+  if (status === 'submitted') return 'skipped_db_submitted'
   if (status === 'completed') return 'skipped_db_completed'
   if (status === 'reverted') return 'skipped_db_reverted'
   return 'skipped_db_failed'
@@ -2343,7 +2359,10 @@ async function main(): Promise<void> {
       const tssSender = validTx.type === 'vaultBridge'
         ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
         : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
-      if (preProcess === 'completed') {
+      if (preProcess === 'submitted') {
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'submitted' })
+        appendToFailedTxsLogs(validTx, 'already submitted to Liberdus at pre-process')
+      } else if (preProcess === 'completed') {
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
       } else if (preProcess === 'failed') {
@@ -2434,6 +2453,11 @@ async function main(): Promise<void> {
         console.log(`Transaction ${validTx.txId} was already reverted in local DB during reconcile, skipping`)
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
         pendingTxQueueRemovalSet.add(txId)
+      } else if (outcome === 'skipped_db_submitted') {
+        console.log(`Transaction ${validTx.txId} was already submitted to Liberdus during reconcile, skipping`)
+        txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'submitted' })
+        pendingTxQueueRemovalSet.add(txId)
+        appendToFailedTxsLogs(validTx, 'already submitted to Liberdus during reconcile')
       }
 
       // Check memory usage after successful transaction
