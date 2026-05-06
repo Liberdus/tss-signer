@@ -139,6 +139,64 @@ function parseIntQuery(value: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function logEvmGossip(
+  phase: "rejected" | "ignored_finalized" | "updated" | "ignored_unknown",
+  details: {
+    txId?: string;
+    reason?: string;
+    destinationChainId?: number;
+    status?: number;
+    result?: string;
+  },
+): void {
+  if (phase === "rejected") {
+    console.warn(`[observer/gossip/evm] rejected txId=${details.txId}: ${details.reason}`);
+    return;
+  }
+  if (phase === "ignored_finalized") {
+    console.log(`[observer/gossip/evm] ignored finalized txId=${details.txId} status=${details.status}`);
+    return;
+  }
+  if (phase === "updated") {
+    console.log(
+      `[observer/gossip/evm] updated txId=${details.txId} -> SUBMITTED result=${details.result} sigVerified=true destinationChain=${details.destinationChainId}`,
+    );
+    return;
+  }
+  console.log(
+    `[observer/gossip/evm] ignored unknown txId=${details.txId} sigVerified=true destinationChain=${details.destinationChainId}`,
+  );
+}
+
+function logLiberdusGossip(
+  phase: "rejected" | "ignored_finalized" | "updated" | "ignored_unknown",
+  details: {
+    txId?: string;
+    reason?: string;
+    sourceChainId?: number;
+    status?: number;
+    result?: string;
+  },
+): void {
+  if (phase === "rejected") {
+    console.warn(`[observer/gossip/liberdus] rejected txId=${details.txId}: ${details.reason}`);
+    return;
+  }
+  if (phase === "ignored_finalized") {
+    console.log(`[observer/gossip/liberdus] ignored finalized txId=${details.txId} status=${details.status}`);
+    return;
+  }
+  if (phase === "updated") {
+    console.log(
+      `[observer/gossip/liberdus] updated txId=${details.txId} -> SUBMITTED result=${details.result} sigVerified=true sourceChain=${details.sourceChainId}`,
+    );
+    return;
+  }
+  console.log(
+    `[observer/gossip/liberdus] ignored unknown txId=${details.txId} sigVerified=true sourceChain=${details.sourceChainId}`,
+  );
+}
+
 app.get(["/transaction", "/transactions"], (req, res) => {
   try {
     let txId = typeof req.query.txId === "string" ? req.query.txId.trim() : undefined;
@@ -327,17 +385,19 @@ app.post("/bridgein/evm/submitted", (req, res) => {
 
     const destinationChain = getChainConfigById(chainConfigsRaw, payload.destinationChainId);
     if (!destinationChain || !isSigningChainConfig(destinationChain)) {
-      console.warn(
-        `[observer/gossip/evm] rejected txId=${payload.txId}: unknown destinationChainId=${payload.destinationChainId}`
-      );
+      logEvmGossip("rejected", {
+        txId: payload.txId,
+        reason: `unknown destinationChainId=${payload.destinationChainId}`,
+      });
       return res.status(400).json({ Err: "Unknown destinationChainId" });
     }
 
     const verified = verifyEVMBridgeInGossipPayload(payload, destinationChain.tssSenderAddress);
     if (!verified.ok) {
-      console.warn(
-        `[observer/gossip/evm] rejected txId=${payload.txId}: verification failed (${verified.reason})`
-      );
+      logEvmGossip("rejected", {
+        txId: payload.txId,
+        reason: `verification failed (${verified.reason})`,
+      });
       return res.status(400).json({ Err: `Invalid bridgeIn gossip payload: ${verified.reason}` });
     }
 
@@ -347,9 +407,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
         existing.status === TransactionDB.TransactionStatus.COMPLETED ||
         existing.status === TransactionDB.TransactionStatus.REVERTED
       ) {
-        console.log(
-          `[observer/gossip/evm] ignored finalized txId=${payload.txId} status=${existing.status}`
-        );
+        logEvmGossip("ignored_finalized", { txId: payload.txId, status: existing.status });
         return res.json({ Ok: "ignored_finalized" });
       }
       const updateResult = TransactionDB.updateTransactionStatus(
@@ -360,15 +418,18 @@ app.post("/bridgein/evm/submitted", (req, res) => {
         { type: "nonce", value: payload.nonce },
         null,
       );
-      console.log(
-        `[observer/gossip/evm] updated txId=${payload.txId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId}`
-      );
+      logEvmGossip("updated", {
+        txId: payload.txId,
+        result: updateResult,
+        destinationChainId: payload.destinationChainId,
+      });
       return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
     }
 
-    console.log(
-      `[observer/gossip/evm] ignored unknown txId=${payload.txId} sigVerified=true sourceChain=${payload.sourceChainId} destinationChain=${payload.destinationChainId}`
-    );
+    logEvmGossip("ignored_unknown", {
+      txId: payload.txId,
+      destinationChainId: payload.destinationChainId,
+    });
     return res.json({ Ok: "ignored_missing_local_tx" });
   } catch (error) {
     console.error("[observer] /bridgein/evm/submitted failed:", error);
@@ -400,17 +461,19 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
 
     const sourceChain = getChainConfigById(chainConfigsRaw, payload.sourceChainId);
     if (!sourceChain || !isSigningChainConfig(sourceChain)) {
-      console.warn(
-        `[observer/gossip/liberdus] rejected txId=${payload.txId}: unknown sourceChainId=${payload.sourceChainId}`
-      );
+      logLiberdusGossip("rejected", {
+        txId: payload.txId,
+        reason: `unknown sourceChainId=${payload.sourceChainId}`,
+      });
       return res.status(400).json({ Err: "Unknown sourceChainId" });
     }
 
     const verified = verifyLiberdusBridgeInGossipPayload(payload, sourceChain.tssSenderAddress);
     if (!verified.ok) {
-      console.warn(
-        `[observer/gossip/liberdus] rejected txId=${payload.txId}: verification failed (${verified.reason})`
-      );
+      logLiberdusGossip("rejected", {
+        txId: payload.txId,
+        reason: `verification failed (${verified.reason})`,
+      });
       return res.status(400).json({ Err: `Invalid liberdus bridgeIn gossip payload: ${verified.reason}` });
     }
 
@@ -420,9 +483,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
         existing.status === TransactionDB.TransactionStatus.COMPLETED ||
         existing.status === TransactionDB.TransactionStatus.REVERTED
       ) {
-        console.log(
-          `[observer/gossip/liberdus] ignored finalized txId=${payload.txId} status=${existing.status}`
-        );
+        logLiberdusGossip("ignored_finalized", { txId: payload.txId, status: existing.status });
         return res.json({ Ok: "ignored_finalized" });
       }
       const updateResult = TransactionDB.updateTransactionStatus(
@@ -433,15 +494,18 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
         { type: "receiptTimestamp", value: payload.txTimestamp },
         null,
       );
-      console.log(
-        `[observer/gossip/liberdus] updated txId=${payload.txId} -> SUBMITTED result=${updateResult} sigVerified=true sourceChain=${payload.sourceChainId}`
-      );
+      logLiberdusGossip("updated", {
+        txId: payload.txId,
+        result: updateResult,
+        sourceChainId: payload.sourceChainId,
+      });
       return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
     }
 
-    console.log(
-      `[observer/gossip/liberdus] ignored unknown txId=${payload.txId} sigVerified=true sourceChain=${payload.sourceChainId}`
-    );
+    logLiberdusGossip("ignored_unknown", {
+      txId: payload.txId,
+      sourceChainId: payload.sourceChainId,
+    });
     return res.json({ Ok: "ignored_missing_local_tx" });
   } catch (error) {
     console.error("[observer] /bridgein/liberdus/submitted failed:", error);
