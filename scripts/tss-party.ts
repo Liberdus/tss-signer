@@ -14,6 +14,8 @@ import {
   getConfiguredChains,
   getEffectiveChainIds,
   getChainConfigById,
+  isSigningChainConfig,
+  requireSigningChainConfig,
   toNetworkChainId,
   ParamsConfig,
   paramsConfigRaw,
@@ -381,12 +383,11 @@ async function fetchStartupBridgeState(): Promise<void> {
 
 async function logStartupSignerBalances(): Promise<void> {
   for (const chainId of getEffectiveChainIds(chainConfigs)) {
-    const config = getChainConfigById(chainConfigs, chainId)
-    if (!config?.tssSenderAddress) continue
+    const config = requireSigningChainConfig(chainConfigs, chainId)
     try {
       const signerBalance = await chainRpcConfig.withChainHttpProvider(
         chainId,
-        (provider) => provider.getBalance(config.tssSenderAddress!),
+        (provider) => provider.getBalance(config.tssSenderAddress),
         { maxRetries: 3 },
       )
       console.log(
@@ -910,8 +911,8 @@ function reconcileNonceDrift(
 function getBnbTssExpectedAddresses(): Record<number, string> {
   const expected: Record<number, string> = {}
   for (const chainId of getEffectiveChainIds(chainConfigs)) {
-    const config = getChainConfigById(chainConfigs, chainId)!
-    expected[chainId] = config.tssSenderAddress!
+    const config = requireSigningChainConfig(chainConfigs, chainId)
+    expected[chainId] = config.tssSenderAddress
   }
   return expected
 }
@@ -2298,10 +2299,10 @@ async function main(): Promise<void> {
 
   // Initialize nonce manager for each effective chain's TSS sender.
   for (const chainId of getEffectiveChainIds(chainConfigs)) {
-    const config = getChainConfigById(chainConfigs, chainId)!
+    const config = requireSigningChainConfig(chainConfigs, chainId)
 
     try {
-      await initNonceManager(chainId, config.tssSenderAddress!)
+      await initNonceManager(chainId, config.tssSenderAddress)
     } catch (e) {
       console.warn(`[nonce-manager] Failed to initialize for chain ${chainId}:`, e)
     }
@@ -2347,8 +2348,8 @@ async function main(): Promise<void> {
     if (preProcess != null) {
       pendingTxQueueRemovalSet.add(txId)
       const tssSender = validTx.type === 'vaultBridge'
-        ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
-        : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+        ? chainConfigs.secondaryChainConfig!.tssSenderAddress
+        : requireSigningChainConfig(chainConfigs, validTx.chainId).tssSenderAddress
       if (preProcess === 'submitted') {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'submitted' })
         appendToFailedTxsLogs(validTx, 'already submitted to Liberdus at pre-process')
@@ -2427,8 +2428,8 @@ async function main(): Promise<void> {
         txQueueMap.set(txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         pendingTxQueueRemovalSet.add(txId)
         const tssSender = validTx.type === 'vaultBridge'
-          ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
-          : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+          ? chainConfigs.secondaryChainConfig!.tssSenderAddress
+          : requireSigningChainConfig(chainConfigs, validTx.chainId).tssSenderAddress
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
       } else if (outcome === 'skipped_db_failed') {
         console.log(`Transaction ${validTx.txId} was already failed in local DB during reconcile, skipping`)
@@ -2436,8 +2437,8 @@ async function main(): Promise<void> {
         pendingTxQueueRemovalSet.add(txId)
         appendToFailedTxsLogs(validTx, 'already failed in local DB during reconcile')
         const tssSender = validTx.type === 'vaultBridge'
-          ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
-          : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+          ? chainConfigs.secondaryChainConfig!.tssSenderAddress
+          : requireSigningChainConfig(chainConfigs, validTx.chainId).tssSenderAddress
         syncLocalNonceFromDB(validTx.type, validTx.chainId, tssSender)
       } else if (outcome === 'skipped_db_reverted') {
         console.log(`Transaction ${validTx.txId} was already reverted in local DB during reconcile, skipping`)
@@ -2482,8 +2483,8 @@ async function main(): Promise<void> {
               ? chainConfigs.secondaryChainConfig!.chainId
               : validTx.chainId
             const nonceTssSender = validTx.type === 'vaultBridge'
-              ? chainConfigs.secondaryChainConfig!.tssSenderAddress!
-              : getChainConfigById(chainConfigs, validTx.chainId)!.tssSenderAddress!
+              ? chainConfigs.secondaryChainConfig!.tssSenderAddress
+              : requireSigningChainConfig(chainConfigs, validTx.chainId).tssSenderAddress
             incrementLocalNonce(nonceCacheChainId, nonceTssSender)
           }
           console.log(`[${timeoutReason}] ${validTx.txId} already COMPLETED in local DB`)

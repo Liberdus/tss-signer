@@ -4,7 +4,7 @@ import cors from "cors";
 import path from "path";
 import fs from "fs";
 import * as TransactionDB from "../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById } from "../shared/config";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig } from "../shared/config";
 import { isEthereumAddress, toEthereumAddress } from "../shared/utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "../shared/utils/transformTxId";
 import { initMonitorState, monitorState, saveMonitorState, setSyncReady, syncReady } from "./monitor/state";
@@ -330,11 +330,11 @@ app.post("/bridgein/evm/submitted", (req, res) => {
     }
 
     const destinationChain = getChainConfigById(chainConfigsRaw, payload.destinationChainId);
-    if (!destinationChain?.tssSenderAddress) {
+    if (!destinationChain || !isSigningChainConfig(destinationChain)) {
       console.warn(
         `[observer/gossip/evm] rejected txId=${payload.txId}: unknown destinationChainId=${payload.destinationChainId}`
       );
-      return res.status(400).json({ Err: "Unknown destinationChainId or missing tssSenderAddress" });
+      return res.status(400).json({ Err: "Unknown destinationChainId" });
     }
 
     const verified = verifyEVMBridgeInGossipPayload(payload, destinationChain.tssSenderAddress);
@@ -403,11 +403,11 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
     }
 
     const sourceChain = getChainConfigById(chainConfigsRaw, payload.sourceChainId);
-    if (!sourceChain?.tssSenderAddress) {
+    if (!sourceChain || !isSigningChainConfig(sourceChain)) {
       console.warn(
         `[observer/gossip/liberdus] rejected txId=${payload.txId}: unknown sourceChainId=${payload.sourceChainId}`
       );
-      return res.status(400).json({ Err: "Unknown sourceChainId or missing tssSenderAddress" });
+      return res.status(400).json({ Err: "Unknown sourceChainId" });
     }
 
     const verified = verifyLiberdusBridgeInGossipPayload(payload, sourceChain.tssSenderAddress);
