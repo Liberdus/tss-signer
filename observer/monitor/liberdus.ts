@@ -1,7 +1,7 @@
 import { ethers } from "ethers";
 import axios from "axios";
 import * as TransactionDB from "../../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, paramsConfigRaw } from "../../shared/config";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, paramsConfigRaw, parseBooleanOption } from "../../shared/config";
 import { getCachedPeerObserverUrls } from "../../shared/utils/observerPeers";
 import { toEthereumAddress, toShardusAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
@@ -34,6 +34,12 @@ type ObservationVerification = VerificationResult & {
   finalStatus?: TransactionDB.TransactionStatus;
 };
 
+function shouldSkipOldLiberdusData(): boolean {
+  return (
+    parseBooleanOption(process.env.OBSERVER_SKIP_OLD_LIBERDUS_DATA) ||
+    chainConfigsRaw.observerSkipOldLiberdusData === true
+  );
+}
 
 function isFinalizedStatus(status: TransactionDB.TransactionStatus): boolean {
   return (
@@ -61,8 +67,16 @@ export async function monitorLiberdusTransactions(): Promise<void> {
       const { tssSenderAddress } = chainConfig;
       const bridgeAddress = toShardusAddress(tssSenderAddress);
 
-      const sinceTimestamp: number =
+      let sinceTimestamp: number =
         monitorState.liberdusTimestampByChain[chainIdStr] ?? 0;
+      if (shouldSkipOldLiberdusData() && sinceTimestamp <= 0) {
+        sinceTimestamp = Date.now();
+        monitorState.liberdusTimestampByChain[chainIdStr] = sinceTimestamp;
+        stateChanged = true;
+        console.log(
+          `[observer/liberdus] Seeded chain ${chainIdStr} cursor to current time ${new Date(sinceTimestamp).toISOString()}`,
+        );
+      }
       let maxTimestamp = sinceTimestamp;
 
       let page = 1;

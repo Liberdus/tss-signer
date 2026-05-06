@@ -442,13 +442,14 @@ export async function monitorEthereumBridgeInQueryFilter(
           const eventTimestamp = (event.args.timestamp as ethers.BigNumber).toNumber();
           const eventReceiptId = normalizeTxId(event.transactionHash);
 
+          // BRIDGE_VAULT records are stored under the vault (source) chain ID, not the secondary chain.
           const earlyTx: TransactionDB.Transaction = {
             txId,
             sender: toEthereumAddress(event.args.to as string),
             value: ethers.utils.hexValue(event.args.amount as ethers.BigNumber),
             type: txType,
             txTimestamp: eventTimestamp * 1000,
-            chainId: isVaultMode ? 0 : (event.args.chainId as ethers.BigNumber).toNumber(),
+            chainId: isVaultMode ? chainConfigsRaw.vaultChain!.chainId : (event.args.chainId as ethers.BigNumber).toNumber(),
             receiptId: eventReceiptId,
             status: TransactionDB.TransactionStatus.COMPLETED,
             tssSender: chainConfig.tssSenderAddress.toLowerCase() || null,
