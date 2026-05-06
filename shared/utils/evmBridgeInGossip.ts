@@ -9,7 +9,6 @@ const bridgeInIface = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 export interface EVMBridgeInGossipPayload {
   txId: string;
-  sourceChainId: number;
   destinationChainId: number;
   receiptId: string;
   signedTx: string;
@@ -22,9 +21,8 @@ export function normalizeEVMBridgeInGossipPayload(
   return {
     ...payload,
     txId: normalizeTxId(payload.txId),
-    receiptId: normalizeTxId(payload.receiptId),
-    sourceChainId: Number(payload.sourceChainId),
     destinationChainId: Number(payload.destinationChainId),
+    receiptId: normalizeTxId(payload.receiptId),
     nonce: Number(payload.nonce),
   };
 }
@@ -44,9 +42,6 @@ export function verifyEVMBridgeInGossipPayload(
     }
     if (!Number.isInteger(normalized.destinationChainId)) {
       return { ok: false, reason: "invalid_destinationChainId" };
-    }
-    if (!Number.isInteger(normalized.sourceChainId)) {
-      return { ok: false, reason: "invalid_sourceChainId" };
     }
     if (!Number.isInteger(normalized.nonce) || normalized.nonce < 0) {
       return { ok: false, reason: "invalid_nonce" };
