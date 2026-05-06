@@ -79,22 +79,19 @@ export async function gossipBridgeIn(
   const isLiberdusPayload = route === "liberdus";
   const liberdusPayload = payload as LiberdusBridgeInGossipPayload;
   const evmPayload = payload as EVMBridgeInGossipPayload;
-  const routeLabel = isLiberdusPayload ? "Liberdus" : "EVM";
-  const routeTag = isLiberdusPayload ? "liberdus" : "evm";
   const endpointPath = isLiberdusPayload
     ? "/bridgein/liberdus/submitted"
     : "/bridgein/evm/submitted";
-  const sourceChainLabel = isLiberdusPayload
-    ? `${getChainName(liberdusPayload.sourceChainId)}(${liberdusPayload.sourceChainId})`
-    : `${getChainName(evmPayload.sourceChainId)}(${evmPayload.sourceChainId})`;
+  // Only the liberdus route carries sourceChainId in payload; evm route source is always Liberdus.
+  const sourceChainLabel = `${getChainName(liberdusPayload.sourceChainId)}(${liberdusPayload.sourceChainId})`;
   const destinationChainLabel = isLiberdusPayload
     ? "Liberdus"
     : `${getChainName(evmPayload.destinationChainId)}(${evmPayload.destinationChainId})`;
-  const startMsg = isLiberdusPayload
-    ? `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout start txId=${liberdusPayload.txId} receiptId=${liberdusPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peerUrls.length}`
-    : `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout start txId=${evmPayload.txId} receiptId=${evmPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peerUrls.length}`;
-
-  console.log(startMsg);
+  if (isLiberdusPayload) {
+    logLiberdusGossip("start", liberdusPayload, sourceChainLabel, peerUrls.length);
+  } else {
+    logEvmGossip("start", evmPayload, destinationChainLabel, peerUrls.length);
+  }
   let delivered = 0;
   const requests = peerUrls.map(async (baseUrl) => {
     const endpoint = `${baseUrl}${endpointPath}`;
@@ -104,24 +101,22 @@ export async function gossipBridgeIn(
     } catch (error) {
       const reason = getAxiosErrorMessage(error);
       if (isLiberdusPayload) {
-        console.warn(
-          `[gossip/${routeTag}] failed to send submitted ${routeLabel} BridgeIn tx txId=${liberdusPayload.txId} receiptId=${liberdusPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${endpoint}: ${reason}`,
-        );
+        logLiberdusGossip("failed", liberdusPayload, sourceChainLabel, peerUrls.length, {
+          endpoint,
+          reason,
+        });
       } else {
-        console.warn(
-          `[gossip/${routeTag}] failed to send submitted ${routeLabel} BridgeIn tx txId=${evmPayload.txId} receiptId=${evmPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${endpoint}: ${reason}`,
-        );
+        logEvmGossip("failed", evmPayload, destinationChainLabel, peerUrls.length, {
+          endpoint,
+          reason,
+        });
       }
     }
   });
   await Promise.all(requests);
   if (isLiberdusPayload) {
-    console.log(
-      `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout complete txId=${liberdusPayload.txId} receiptId=${liberdusPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${delivered}/${peerUrls.length}`,
-    );
+    logLiberdusGossip("complete", liberdusPayload, sourceChainLabel, peerUrls.length, { delivered });
   } else {
-    console.log(
-      `[gossip/${routeTag}] ${routeLabel} BridgeIn submitted fanout complete txId=${evmPayload.txId} receiptId=${evmPayload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${delivered}/${peerUrls.length}`,
-    );
+    logEvmGossip("complete", evmPayload, destinationChainLabel, peerUrls.length, { delivered });
   }
 }
