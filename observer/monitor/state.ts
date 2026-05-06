@@ -1,4 +1,5 @@
 import fs from "fs";
+import { chainConfigsRaw } from "../../shared/config";
 
 // ---------------------------------------------------------------------------
 // Monitor state — persisted to a per-party block_state file
@@ -51,6 +52,13 @@ export function initMonitorState(statePath: string): void {
       Object.assign(monitorState, saved);
       if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
       if (!monitorState.liberdusTimestampByChain) monitorState.liberdusTimestampByChain = {};
+      if (saved.lastLiberdusTimestamp != null) {
+        for (const chainId of Object.keys(chainConfigsRaw.supportedChains)) {
+          if (monitorState.liberdusTimestampByChain[chainId] == null) {
+            monitorState.liberdusTimestampByChain[chainId] = saved.lastLiberdusTimestamp;
+          }
+        }
+      }
       if (saved.failedTxScanBlocks == null && saved.revertScanBlocks) {
         monitorState.failedTxScanBlocks = saved.revertScanBlocks;
       }
