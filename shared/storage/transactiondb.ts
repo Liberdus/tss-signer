@@ -2,8 +2,6 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 
-// Liberdus network chain ID (matches DEFAULT_CHAIN_ID in the token contract)
-export const LIBERDUS_CHAIN_ID = 0;
 
 export interface Transaction {
   txId: string;

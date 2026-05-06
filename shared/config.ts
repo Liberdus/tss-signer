@@ -52,11 +52,18 @@ export interface ChainConfigs {
   proxyServerHost?: string
   liberdusBridgeGuards: LiberdusBridgeGuards
   /**
-   * Observer-only local development option. When true, startup seeds monitor
-   * cursors to current chain tips instead of scanning historical events from
-   * deploymentBlock.
+   * Observer-only local development option. When true, startup skips historical
+   * sync for both EVM and Liberdus monitors: EVM cursors are seeded to current
+   * chain tips and Liberdus cursors are seeded to the current wall-clock time.
    */
   observerSkipOldData?: boolean
+  /**
+   * Observer-only Liberdus option. Applies only to Liberdus transactions, and
+   * only when a per-chain Liberdus cursor has not been initialized yet (missing
+   * or 0). When true, seeds that cursor to the current wall-clock time instead
+   * of scanning from timestamp 0.
+   */
+  observerSkipOldLiberdusData?: boolean
 }
 
 export interface ParamsConfig {
@@ -86,6 +93,11 @@ export function requireFullChainConfig(config: ChainConfig, label: string): void
       `[config] ${label} (chainId ${config.chainId}) is missing tssSenderAddress or gasConfig`,
     )
   }
+}
+
+export function parseBooleanOption(value: string | undefined): boolean {
+  if (!value) return false
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
 }
 
 function validateBridgeGuardAmount(value: unknown, fieldName: keyof LiberdusBridgeGuards): string {

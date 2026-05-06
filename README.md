@@ -100,8 +100,10 @@ Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](t
 - **`params.json`** — TSS parameters. Default: `{"parties": 5, "threshold": 3}`
 - **`chain-config.json`** — RPC endpoints, contract addresses, gas config per chain.
 - Optional local dev shortcut: set `observerSkipOldData: true` in `chain-config.json`, run with
-  `OBSERVER_SKIP_OLD_DATA=true`, or pass `--skip-old-data` to the observer to seed monitor
-  cursors to the latest chain tips instead of scanning historical events from `deploymentBlock`.
+  `OBSERVER_SKIP_OLD_DATA=true`, or pass `--skip-old-data` to the observer to seed both EVM
+  and Liberdus monitor cursors instead of scanning historical data;
+  use `observerSkipOldLiberdusData: true` or `OBSERVER_SKIP_OLD_LIBERDUS_DATA=true` to apply
+  the skip only to Liberdus transactions when a Liberdus monitor cursor has not been initialized yet.
 
 ### 5. Run keygen (first time only)
 

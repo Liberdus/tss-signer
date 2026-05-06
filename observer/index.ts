@@ -4,7 +4,7 @@ import cors from "cors";
 import path from "path";
 import fs from "fs";
 import * as TransactionDB from "../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById, isSigningChainConfig } from "../shared/config";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, parseBooleanOption } from "../shared/config";
 import { isEthereumAddress, toEthereumAddress } from "../shared/utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "../shared/utils/transformTxId";
 import { initMonitorState, monitorState, saveMonitorState, setSyncReady, syncReady } from "./monitor/state";
@@ -69,11 +69,6 @@ console.log(`[observer] HTTP port:   ${PORT}`);
 const ETH_MONITOR_INTERVAL_MS = 60 * 1000;
 const LIB_MONITOR_INTERVAL_MS = 10_000;
 const INITIAL_SYNC_RETRY_DELAY_MS = 5_000;
-
-function parseBooleanOption(value: string | undefined): boolean {
-  if (!value) return false;
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
 
 function shouldSkipOldData(): boolean {
   return (
