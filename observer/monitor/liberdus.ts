@@ -434,6 +434,7 @@ async function verifySourceBridgeTx(
   // If we already have this tx locally, validate against our record — no network call needed.
   const localTx = TransactionDB.getTransactionById(normalizeTxId(tx.txId));
   if (localTx) {
+    console.log(`[observer/liberdus] Verifying local tx for txId=${tx.txId} sender=${tx.sender} value=${tx.value}`);
     if (
       localTx.sender !== tx.sender ||
       localTx.value !== tx.value ||
@@ -449,22 +450,26 @@ async function verifySourceBridgeTx(
       );
       return { ok: false, reason: "local_tx_mismatch" };
     }
-    console.log(`[observer/liberdus] Local tx found for txId=${tx.txId}, skipping network verification`);
+    console.log(`[observer/liberdus] Local tx verification result for txId=${tx.txId}: ok=true`);
     return { ok: true, finalStatus };
   }
 
   if (tx.type === TransactionDB.TransactionType.BRIDGE_OUT) {
     // Verify the original EVM source tx that triggered this bridge-out delivery.
+    console.log(`[observer/liberdus] Verifying EVM source tx for BRIDGE_OUT txId=${tx.txId} chainId=${tx.chainId} sender=${tx.sender}`);
     const evmVerification = await verifyEvmBridgeOutSourceTx(tx);
+    console.log(`[observer/liberdus] EVM source verification result for txId=${tx.txId}: ok=${evmVerification.ok}${!evmVerification.ok ? ` reason=${evmVerification.reason}` : ''}`);
     return evmVerification.ok ? { ok: true, finalStatus } : evmVerification;
   }
 
   // BRIDGE_IN: delivery is a refund — verify the original Liberdus source tx (user → bridge).
+  console.log(`[observer/liberdus] Verifying Liberdus source tx for BRIDGE_IN txId=${tx.txId} sender=${tx.sender} value=${tx.value}`);
   const sourceVerification = await verifyLiberdusTx(tx.txId, {
     success: true,
     from: tx.sender,
     amount: tx.value,
   });
+  console.log(`[observer/liberdus] Liberdus source verification result for txId=${tx.txId}: ok=${sourceVerification.ok}${!sourceVerification.ok ? ` reason=${sourceVerification.reason}` : ''}`);
   return sourceVerification.ok ? { ok: true, finalStatus } : sourceVerification;
 }
 
