@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import * as TransactionDB from "../../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById } from "../../shared/config";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig } from "../../shared/config";
 import { toEthereumAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
 import { observerChainRpc } from "../chainRpc";
@@ -295,7 +295,7 @@ export async function monitorEthereumBridgeInQueryFilter(
     console.log(`[observer/bridgeIn] Starting scan for chain ${chainId}`);
 
     const chainConfig = getChainConfigById(chainConfigsRaw, chainId);
-    if (!chainConfig) { isBridgeInChainRunning.set(chainId, false); continue; }
+    if (!chainConfig || !isSigningChainConfig(chainConfig)) { isBridgeInChainRunning.set(chainId, false); continue; }
     const chainName = chainConfig.name;
 
     try {
@@ -527,7 +527,7 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
     if (targetChainId !== undefined && chainId !== targetChainId) continue;
 
     const chainConfig = getChainConfigById(chainConfigsRaw, chainId);
-    if (!chainConfig?.tssSenderAddress) continue;
+    if (!chainConfig || !isSigningChainConfig(chainConfig)) continue;
 
     // Mirror the BridgeIn scan: vault mode only scans the secondary chain
     if (!chainConfigsRaw.enableLiberdusNetwork) {
@@ -733,7 +733,7 @@ export async function seedEthereumMonitorStateToLatest(): Promise<void> {
       monitorState.bridgeInBlocks[chainKey] = latestBlock;
     }
 
-    if (shouldScanBridgeIn && chainConfig.tssSenderAddress) {
+    if (shouldScanBridgeIn && isSigningChainConfig(chainConfig)) {
       const tssSender = chainConfig.tssSenderAddress.toLowerCase();
       const senderKey = `${chainId}:${tssSender}`;
       const chainNonce = await observerChainRpc.withChainHttpProvider(

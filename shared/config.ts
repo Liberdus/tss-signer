@@ -7,9 +7,26 @@ export interface ChainConfig {
   chainId: number
   rpcUrl: string
   contractAddress: string
-  tssSenderAddress?: string
+  tssSenderAddress: string
   gasConfig?: {gasLimit: number; gasPriceTiers: number[]}
   deploymentBlock: number
+}
+
+export type VaultChainConfig = Omit<ChainConfig, 'tssSenderAddress'>
+
+export function isSigningChainConfig(config: ChainConfig | VaultChainConfig): config is ChainConfig {
+  return 'tssSenderAddress' in config
+}
+
+export function requireSigningChainConfig(
+  chainConfigs: ChainConfigs,
+  chainId: number,
+): ChainConfig {
+  const config = getChainConfigById(chainConfigs, chainId)
+  if (!config || !isSigningChainConfig(config)) {
+    throw new Error(`[config] chainId ${chainId} is not a signing chain`)
+  }
+  return config
 }
 
 export interface LiberdusBridgeGuards {
@@ -21,7 +38,7 @@ export interface LiberdusBridgeGuards {
 
 export interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
-  vaultChain?: ChainConfig
+  vaultChain?: VaultChainConfig
   secondaryChainConfig?: ChainConfig
   observerUrls?: string[]
   enableLiberdusNetwork: boolean
@@ -126,7 +143,7 @@ export function validateChainConfigs(chainConfigs: ChainConfigs): ChainConfigs {
 export function getConfiguredChains(chainConfigs: ChainConfigs): ChainConfig[] {
   return chainConfigs.enableLiberdusNetwork
     ? Object.values(chainConfigs.supportedChains)
-    : [chainConfigs.vaultChain!, chainConfigs.secondaryChainConfig!]
+    : [chainConfigs.vaultChain! as ChainConfig, chainConfigs.secondaryChainConfig!]
 }
 
 export function getEffectiveChainIds(chainConfigs: ChainConfigs = chainConfigsRaw): number[] {
@@ -136,7 +153,7 @@ export function getEffectiveChainIds(chainConfigs: ChainConfigs = chainConfigsRa
   return [chainConfigs.secondaryChainConfig!.chainId]
 }
 
-export function getChainConfigById(chainConfigs: ChainConfigs, chainId: number): ChainConfig | undefined {
+export function getChainConfigById(chainConfigs: ChainConfigs, chainId: number): ChainConfig | VaultChainConfig | undefined {
   if (chainConfigs.enableLiberdusNetwork) {
     return chainConfigs.supportedChains[chainId.toString()]
   }

@@ -1,7 +1,7 @@
 import { ethers } from "ethers";
 import axios from "axios";
 import * as TransactionDB from "../../shared/storage/transactiondb";
-import { ChainConfig, chainConfigsRaw, getChainConfigById, paramsConfigRaw } from "../../shared/config";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, paramsConfigRaw } from "../../shared/config";
 import { getCachedPeerObserverUrls } from "../../shared/utils/observerPeers";
 import { toEthereumAddress, toShardusAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
@@ -58,7 +58,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
       chainConfigsRaw.supportedChains
     )) {
       const chainId = parseInt(chainIdStr);
-      const { tssSenderAddress } = chainConfig as ChainConfig;
+      const { tssSenderAddress } = chainConfig;
       const bridgeAddress = toShardusAddress(tssSenderAddress);
 
       let page = 1;
@@ -442,7 +442,7 @@ async function verifySourceBridgeTx(
     return { ok: false, reason: `unsupported_tx_type_${tx.type}` };
   }
   const chainConfig = getChainConfigById(chainConfigsRaw, tx.chainId);
-  if (!chainConfig?.tssSenderAddress) {
+  if (!chainConfig || !isSigningChainConfig(chainConfig)) {
     return { ok: false, reason: "missing_chain_tss_sender" };
   }
   if (toEthereumAddress(tx.tssSender ?? "") !== toEthereumAddress(chainConfig.tssSenderAddress)) {
@@ -518,7 +518,7 @@ async function reconcileObservedLiberdusBridgeOut(
   const existingByTxId = TransactionDB.getTransactionById(normalizedTxId);
   if (existingByTxId) {
     const chainConfig = getChainConfigById(chainConfigsRaw, existingByTxId.chainId);
-    if (!chainConfig?.tssSenderAddress) {
+    if (!chainConfig || !isSigningChainConfig(chainConfig)) {
       console.warn(`[observer/liberdus] Cannot update ${TransactionDB.TransactionType[existingByTxId.type]} txId=${existingByTxId.txId}: missing chain tssSenderAddress`);
       return false;
     }
