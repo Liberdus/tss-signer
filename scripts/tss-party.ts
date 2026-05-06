@@ -416,9 +416,14 @@ crypto.init(cryptoInitKey)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
 
 const KEYSTORE_DIR = path.join(resolveProjectRoot(), 'keystores')
+const LOGS_DIR = path.join(resolveProjectRoot(), 'logs')
 
 if (!fs.existsSync(KEYSTORE_DIR)) {
   fs.mkdirSync(KEYSTORE_DIR, {recursive: true})
+}
+
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, {recursive: true})
 }
 
 const pendingTxQueue: TransactionQueueItem[] = []
@@ -519,7 +524,7 @@ function cleanupOldTransactions() {
 
 function appendToFailedTxsLogs(txData: TransactionQueueItem, error: string): void {
   try {
-    const filePath = path.join(KEYSTORE_DIR, `failed_txs_logs_party_${ourParty.idx}.ndjson`)
+    const filePath = path.join(LOGS_DIR, `failed_txs_logs_party_${ourParty.idx}.ndjson`)
     const line = JSON.stringify({
       txId: txData.txId,
       from: txData.from,
