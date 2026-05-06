@@ -1240,7 +1240,6 @@ async function processCoinToToken(
       // Fire-and-forget gossip; transaction flow should not block on peer fanout.
       void gossipBridgeIn('evm', {
         txId: normalizeTxId(txId),
-        sourceChainId: 0,
         destinationChainId: targetChainId,
         receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
@@ -1392,7 +1391,6 @@ async function processCoinToToken(
     // Fire-and-forget gossip; transaction flow should not block on peer fanout.
     void gossipBridgeIn('evm', {
       txId: normalizeTxId(txId),
-      sourceChainId: 0,
       destinationChainId: targetChainId,
       receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,

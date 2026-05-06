@@ -315,7 +315,6 @@ app.post("/bridgein/evm/submitted", (req, res) => {
     try {
       payload = normalizeEVMBridgeInGossipPayload({
         txId: `${raw.txId ?? ""}`,
-        sourceChainId: Number(raw.sourceChainId),
         destinationChainId: Number(raw.destinationChainId),
         receiptId: `${raw.receiptId ?? ""}`,
         signedTx: `${raw.signedTx ?? ""}`,
