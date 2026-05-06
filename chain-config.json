@@ -14,7 +14,6 @@
     "rpcUrl": "https://bsc-dataseed.bnbchain.org/",
     "contractAddress": "0x5AfdCC93D794762C785Ec14Fb2a24c4aBDbB8aaa",
     "tssSenderAddress": "0x980828D1eb8EABC88Aeb1F7a817dbb0e9fA52269",
-    "bridgeAddress": "980828d1eb8eabc88aeb1f7a817dbb0e9fa52269000000000000000000000000",
     "gasConfig": {
       "gasLimit": 200000,
       "gasPriceTiers": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
@@ -28,7 +27,6 @@
       "rpcUrl": "https://polygon-rpc.com",
       "contractAddress": "0x693ed886545970f0a3adf8c59af5ccdb6ddf0a76",
       "tssSenderAddress": "0x35576352AABCBCe19AeCE1fFD376f7C49F022706",
-      "bridgeAddress": "35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [50, 100, 150, 200, 250, 300]
@@ -41,7 +39,6 @@
       "rpcUrl": "https://bsc-dataseed.bnbchain.org/",
       "contractAddress": "0x5AfdCC93D794762C785Ec14Fb2a24c4aBDbB8aaa",
       "tssSenderAddress": "0x980828D1eb8EABC88Aeb1F7a817dbb0e9fA52269",
-      "bridgeAddress": "980828d1eb8eabc88aeb1f7a817dbb0e9fa52269000000000000000000000000",
       "gasConfig": {
         "gasLimit": 200000,
         "gasPriceTiers": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]

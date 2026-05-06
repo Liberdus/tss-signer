@@ -5,7 +5,7 @@
 #   ./update-chain.sh <chain-config.json> <chainId> '<json-object>'
 #
 # EXAMPLES:
-#   ./update-chain.sh chain-config.json 97 '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297","bridgeAddress":"7fd5af01358a7dad582b2476aa821b75cebaf297000000000000000000000000"}'
+#   ./update-chain.sh chain-config.json 97 '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297"}'
 #   ./update-chain.sh chain-config.json 80002 '{"deploymentBlock":99999999}'
 #
 # BEHAVIOUR:
