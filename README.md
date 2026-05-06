@@ -226,7 +226,7 @@ Right now there are three TSS execution routes:
 **Liberdus -> EVM BridgeIn (Coin-to-Token):**
 1. Observer polls the Liberdus collector API for bridge transfers and saves them as PENDING
 2. TSS parties pick up the pending transaction, sign, and submit to the target EVM chain
-3. Winning party gossips EVMChain submission (`txId`, `sourceChainId`, `destinationChainId`, `receiptId`) to peer observers via `/bridgein/evm/submitted` so peers can mark the tx as SUBMITTED early (`txId` is source `bridgeOut` tx id, `receiptId` is destination `bridgeIn` tx id)
+3. Winning party gossips EVMChain submission (`txId`, `destinationChainId`, `receiptId`) to peer observers via `/bridgein/evm/submitted` so peers can mark the tx as SUBMITTED early (`txId` is source `bridgeOut` tx id, `receiptId` is destination `bridgeIn` tx id)
 
 ## Key Files
 
