@@ -153,7 +153,6 @@ let n = params.parties
 const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const TSS_SIGN_PROCESS_TIMEOUT_MS = TSS_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
-const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
 const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 15 * 1000 // 15s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
@@ -429,7 +428,6 @@ const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const pendingTxQueueRemovalSet = new Set<string>()
 const txQueueProcessingInterval = 10000
 const TX_POLL_INTERVAL = 10 * 1000 // 10s
-const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes total, covering the 1.5-minute signing timeout and the 1-minute bridge-in cooldown within the same window
 
 const TX_CLEANUP_MAX_AGE = 60 * 60 * 1000 // 1 hour for all statuses
 
@@ -1088,7 +1086,7 @@ async function injectLiberdusTx(
     const waitTime = (signedTx.timestamp ?? 0) - Date.now()
     console.log(`Waiting for ${waitTime} ms before injecting transaction...`)
     if (waitTime > 0) await sleep(waitTime)
-    const res = await axios.post(injectUrl, body)
+    const res = await axios.post(injectUrl, body, { timeout: TSS_PARTY_SEND_TX_TIMEOUT_MS })
     console.log('Liberdus tx inject response:', res.data)
     if (res.status !== 200 || res.data?.result?.success !== true)
       throw new Error(res.data?.result?.reason || 'Transaction injection failed')
@@ -2411,13 +2409,7 @@ async function main(): Promise<void> {
       } else {
         throw new Error(`Unsupported transaction type: ${validTx.type}`)
       }
-      const failPromise = new Promise((resolve, reject) => {
-        setTimeout(() => {
-          reject(new Error(TX_PROCESSING_TIMEOUT_ERROR))
-        }, TX_PROCESSING_TIMEOUT_MS)
-      })
-      // wait for either the transaction to be processed or the timeout
-      const outcome = await Promise.race([processPromise, failPromise]) as ProcessOutcome
+      const outcome = await processPromise as ProcessOutcome
       if (outcome === 'completed') {
         txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
         pendingTxQueueRemovalSet.add(txId)
@@ -2471,21 +2463,14 @@ async function main(): Promise<void> {
         tryGC()
       }
     } catch (error: any) {
-      if (error.message === bnbTss.SIGNING_TIMEOUT_ERROR || error.message === TX_PROCESSING_TIMEOUT_ERROR) {
-        const isSigningTimeout = error.message === bnbTss.SIGNING_TIMEOUT_ERROR
-        const timeoutReason = isSigningTimeout ? bnbTss.SIGNING_TIMEOUT_ERROR : TX_PROCESSING_TIMEOUT_ERROR
-
-        if (isSigningTimeout) {
-          console.log('Transaction signing timed out', validTx.txId)
-        } else {
-          console.warn('Transaction processing timed out', validTx.txId)
-        }
+      if (error.message === bnbTss.SIGNING_TIMEOUT_ERROR) {
+        console.log('Transaction signing timed out', validTx.txId)
 
         const dbStatus = reconcileTxStatusWithLocalDB(validTx.txId, 'timeout')
         if (dbStatus === 'submitted') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'submitted' })
           pendingTxQueueRemovalSet.add(txId)
-          console.log(`[${timeoutReason}] ${validTx.txId} already submitted to Liberdus`)
+          console.log(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} already submitted to Liberdus`)
         } else if (dbStatus === 'completed') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'completed' })
           pendingTxQueueRemovalSet.add(txId)
@@ -2499,21 +2484,21 @@ async function main(): Promise<void> {
               : requireSigningChainConfig(chainConfigs, validTx.chainId).tssSenderAddress
             incrementLocalNonce(nonceCacheChainId, nonceTssSender)
           }
-          console.log(`[${timeoutReason}] ${validTx.txId} already COMPLETED in local DB`)
+          console.log(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} already COMPLETED in local DB`)
         } else if (dbStatus === 'reverted') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'reverted' })
           pendingTxQueueRemovalSet.add(txId)
-          console.log(`[${timeoutReason}] ${validTx.txId} already REVERTED in local DB`)
+          console.log(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} already REVERTED in local DB`)
         } else if (dbStatus === 'failed') {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'failed' })
           pendingTxQueueRemovalSet.add(txId)
-          console.warn(`[${timeoutReason}] ${validTx.txId} already FAILED in local DB`)
+          console.warn(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} already FAILED in local DB`)
         } else {
           txQueueMap.set(validTx.txId, { txTimestamp: validTx.txTimestamp!, status: 'incompleted' })
-          appendToFailedTxsLogs(validTx, timeoutReason)
-          console.warn(`[${timeoutReason}] ${validTx.txId} not completed in local DB`)
+          appendToFailedTxsLogs(validTx, bnbTss.SIGNING_TIMEOUT_ERROR)
+          console.warn(`[${bnbTss.SIGNING_TIMEOUT_ERROR}] ${validTx.txId} not completed in local DB`)
         }
-        checkPostTransactionMemory(validTx.txId, timeoutReason)
+        checkPostTransactionMemory(validTx.txId, bnbTss.SIGNING_TIMEOUT_ERROR)
         if (global.gc) {
           tryGC()
         }
