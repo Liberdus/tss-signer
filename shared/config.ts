@@ -8,7 +8,6 @@ export interface ChainConfig {
   rpcUrl: string
   contractAddress: string
   tssSenderAddress?: string
-  bridgeAddress?: string
   gasConfig?: {gasLimit: number; gasPriceTiers: number[]}
   deploymentBlock: number
 }
@@ -65,9 +64,9 @@ export function loadParamsConfig(fromDir = __dirname): ParamsConfig {
 }
 
 export function requireFullChainConfig(config: ChainConfig, label: string): void {
-  if (!config.tssSenderAddress || !config.bridgeAddress || !config.gasConfig) {
+  if (!config.tssSenderAddress || !config.gasConfig) {
     throw new Error(
-      `[config] ${label} (chainId ${config.chainId}) is missing tssSenderAddress, bridgeAddress, or gasConfig`,
+      `[config] ${label} (chainId ${config.chainId}) is missing tssSenderAddress or gasConfig`,
     )
   }
 }

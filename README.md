@@ -129,7 +129,7 @@ npm run tss-party
 npm run tss-init -- --party 1 --chain-id 97
 npm run tss-keygen -- --party 1 --chain-id 97
 npm run tss-keygen-ceremony -- --nonce 1
-npm run update-chain -- ./chain-config.json 97 '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297","bridgeAddress":"7fd5af01358a7dad582b2476aa821b75cebaf297000000000000000000000000"}'
+npm run update-chain -- ./chain-config.json 97 '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297"}'
 npm run tss-regroup-connectivity-check
 npm run tss-verify -- --party 1
 npm run tss-regroup -- --party 1 --chain-id 97 --is-old --new-threshold 3 --new-parties 5

@@ -227,20 +227,18 @@ All items in this section must be completed before starting the bridge processes
 
 > **Role: All party operators**
 
-Each party machine must have `chain-config.json` updated with the verified TSS sender address. Run the following on every party machine, replacing `<CHAIN_ID>` and `<EOA_ADDRESS>` with the values confirmed in Step 4.
-
-The `bridgeAddress` is the Ethereum address in lowercase without the `0x` prefix, right-zero-padded to 64 hex characters (32 bytes):
+Each party machine must have `chain-config.json` updated with the verified TSS sender address. Run the following on every party machine, replacing `<CHAIN_ID>` and `<EOA_ADDRESS>` with the values confirmed in Step 4. The Liberdus bridge account id is derived automatically from `tssSenderAddress`.
 
 ```bash
 npm run update-chain -- ./chain-config.json <CHAIN_ID> \
-  '{"tssSenderAddress":"<EOA_ADDRESS>","bridgeAddress":"<EOA_WITHOUT_0x_PADDED_TO_64_HEX>"}'
+  '{"tssSenderAddress":"<EOA_ADDRESS>"}'
 ```
 
 Example for chain 97 with EOA `0x7fD5AF01358a7dad582b2476aA821b75CebaF297`:
 
 ```bash
 npm run update-chain -- ./chain-config.json 97 \
-  '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297","bridgeAddress":"7fd5af01358a7dad582b2476aa821b75cebaf2970000000000000000000000000000000000000000000000000000000000000000"}'
+  '{"tssSenderAddress":"0x7fD5AF01358a7dad582b2476aA821b75CebaF297"}'
 ```
 
 The script deep-merges the supplied fields into every matching entry in `supportedChains`, `vaultChain`, and `secondaryChainConfig`, and writes a `.bak` backup before modifying the file.
