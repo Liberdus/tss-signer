@@ -1235,7 +1235,8 @@ async function processCoinToToken(
         maxRetries: 3,
       })
       updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
-      await gossipBridgeIn('evm', {
+      // Fire-and-forget gossip; transaction flow should not block on peer fanout.
+      void gossipBridgeIn('evm', {
         txId: normalizeTxId(txId),
         sourceChainId: 0,
         destinationChainId: targetChainId,
@@ -1386,7 +1387,8 @@ async function processCoinToToken(
 
   if (res.success) {
     updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
-    await gossipBridgeIn('evm', {
+    // Fire-and-forget gossip; transaction flow should not block on peer fanout.
+    void gossipBridgeIn('evm', {
       txId: normalizeTxId(txId),
       sourceChainId: 0,
       destinationChainId: targetChainId,
@@ -1576,7 +1578,8 @@ async function processVaultBridge(
         maxRetries: 3,
       })
       updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
-      await gossipBridgeIn('evm', {
+      // Fire-and-forget gossip; transaction flow should not block on peer fanout.
+      void gossipBridgeIn('evm', {
         txId: normalizeTxId(txId),
         sourceChainId,
         destinationChainId,
@@ -1725,7 +1728,8 @@ async function processVaultBridge(
 
   if (res.success) {
     updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, txHash, tssSender, TransactionDB.txNonce(senderNonce), '')
-    await gossipBridgeIn('evm', {
+    // Fire-and-forget gossip; transaction flow should not block on peer fanout.
+    void gossipBridgeIn('evm', {
       txId: normalizeTxId(txId),
       sourceChainId,
       destinationChainId,
@@ -1915,7 +1919,8 @@ async function processTokenToCoin(
 
   if (res.success) {
     updateTxStatusInLocalDB(txId, TransactionStatus.SUBMITTED, signedTxId, liberdusTssSender, TransactionDB.txReceiptTimestamp(liberdusReceiptTimestamp), '')
-    await gossipBridgeIn('liberdus', {
+    // Fire-and-forget gossip; transaction flow should not block on peer fanout.
+    void gossipBridgeIn('liberdus', {
       txId: normalizeTxId(txId),
       sourceChainId,
       receiptId: normalizeTxId(signedTxId),
