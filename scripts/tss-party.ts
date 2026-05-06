@@ -396,6 +396,18 @@ async function logStartupSignerBalances(): Promise<void> {
     } catch (error) {
       console.warn(`[startup] Failed to fetch signer balance for ${config.name} (${config.tssSenderAddress}):`, error)
     }
+
+    const liberdusAddress = toShardusAddress(config.tssSenderAddress)
+    try {
+      const liberdusBalance = await getLiberdusAccountBalance(liberdusAddress)
+      if (liberdusBalance == null) {
+        console.log(`Signer ${liberdusAddress} Liberdus balance: account not found`)
+      } else {
+        console.log(`Signer ${liberdusAddress} Liberdus balance: ${liberdusBalance} LIB`)
+      }
+    } catch (error) {
+      console.warn(`[startup] Failed to fetch Liberdus balance for ${liberdusAddress}:`, error)
+    }
   }
 }
 
