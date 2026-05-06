@@ -114,37 +114,6 @@ export type SignEthereumTxOptions = BasePartyOptions & {
   extraArgs?: string[]
 }
 
-type ResolvedInitPartyOptions = InitPartyOptions & {
-  partyIdx: number
-  chainId: number
-}
-
-type ResolvedKeygenOptions = KeygenOptions & {
-  partyIdx: number
-  chainId: number
-  extraArgs: string[]
-  useLocalPeerAddrs: boolean
-}
-
-type ResolvedRegroupOptions = RegroupOptions & {
-  partyIdx: number
-  chainId: number
-  extraArgs: string[]
-}
-
-type ResolvedVerifyOptions = VerifyOptions & {
-  partyIdx: number
-  chainId: number
-  format: DerivePubkeyFormat
-}
-
-type ResolvedSignEthereumTxOptions = SignEthereumTxOptions & {
-  partyIdx: number
-  chainId: number
-  txFile: string
-  extraArgs: string[]
-}
-
 type CommitteeTopologySnapshot = {
   peerAddrs: string[]
   expectedPeers: string[]
@@ -192,14 +161,6 @@ export function resolveToolingRoot(signerRoot = resolveProjectRoot()): string {
 
 export function resolveTssToolingRoot(tssRoot: string): string {
   return path.join(tssRoot, '.tooling');
-}
-
-function hasDirectoryEntries(dirPath: string): boolean {
-  try {
-    return fs.readdirSync(dirPath).length > 0;
-  } catch {
-    return false;
-  }
 }
 
 export function resolveTssRoot(signerRoot = resolveProjectRoot()): string {

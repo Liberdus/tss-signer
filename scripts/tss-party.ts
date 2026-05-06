@@ -1,7 +1,6 @@
 import 'dotenv/config'
 import {ethers} from 'ethers'
 import * as fs from 'fs'
-import {writeFile} from 'fs/promises'
 import * as path from 'path'
 import axios, {AxiosResponse} from 'axios'
 import http from 'http'
@@ -14,7 +13,6 @@ import {
   getConfiguredChains,
   getEffectiveChainIds,
   getChainConfigById,
-  isSigningChainConfig,
   requireSigningChainConfig,
   toNetworkChainId,
   ParamsConfig,
@@ -32,7 +30,7 @@ import {gossipBridgeIn} from './gossip'
 import * as TransactionDB from '../shared/storage/transactiondb'
 import {Transaction, TransactionStatus, TransactionType, ExecutionHistoryEntry} from '../shared/storage/transactiondb'
 
-const {BigNumber, utils: ethersUtils} = ethers
+const {utils: ethersUtils} = ethers
 
 ;(function enableTimestampedConsoleLogs() {
   const methods: Array<'log' | 'info' | 'warn' | 'error'> = ['log', 'info', 'warn', 'error']
@@ -50,7 +48,7 @@ const {BigNumber, utils: ethersUtils} = ethers
   }
 })()
 
-const {stringify, parse} = require(path.join(process.cwd(), 'external/stringify-shardus'))
+const {stringify} = require(path.join(process.cwd(), 'external/stringify-shardus'))
 
 interface ChainState {
   config: ChainConfig
@@ -147,7 +145,6 @@ const serverStartTime = Date.now()
 const params: ParamsConfig = paramsConfigRaw
 const chainConfigs: ChainConfigs = chainConfigsRaw
 
-let t = params.threshold
 let n = params.parties
 
 const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
@@ -994,7 +991,7 @@ async function signEthereumTransaction(
     console.error(`Failed to sign Ethereum transaction: ${errorMessage}`)
     return null
   }
-  const address = ethersUtils.recoverAddress(digest, signature)
+  // const address = ethersUtils.recoverAddress(digest, signature)
   const publicKey = ethersUtils.recoverPublicKey(digest, signature)
   const computeAddress = ethersUtils.computeAddress(publicKey)
   const signedTx = ethersUtils.serializeTransaction(tx, signature)
@@ -2115,72 +2112,6 @@ function checkPostTransactionMemory(txId: string, operationType: string) {
         freed: `${Math.round((usage.heapUsed - afterGC.heapUsed) / 1024 / 1024)} MB`
       })
     }
-  }
-}
-
-
-// Add emergency cleanup function for when queues get too large
-function emergencyCleanup() {
-  const now = Date.now()
-  let removedCount = 0
-  let backupCount = 0
-  const removedTxIds = new Set<string>()
-  
-  console.log('🚨 Running emergency cleanup due to large queue size')
-  
-
-  // Create an additional emergency backup with timestamp
-  const emergencyBackupPath = path.join(KEYSTORE_DIR, `emergency_backup_party_${ourParty.idx}_${now}.json`)
-  const backupData = {
-    timestamp: now,
-    reason: 'emergency_cleanup',
-    originalSize: txQueueMap.size,
-    pending: pendingTxQueue.map(tx => ({ ...tx, value: tx.value.toString(), receipt: undefined })),
-    map: Array.from(txQueueMap.entries()),
-  }
-  
-  try {
-    fs.writeFileSync(emergencyBackupPath, JSON.stringify(backupData, null, 2))
-    console.log(`💾 Emergency backup created: ${emergencyBackupPath}`)
-  } catch (error) {
-    console.error('❌ Failed to create emergency backup:', error)
-    // Don't proceed with cleanup if we can't backup
-    console.error('🛑 Aborting emergency cleanup due to backup failure')
-    return
-  }
-  
-  backupCount = pendingTxQueue.length
-
-  // Aggressive cleanup — remove anything older than 1h
-  for (const [txId, entry] of txQueueMap.entries()) {
-    const txAge = entry.txTimestamp > 0 ? now - entry.txTimestamp : now - serverStartTime
-    if (txAge > TX_CLEANUP_MAX_AGE) {
-      txQueueMap.delete(txId)
-      processingTransactionIds.delete(txId)
-      removedTxIds.add(txId)
-      removedCount++
-    }
-  }
-
-  if (removedTxIds.size > 0) {
-    for (let i = pendingTxQueue.length - 1; i >= 0; i--) {
-      if (removedTxIds.has(pendingTxQueue[i].txId)) {
-        appendToFailedTxsLogs(
-          pendingTxQueue[i],
-          'removed from pending queue during emergency cleanup due to max age',
-        )
-        pendingTxQueue.splice(i, 1)
-      }
-    }
-  }
-  
-  console.log(`🚨 Emergency cleanup removed ${removedCount} old transactions`)
-  console.log(`💾 Backed up ${backupCount} pending transactions to: ${emergencyBackupPath}`)
-  
-  // Force GC after emergency cleanup
-  if (global.gc) {
-    tryGC()
-    console.log('🗑️ Forced garbage collection after emergency cleanup')
   }
 }
 
