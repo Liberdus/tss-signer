@@ -8,7 +8,7 @@ export interface MonitorState {
   vault: Record<string, number>;
   blocks: Record<string, number>;
   bridgeInBlocks: Record<string, number>;
-  lastLiberdusTimestamp: number;
+  liberdusTimestampByChain: Record<string, number>; // chainId → unix ms of last processed Liberdus tx
   // Failed tx detection — keyed by chainId string
   failedTxScanBlocks: Record<string, number>;
   // Last known on-chain nonce per sender — keyed by `${chainId}:${tssSender}`
@@ -16,6 +16,7 @@ export interface MonitorState {
 }
 
 type LegacyMonitorState = Partial<MonitorState> & {
+  lastLiberdusTimestamp?: number;
   revertScanBlocks?: Record<string, number>;
   revertedNonces?: Record<string, number>;
 };
@@ -25,7 +26,7 @@ export const monitorState: MonitorState = {
   vault: {},
   blocks: {},
   bridgeInBlocks: {},
-  lastLiberdusTimestamp: Date.now(),
+  liberdusTimestampByChain: {},
   failedTxScanBlocks: {},
   failedTxNonces: {},
 };
@@ -49,6 +50,7 @@ export function initMonitorState(statePath: string): void {
       );
       Object.assign(monitorState, saved);
       if (!monitorState.bridgeInBlocks) monitorState.bridgeInBlocks = {};
+      if (!monitorState.liberdusTimestampByChain) monitorState.liberdusTimestampByChain = {};
       if (saved.failedTxScanBlocks == null && saved.revertScanBlocks) {
         monitorState.failedTxScanBlocks = saved.revertScanBlocks;
       }
@@ -57,9 +59,10 @@ export function initMonitorState(statePath: string): void {
       }
       if (!monitorState.failedTxScanBlocks) monitorState.failedTxScanBlocks = {};
       if (!monitorState.failedTxNonces) monitorState.failedTxNonces = {};
-      if (saved.revertScanBlocks || saved.revertedNonces) {
+      if (saved.revertScanBlocks || saved.revertedNonces || saved.lastLiberdusTimestamp != null) {
         delete (monitorState as LegacyMonitorState).revertScanBlocks;
         delete (monitorState as LegacyMonitorState).revertedNonces;
+        delete (monitorState as LegacyMonitorState).lastLiberdusTimestamp;
         saveMonitorState();
       }
     } catch (e) {

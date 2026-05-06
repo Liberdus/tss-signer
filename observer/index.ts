@@ -117,7 +117,9 @@ app.get("/health", (_req, res) => {
         bridgeInBlocks: monitorState.bridgeInBlocks,
         failedTxScanBlocks: monitorState.failedTxScanBlocks,
         failedTxNonces: monitorState.failedTxNonces,
-        lastLiberdusTimestamp: new Date(monitorState.lastLiberdusTimestamp).toISOString(),
+        liberdusTimestampByChain: Object.fromEntries(
+          Object.entries(monitorState.liberdusTimestampByChain).map(([k, v]) => [k, new Date(v).toISOString()])
+        ),
       },
       transactions: counts,
       memory: {
@@ -464,19 +466,19 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
 
     initMonitorState(STATE_PATH);
     console.log(
-      "[observer] Monitor state loaded. Last Liberdus timestamp:",
-      new Date(monitorState.lastLiberdusTimestamp).toISOString()
+      "[observer] Monitor state loaded. Liberdus cursors:",
+      monitorState.liberdusTimestampByChain
     );
 
     if (shouldSkipOldData()) {
       console.log("[observer] OBSERVER_SKIP_OLD_DATA enabled; seeding monitor cursors to latest data");
       await seedEthereumMonitorStateToLatest();
-      monitorState.lastLiberdusTimestamp = Date.now();
+      const now = Date.now();
+      for (const chainIdStr of Object.keys(chainConfigsRaw.supportedChains)) {
+        monitorState.liberdusTimestampByChain[chainIdStr] = now;
+      }
       saveMonitorState();
-      console.log(
-        "[observer] Liberdus cursor seeded to:",
-        new Date(monitorState.lastLiberdusTimestamp).toISOString()
-      );
+      console.log("[observer] Liberdus cursors seeded to:", new Date(now).toISOString());
     }
 
     // Bind HTTP port before sync so tss-party gets syncReady:false instead of ECONNREFUSED
