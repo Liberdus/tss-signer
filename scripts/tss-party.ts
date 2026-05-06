@@ -154,7 +154,7 @@ const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const TSS_SIGN_PROCESS_TIMEOUT_MS = TSS_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
 const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
-const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 15 * 1000 // 15s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
+const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 30 * 1000 // 30s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
 // Shared bridge contract ABI for state reads and bridgeIn
@@ -1071,11 +1071,11 @@ async function injectEthereumTx(
       { maxRetries: 1, timeoutMs: TSS_PARTY_SEND_TX_TIMEOUT_MS },
     )
     console.log('BridgeIn transaction sent successfully!', txResponse.hash)
+    return {success: true}
   } catch (e: any) {
     console.log('Error sending ethereum transaction:', txHash, e.message)
     throw e
   }
-  return {success: true}
 }
 
 async function injectLiberdusTx(
@@ -1085,14 +1085,12 @@ async function injectLiberdusTx(
   try {
     const body = {tx: stringify(signedTx)}
     const injectUrl = proxyServerHost + '/inject'
-    const waitTime = (signedTx.timestamp ?? 0) - Date.now()
-    console.log(`Waiting for ${waitTime} ms before injecting transaction...`)
-    if (waitTime > 0) await sleep(waitTime)
     const res = await axios.post(injectUrl, body)
     console.log('Liberdus tx inject response:', res.data)
     if (res.status !== 200 || res.data?.result?.success !== true)
       throw new Error(res.data?.result?.reason || 'Transaction injection failed')
     console.log('BridgeOut transaction sent successfully!', txId)
+    return {success: true}
   } catch (e: any) {
     const reason = e?.message ?? String(e)
     const normalizedReason = `${reason}`.toLowerCase()
@@ -1105,7 +1103,6 @@ async function injectLiberdusTx(
     console.log('Error sending liberdus transaction:', txId, reason)
     throw e
   }
-  return {success: true}
 }
 
 async function processCoinToToken(
@@ -1873,9 +1870,28 @@ async function processTokenToCoin(
     if (txData) appendToFailedTxsLogs(txData, `failed to sign liberdus transaction from ${sourceChainName}`)
     return 'incompleted'
   }
+  const postSign = reconcileTxStatusWithLocalDB(txId, 'post-sign')
+  if (postSign != null) return dbStatusToSkipOutcome(postSign)
+
   // Compute txId from signedTx
   const signedTxId = crypto.hashObj(signedTx as SignedTx, true)
   console.log('Transaction Id:', signedTxId)
+
+  const now = Date.now()
+  if (tx.timestamp < now) {
+    console.warn(`[processTokenToCoin] Signed tx timestamp already expired for ${txId} (ts=${tx.timestamp}, now=${now}), aborting submission`)
+    return 'incompleted'
+  }
+
+  const waitTime = tx.timestamp - now
+  if (waitTime > 0) {
+    console.log(`Waiting ${waitTime}ms for Liberdus tx timestamp to become valid`)
+    await sleep(waitTime)
+  }
+
+  const preSubmit = reconcileTxStatusWithLocalDB(txId, 'pre-submit')
+  if (preSubmit != null) return dbStatusToSkipOutcome(preSubmit)
+
   let res: { success: boolean; reason?: string }
   // Retry injection with linear delay progression
   try {
