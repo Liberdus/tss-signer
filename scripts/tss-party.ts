@@ -2207,7 +2207,7 @@ async function getLiberdusReceipt(txId: string, maxRetries = 30): Promise<any> {
   while (count < maxRetries) {
     // try up to <maxRetries> times/seconds
     try {
-      response = await axios.get(url)
+      response = await axios.get(url, { timeout: 5_000 })
       if (response && response.status === 200) {
         if (
           response.data &&
@@ -2234,7 +2234,7 @@ async function getLiberdusAccountBalance(address: string): Promise<string | null
   let balance: string | null = null
   while (count < 10) {
     try {
-      response = await axios.get(url)
+      response = await axios.get(url, { timeout: 5_000 })
       if (response && response.status === 200) {
         const rawValue = response.data.account?.data?.balance?.value
         if (rawValue == null) break
@@ -2274,7 +2274,7 @@ async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exis
 
 async function getLatestCycleRecord(): Promise<any> {
   const url = collectorHost + '/api/cycleinfo?count=1'
-  const response = await axios.get(url)
+  const response = await axios.get(url, { timeout: 5_000 })
   const {success, cycles} = response.data
   if (success && Array.isArray(cycles) && cycles.length > 0) return cycles[0].cycleRecord ?? null
   return null
