@@ -18,6 +18,55 @@ function getChainName(chainId: number): string {
 export type GossipBridgeInPayload = EVMBridgeInGossipPayload | LiberdusBridgeInGossipPayload;
 export type GossipBridgeInRoute = "evm" | "liberdus";
 
+function logLiberdusGossip(
+  phase: "start" | "failed" | "complete",
+  payload: LiberdusBridgeInGossipPayload,
+  sourceChainLabel: string,
+  peers: number,
+  options?: { endpoint?: string; reason?: string; delivered?: number },
+): void {
+  const destinationChainLabel = "Liberdus";
+  if (phase === "start") {
+    console.log(
+      `[gossip/liberdus] Liberdus BridgeIn submitted fanout start txId=${payload.txId} receiptId=${payload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} peers=${peers}`,
+    );
+    return;
+  }
+  if (phase === "failed") {
+    console.warn(
+      `[gossip/liberdus] failed to send submitted Liberdus BridgeIn tx txId=${payload.txId} receiptId=${payload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} to ${options?.endpoint}: ${options?.reason}`,
+    );
+    return;
+  }
+  console.log(
+    `[gossip/liberdus] Liberdus BridgeIn submitted fanout complete txId=${payload.txId} receiptId=${payload.receiptId} sourceChain=${sourceChainLabel} destinationChain=${destinationChainLabel} delivered=${options?.delivered}/${peers}`,
+  );
+}
+
+function logEvmGossip(
+  phase: "start" | "failed" | "complete",
+  payload: EVMBridgeInGossipPayload,
+  destinationChainLabel: string,
+  peers: number,
+  options?: { endpoint?: string; reason?: string; delivered?: number },
+): void {
+  if (phase === "start") {
+    console.log(
+      `[gossip/evm] EVM BridgeIn submitted fanout start txId=${payload.txId} receiptId=${payload.receiptId} sourceChain=Liberdus destinationChain=${destinationChainLabel} peers=${peers}`,
+    );
+    return;
+  }
+  if (phase === "failed") {
+    console.warn(
+      `[gossip/evm] failed to send submitted EVM BridgeIn tx txId=${payload.txId} receiptId=${payload.receiptId} sourceChain=Liberdus destinationChain=${destinationChainLabel} to ${options?.endpoint}: ${options?.reason}`,
+    );
+    return;
+  }
+  console.log(
+    `[gossip/evm] EVM BridgeIn submitted fanout complete txId=${payload.txId} receiptId=${payload.receiptId} sourceChain=Liberdus destinationChain=${destinationChainLabel} delivered=${options?.delivered}/${peers}`,
+  );
+}
+
 export async function gossipBridgeIn(
   route: GossipBridgeInRoute,
   payload: GossipBridgeInPayload,
