@@ -3,6 +3,7 @@ import path from "path";
 import { resolveProjectRoot } from "./paths";
 
 interface ChainConfigLike {
+  isRemote?: boolean;
   observerUrls?: string[];
 }
 
@@ -13,22 +14,35 @@ interface PeerObserverSelectionOptions {
 
 const cachedPeerObserverUrlsByKey = new Map<string, string[]>();
 
-function tryLoadObserverUrlsFromChainConfig(rootDir: string): string[] {
+function readObserverConfigFromChainConfig(rootDir: string): { isRemote: boolean; observerUrls: string[] } {
   const configPath = path.join(rootDir, "chain-config.json");
-  if (!fs.existsSync(configPath)) return [];
+  if (!fs.existsSync(configPath)) {
+    return { isRemote: false, observerUrls: [] };
+  }
   try {
     const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as ChainConfigLike;
-    if (!Array.isArray(raw.observerUrls)) return [];
-    return raw.observerUrls.map((entry) => `${entry || ""}`.trim()).filter(Boolean);
+    const isRemote = raw.isRemote === true;
+    const observerUrls = Array.isArray(raw.observerUrls)
+      ? raw.observerUrls.map((entry) => `${entry || ""}`.trim()).filter(Boolean)
+      : [];
+    return { isRemote, observerUrls };
   } catch {
-    return [];
+    return { isRemote: false, observerUrls: [] };
   }
 }
 
 export function buildObserverUrls(parties: number, rootDir = resolveProjectRoot()): string[] {
-  const configuredObserverUrls = tryLoadObserverUrlsFromChainConfig(rootDir);
-  if (configuredObserverUrls.length > 0) {
-    return configuredObserverUrls;
+  const { isRemote, observerUrls } = readObserverConfigFromChainConfig(rootDir);
+  if (isRemote) {
+    if (observerUrls.length === 0) {
+      throw new Error(
+        '[observerPeers] isRemote is true but observerUrls is empty in chain-config.json',
+      );
+    }
+    return observerUrls;
+  }
+  if (observerUrls.length > 0) {
+    return observerUrls;
   }
 
   const count = Math.max(1, parties);

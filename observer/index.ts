@@ -128,7 +128,7 @@ app.get("/health", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Transactions API (compat with bridge UI coordinator endpoint)
+// Transactions API (compat with bridge UI endpoint)
 // ---------------------------------------------------------------------------
 
 const TX_PAGE_SIZE = 10;
