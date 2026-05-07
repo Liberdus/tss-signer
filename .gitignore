@@ -6,6 +6,7 @@ keystores
 yarn-error.log
 package-lock.json
 *.log
+logs/
 tx.json
 
 # Environment variables

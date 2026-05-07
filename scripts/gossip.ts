@@ -83,7 +83,9 @@ export async function gossipBridgeIn(
     ? "/bridgein/liberdus/submitted"
     : "/bridgein/evm/submitted";
   // Only the liberdus route carries sourceChainId in payload; evm route source is always Liberdus.
-  const sourceChainLabel = `${getChainName(liberdusPayload.sourceChainId)}(${liberdusPayload.sourceChainId})`;
+  const sourceChainLabel = isLiberdusPayload
+    ? `${getChainName(liberdusPayload.sourceChainId)}(${liberdusPayload.sourceChainId})`
+    : "Liberdus";
   const destinationChainLabel = isLiberdusPayload
     ? "Liberdus"
     : `${getChainName(evmPayload.destinationChainId)}(${evmPayload.destinationChainId})`;

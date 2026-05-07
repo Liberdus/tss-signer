@@ -1,5 +1,6 @@
 {
   "useInfuraRpcProviders": false,
+  "isRemote": false,
   "observerUrls": [],
   "vaultChain": {
     "name": "Polygon Amoy Testnet",

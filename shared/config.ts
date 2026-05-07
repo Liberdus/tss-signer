@@ -40,6 +40,7 @@ export interface ChainConfigs {
   supportedChains: Record<string, ChainConfig>
   vaultChain?: VaultChainConfig
   secondaryChainConfig?: ChainConfig
+  isRemote?: boolean
   observerUrls?: string[]
   enableLiberdusNetwork: boolean
   /**
@@ -128,8 +129,26 @@ function validateLiberdusBridgeGuards(chainConfigs: ChainConfigs): void {
   }
 }
 
+function validateObserverSetup(chainConfigs: ChainConfigs): void {
+  if (typeof chainConfigs.isRemote !== 'undefined' && typeof chainConfigs.isRemote !== 'boolean') {
+    throw new Error('[config] isRemote must be a boolean when provided')
+  }
+  const isRemote = chainConfigs.isRemote === true
+  if (isRemote) {
+    const observerUrls = Array.isArray(chainConfigs.observerUrls)
+      ? chainConfigs.observerUrls.map((url) => `${url ?? ''}`.trim()).filter(Boolean)
+      : []
+    if (observerUrls.length === 0) {
+      throw new Error(
+        '[config] isRemote is true but observerUrls is empty. Configure chain-config.json observerUrls for remote deployments.',
+      )
+    }
+  }
+}
+
 export function validateChainConfigs(chainConfigs: ChainConfigs): ChainConfigs {
   validateLiberdusBridgeGuards(chainConfigs)
+  validateObserverSetup(chainConfigs)
 
   if (chainConfigs.enableLiberdusNetwork) {
     for (const [chainId, config] of Object.entries(chainConfigs.supportedChains)) {
