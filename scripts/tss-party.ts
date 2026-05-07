@@ -150,7 +150,6 @@ let n = params.parties
 const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const TSS_SIGN_PROCESS_TIMEOUT_MS = TSS_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
-const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
 const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 30 * 1000 // 30s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
 
 // Unified BridgedOut event ABI (all contracts use this 5-param signature)
@@ -431,7 +430,9 @@ const txQueueMap: Map<string, TxQueueEntry> = new Map()
 const pendingTxQueueRemovalSet = new Set<string>()
 const txQueueProcessingInterval = 10000
 const TX_POLL_INTERVAL = 10 * 1000 // 10s
-const TX_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes total, covering the 1.5-minute signing timeout and the 1-minute bridge-in cooldown within the same window
+
+const TX_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes - hard limit to prevent a stuck tx from blocking the queue indefinitely
+const TX_PROCESSING_TIMEOUT_ERROR = 'tx-processing-timeout'
 
 const TX_CLEANUP_MAX_AGE = 60 * 60 * 1000 // 1 hour for all statuses
 
@@ -1487,7 +1488,6 @@ async function processVaultBridge(
   const tssSender = destChainState.config.tssSenderAddress
   const normalizedTxId = normalizeTxId(txId)
   let senderNonce = getLocalNonce(destinationChainId, tssSender)
-
   console.log(`Processing vault bridge: ${sourceChainName} -> ${destChainName}`)
 
   if (!await checkMaxBridgeAmount(destChainState, value)) {
@@ -1853,6 +1853,10 @@ async function processTokenToCoin(
   }
   tx.chatId = calculateChatId(tx.from, tx.to)
   const currentCycleRecord = await getLatestCycleRecord()
+  if (currentCycleRecord == null) {
+    console.warn(`[processTokenToCoin] Failed to fetch cycle record for ${txId}, retrying later`)
+    return 'incompleted'
+  }
   tx.timestamp = deriveLocalFutureTimestamp(currentCycleRecord)
   console.log(
     `Current timestamp: ${new Date(Date.now())}, Future timestamp: ${new Date(tx.timestamp)}, Wait time: ${tx.timestamp - Date.now()}`,
@@ -2268,11 +2272,8 @@ async function main(): Promise<void> {
   for (const chainId of getEffectiveChainIds(chainConfigs)) {
     const config = requireSigningChainConfig(chainConfigs, chainId)
 
-    try {
-      await initNonceManager(chainId, config.tssSenderAddress)
-    } catch (e) {
-      console.warn(`[nonce-manager] Failed to initialize for chain ${chainId}:`, e)
-    }
+    // Hard fail — should not proceed with an unknown nonce of the TSS signer.
+    await initNonceManager(chainId, config.tssSenderAddress)
   }
   await logStartupSignerBalances()
 

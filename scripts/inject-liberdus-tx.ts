@@ -54,7 +54,7 @@ const collectorHost = process.env.COLLECTOR_HOST || chainConfigsRaw.collectorHos
 const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
 const TSS_SIGN_PROCESS_TIMEOUT_MS = TSS_SIGN_DISCOVERY_TIMEOUT_MS + 30 * 1000
-const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 15 * 1000 // 15s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
+const LIBERDUS_TIMESTAMP_MIN_FUTURE_MS = TSS_SIGN_PROCESS_TIMEOUT_MS + 30 * 1000 // 30s higher than TSS_SIGN_PROCESS_TIMEOUT_MS
 
 crypto.init(CRYPTO_INIT_KEY)
 crypto.setCustomStringifier(stringify, 'shardus_safeStringify')
@@ -380,7 +380,9 @@ async function main(): Promise<void> {
   }
 
   if (!tx.timestamp) {
-    const currentCycleRecord = await getLatestCycleRecord()
+    const currentCycleRecord = await getLatestCycleRecord().catch((e) => {
+      throw new Error(`Failed to fetch cycle record for timestamp derivation: ${e.message}`)
+    })
     tx.timestamp = deriveLocalFutureTimestamp(currentCycleRecord)
   }
 
