@@ -79,14 +79,19 @@ export async function monitorLiberdusTransactions(): Promise<void> {
       }
       let maxTimestamp = sinceTimestamp;
 
+      const MAX_PAGES_PER_RUN = 100;
       let page = 1;
-      while (true) {
+      while (page <= MAX_PAGES_PER_RUN) {
         const query = `?accountId=${bridgeAddress}&afterTimestamp=${sinceTimestamp}&page=${page}`;
         const url = collectorHost + "/api/transaction" + query;
         const response = await axios.get(url, { timeout: 30_000 });
         const { success, transactions } = response.data;
 
         if (!success || !transactions || transactions.length === 0) break;
+        if (page === MAX_PAGES_PER_RUN) {
+          console.log(`[observer/liberdus] Reached MAX_PAGES_PER_RUN (${MAX_PAGES_PER_RUN}) for chain ${chainIdStr}, will resume next cycle`);
+          break;
+        }
 
         for (const receipt of transactions) {
           if (receipt.timestamp > maxTimestamp) {
@@ -223,7 +228,8 @@ function parseLiberdusBridgeTx(
 
     return null;
   } catch (e) {
-    console.error("[observer/liberdus] parseLiberdusBridgeTx error:", e);
+    const txId = receipt?.data?.txId ?? null
+    console.error(`[observer/liberdus] parseLiberdusBridgeTx error${txId ? ` (txId=${txId})` : ''} — tx dropped:`, e);
     return null;
   }
 }
@@ -418,7 +424,7 @@ async function verifySourceBridgeTx(
   if (toEthereumAddress(tx.tssSender ?? "") !== toEthereumAddress(chainConfig.tssSenderAddress)) {
     return { ok: false, reason: "tssSender_mismatch" };
   }
-  if (tx.receiptTimestamp !== receiptTxTimestamp) {
+  if (tx.receiptTimestamp == null || tx.receiptTimestamp !== receiptTxTimestamp) {
     console.warn(
       `[observer/liberdus] receiptTimestamp_mismatch txId=${tx.txId} tx.receiptTimestamp=${tx.receiptTimestamp} receiptTxTimestamp=${receiptTxTimestamp}`,
     );
