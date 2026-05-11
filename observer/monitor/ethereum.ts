@@ -15,9 +15,9 @@ const BRIDGE_IN_EVENT_ABI =
 const BRIDGE_IN_FUNCTION_ABI =
   "function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public";
 
-const BRIDGE_OUT_IFACE = new ethers.utils.Interface([BRIDGE_OUT_EVENT_ABI]);
-const BRIDGE_IN_IFACE = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
-const BRIDGE_IN_CALL_IFACE = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
+const BRIDGE_OUT_IFACE = new ethers.Interface([BRIDGE_OUT_EVENT_ABI]);
+const BRIDGE_IN_IFACE = new ethers.Interface([BRIDGE_IN_EVENT_ABI]);
+const BRIDGE_IN_CALL_IFACE = new ethers.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 const INITIAL_BATCH_SIZE = 2000;
 const MIN_BATCH_SIZE = 100;
@@ -122,7 +122,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
 
       while (cursor <= toBlock) {
         const batchEnd = Math.min(cursor + batchSize - 1, toBlock);
-        let events: ethers.Event[];
+        let events: ethers.EventLog[];
 
         try {
           events = await observerChainRpc.withChainHttpProvider(
@@ -133,7 +133,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
                 BRIDGE_OUT_IFACE,
                 provider
               );
-              return contract.queryFilter(contract.filters.BridgedOut(), cursor, batchEnd);
+              return contract.queryFilter(contract.filters.BridgedOut(), cursor, batchEnd) as Promise<ethers.EventLog[]>;
             },
             { maxRetries: 3, timeoutMs: 30_000 }
           );
@@ -185,9 +185,9 @@ export async function monitorEthereumBridgeOutQueryFilter(
           if (!event.args) continue;
 
           const targetAddress = event.args.targetAddress as string;
-          const amount = event.args.amount as ethers.BigNumber;
-          const parsedChainId = (event.args.chainId as ethers.BigNumber).toNumber();
-          const eventTimestamp = (event.args.timestamp as ethers.BigNumber).toNumber();
+          const amount = event.args.amount as bigint;
+          const parsedChainId = Number(event.args.chainId as bigint);
+          const eventTimestamp = Number(event.args.timestamp as bigint);
 
           if (parsedChainId !== chainId) continue;
 
@@ -233,7 +233,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
           const tx: TransactionDB.Transaction = {
             txId,
             sender: toEthereumAddress(targetAddress),
-            value: ethers.utils.hexValue(amount),
+            value: ethers.toQuantity(amount),
             type: txType,
             txTimestamp: eventTimestamp * 1000,
             chainId,
@@ -326,7 +326,7 @@ export async function monitorEthereumBridgeInQueryFilter(
 
       while (cursor <= toBlock) {
         const batchEnd = Math.min(cursor + batchSize - 1, toBlock);
-        let events: ethers.Event[];
+        let events: ethers.EventLog[];
 
         try {
           events = await observerChainRpc.withChainHttpProvider(
@@ -337,7 +337,7 @@ export async function monitorEthereumBridgeInQueryFilter(
                 BRIDGE_IN_IFACE,
                 provider
               );
-              return contract.queryFilter(contract.filters.BridgedIn(), cursor, batchEnd);
+              return contract.queryFilter(contract.filters.BridgedIn(), cursor, batchEnd) as Promise<ethers.EventLog[]>;
             },
             { maxRetries: 3, timeoutMs: 30_000 }
           );
@@ -439,17 +439,17 @@ export async function monitorEthereumBridgeInQueryFilter(
           const txType = isVaultMode
             ? TransactionDB.TransactionType.BRIDGE_VAULT
             : TransactionDB.TransactionType.BRIDGE_IN;
-          const eventTimestamp = (event.args.timestamp as ethers.BigNumber).toNumber();
+          const eventTimestamp = Number(event.args.timestamp as bigint);
           const eventReceiptId = normalizeTxId(event.transactionHash);
 
           // BRIDGE_VAULT records are stored under the vault (source) chain ID, not the secondary chain.
           const earlyTx: TransactionDB.Transaction = {
             txId,
             sender: toEthereumAddress(event.args.to as string),
-            value: ethers.utils.hexValue(event.args.amount as ethers.BigNumber),
+            value: ethers.toQuantity(event.args.amount as bigint),
             type: txType,
             txTimestamp: eventTimestamp * 1000,
-            chainId: isVaultMode ? chainConfigsRaw.vaultChain!.chainId : (event.args.chainId as ethers.BigNumber).toNumber(),
+            chainId: isVaultMode ? chainConfigsRaw.vaultChain!.chainId : Number(event.args.chainId as bigint),
             receiptId: eventReceiptId,
             status: TransactionDB.TransactionStatus.COMPLETED,
             tssSender: chainConfig.tssSenderAddress.toLowerCase() || null,
@@ -633,10 +633,10 @@ export async function monitorFailedBridgeIns(targetChainId?: number): Promise<bo
       for (let blockNum = fromBlock + 1; blockNum <= toBlock && pendingMissingNonces.size > 0; blockNum++) {
         scannedThroughBlock = blockNum;
         const block = await observerChainRpc.withChainHttpProvider(
-          chainId, (p) => p.getBlockWithTransactions(blockNum), { maxRetries: 3 });
+          chainId, (p) => p.getBlock(blockNum, true), { maxRetries: 3 });
 
         if (block) {
-          for (const tx of block.transactions) {
+          for (const tx of block.prefetchedTransactions) {
             if (tx.from?.toLowerCase() !== tssSender) continue;
             if (tx.to?.toLowerCase() !== bridgeContract) continue;
 

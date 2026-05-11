@@ -17,7 +17,7 @@ export interface InitializedRpcConfig {
   invalidateChainHttpProvider: (chainId: number) => void
   withChainHttpProvider: <T>(
     chainId: number,
-    fn: (provider: ethers.providers.JsonRpcProvider) => Promise<T>,
+    fn: (provider: ethers.JsonRpcProvider) => Promise<T>,
     options?: Omit<WithCachedRetryOptions, 'fallbackRpcUrl'>,
   ) => Promise<T>
 }
@@ -25,7 +25,7 @@ export interface InitializedRpcConfig {
 export function buildChainProviderMap<T>(
   chains: ChainConfig[],
   rpcConfig: InitializedRpcConfig,
-  buildEntry: (config: ChainConfig, provider: ethers.providers.JsonRpcProvider) => T,
+  buildEntry: (config: ChainConfig, provider: ethers.JsonRpcProvider) => T,
 ): Map<number, T> {
   const entries = new Map<number, T>()
 
@@ -91,7 +91,7 @@ export function initializeChainRpcConfig(
 
   async function withChainHttpProvider<T>(
     chainId: number,
-    fn: (provider: ethers.providers.JsonRpcProvider) => Promise<T>,
+    fn: (provider: ethers.JsonRpcProvider) => Promise<T>,
     providerOptions: Omit<WithCachedRetryOptions, 'fallbackRpcUrl'> = {},
   ): Promise<T> {
     return withCachedHttpProvider(chainId, getHttpRpcUrlsForChain(chainId), fn, {

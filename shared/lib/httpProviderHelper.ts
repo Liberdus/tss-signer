@@ -2,7 +2,6 @@ import { ethers } from "ethers";
 import { markUrlFailed, pickAvailableUrlFromList, shouldBlacklistForError } from "./rpcUrls";
 import { toNetworkChainId } from "../config";
 
-const { providers } = ethers;
 export interface GetProviderOptions {
   fallbackRpcUrl?: string;
   chainId?: number;
@@ -40,7 +39,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs?: number): Promise<
 export function getHttpProviderForChain(
   httpUrls: string[],
   options: GetProviderOptions = {},
-): ethers.providers.JsonRpcProvider {
+): ethers.JsonRpcProvider {
   const url =
     httpUrls.length > 0 ? pickAvailableUrlFromList(httpUrls) : options.fallbackRpcUrl;
   if (!url) throw new Error("No HTTP RPC URL available and no fallback");
@@ -49,13 +48,13 @@ export function getHttpProviderForChain(
     options.chainId != null
       ? { chainId: toNetworkChainId(options.chainId), name: "unknown" }
       : undefined;
-  return new providers.JsonRpcProvider(url, network);
+  return new ethers.JsonRpcProvider(url, network);
 }
 
 
 export async function withHttpProviderRetry<T>(
   httpUrls: string[],
-  fn: (provider: ethers.providers.JsonRpcProvider) => Promise<T>,
+  fn: (provider: ethers.JsonRpcProvider) => Promise<T>,
   options: WithRetryOptions = {},
 ): Promise<T> {
   const maxRetries = Math.max(1, options.maxRetries ?? 3);
@@ -88,7 +87,7 @@ export async function withHttpProviderRetry<T>(
   throw lastError;
 }
 
-const providerCache = new Map<number, { provider: ethers.providers.JsonRpcProvider; url: string }>();
+const providerCache = new Map<number, { provider: ethers.JsonRpcProvider; url: string }>();
 
 export function invalidateCachedProvider(chainId: number): void {
   providerCache.delete(chainId);
@@ -97,7 +96,7 @@ export function invalidateCachedProvider(chainId: number): void {
 export async function withCachedHttpProvider<T>(
   chainId: number,
   httpUrls: string[],
-  fn: (provider: ethers.providers.JsonRpcProvider) => Promise<T>,
+  fn: (provider: ethers.JsonRpcProvider) => Promise<T>,
   options: WithCachedRetryOptions = {}
 ): Promise<T> {
   const maxRetries = Math.max(1, options.maxRetries ?? 3);

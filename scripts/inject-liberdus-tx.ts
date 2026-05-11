@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import {ethers} from 'ethers'
-import * as crypto from '@shardus/crypto-utils'
+import * as crypto from '@shardus/lib-crypto-utils'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import axios from 'axios'
@@ -167,7 +167,7 @@ function verifySignedTx(tx: SignedLiberdusTx): boolean {
   const dataWithoutSign: TxObject = {...tx}
   delete dataWithoutSign.sign
   const message = crypto.hashObj(dataWithoutSign)
-  const recoveredAddress = ethers.utils.verifyMessage(message, sig)
+  const recoveredAddress = ethers.verifyMessage(message, sig)
   const recoveredShardusAddress = toShardusAddress(recoveredAddress)
   const isValid = recoveredShardusAddress.toLowerCase() === owner.toLowerCase()
   console.log(`  Verification - owner: ${owner}`)
@@ -394,7 +394,7 @@ async function main(): Promise<void> {
   console.log(`Vault Path Mode:   ${useDefaultSlotPath ? 'default-slot' : `party-${partyIdx}`}`)
 
   const hashMessage = crypto.hashObj(tx)
-  const digest = ethers.utils.hashMessage(hashMessage)
+  const digest = ethers.hashMessage(hashMessage)
   const unsignedTxId = crypto.hashObj(tx)
   const channelId =
     requireStringFlag(flags, 'channel-id') ||
@@ -436,7 +436,7 @@ async function main(): Promise<void> {
     s: signed.s,
     v: signed.v,
   }
-  const serializedSignature = ethers.utils.joinSignature(signature)
+  const serializedSignature = ethers.Signature.from(signature).serialized
 
   const signedTx: SignedLiberdusTx = {
     ...tx,

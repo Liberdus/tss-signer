@@ -105,7 +105,7 @@ export type VerifyOptions = BasePartyOptions & {
 
 export type SignEthereumTxOptions = BasePartyOptions & {
   txFile?: string
-  tx?: ethers.UnsignedTransaction
+  tx?: ethers.TransactionLike
   channelId?: string
   channelPassword?: string
   signDiscoveryTimeout?: string
@@ -1126,7 +1126,7 @@ export function validatePartyVaults(options: Omit<BasePartyOptions, 'chainId'> &
     const derived = derivePubkey({...options, chainId, format: 'all'}) as DerivedPubkeyAll;
     const expectedAddress = options.expectedAddressesByChainId?.[chainId];
     if (expectedAddress) {
-      if (ethers.utils.getAddress(derived.ethereum_address) !== ethers.utils.getAddress(expectedAddress)) {
+      if (ethers.getAddress(derived.ethereum_address) !== ethers.getAddress(expectedAddress)) {
         throw new Error(
           `BNB TSS address mismatch for chain ${chainId}: derived ${derived.ethereum_address}, expected ${expectedAddress}`,
         );
@@ -1147,14 +1147,14 @@ function toMessageDecimal(digestHex: string): string {
 }
 
 function deriveRecoveryId(digestHex: string, signature: {r: string; s: string}, expectedAddress: string): number {
-  const normalized = ethers.utils.getAddress(expectedAddress);
+  const normalized = ethers.getAddress(expectedAddress);
   for (const recoveryParam of [0, 1]) {
-    const recovered = ethers.utils.recoverAddress(digestHex, {
+    const recovered = ethers.recoverAddress(digestHex, ethers.Signature.from({
       r: signature.r,
       s: signature.s,
-      recoveryParam,
-    });
-    if (ethers.utils.getAddress(recovered) === normalized) {
+      v: 27 + recoveryParam,
+    }));
+    if (ethers.getAddress(recovered) === normalized) {
       return recoveryParam;
     }
   }
@@ -1197,7 +1197,7 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
   const signatureHex = extractSignatureHex(`${result.stdout}\n${result.stderr}`);
   const signature = parseCompactSignature(signatureHex);
   const derived = derivePubkey({...options, signerRoot, tssRoot, format: 'all'}) as DerivedPubkeyAll;
-  const ethereumAddress = ethers.utils.getAddress(derived.ethereum_address);
+  const ethereumAddress = ethers.getAddress(derived.ethereum_address);
   const recoveryParam = deriveRecoveryId(options.digest, signature, ethereumAddress);
   return {
     digest: options.digest,
@@ -1214,21 +1214,17 @@ export async function signDigest(options: SignEthereumTxOptions & {digest: strin
 }
 
 export async function signEthereumTransaction(options: SignEthereumTxOptions = {} as SignEthereumTxOptions): Promise<SignEthereumTransactionResult> {
-  const digest = ethers.utils.keccak256(ethers.utils.serializeTransaction(options.tx));
+  const digest = ethers.keccak256(ethers.Transaction.from(options.tx).unsignedSerialized);
   const signed = await signDigest({...options, digest});
-  const signature = {
-    r: signed.r,
-    s: signed.s,
-    v: signed.v,
-  };
-  const signedTx = ethers.utils.serializeTransaction(options.tx, signature);
-  const recovered = ethers.utils.recoverAddress(digest, signature);
-  if (ethers.utils.getAddress(recovered) !== signed.ethereumAddress) {
+  const signature = ethers.Signature.from({ r: signed.r, s: signed.s, v: signed.v });
+  const signedTx = ethers.Transaction.from({ ...options.tx, signature }).serialized;
+  const recovered = ethers.recoverAddress(digest, signature);
+  if (ethers.getAddress(recovered) !== signed.ethereumAddress) {
     throw new Error(`Recovered signer ${recovered} does not match ${signed.ethereumAddress}`);
   }
   return {
     signedTx,
-    txHash: ethers.utils.keccak256(signedTx),
+    txHash: ethers.keccak256(signedTx),
     digest,
     ...signed,
   };

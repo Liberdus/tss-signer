@@ -38,7 +38,7 @@ Each party index (1–5) runs a paired **observer** and **TSS party** process. B
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - PM2 (`npm install -g pm2`)
 
 ## Setup
