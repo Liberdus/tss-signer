@@ -13,6 +13,7 @@ tx.json
 .env
 keygen-config.json
 regroup-config.json
+observer-list.json
 
 
 # Local Infura API keys (never commit)
@@ -27,4 +28,3 @@ db/
 # Compiled Go binaries
 *.exe
 *.exe~
-

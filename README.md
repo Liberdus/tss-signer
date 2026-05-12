@@ -99,9 +99,10 @@ Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](t
 
 - **`params.json`** — TSS parameters. Default: `{"parties": 5, "threshold": 3}`
 - **`chain-config.json`** — RPC endpoints, contract addresses, gas config per chain.
+- **`observer-list.json`** — observer peer URLs as a plain JSON array; copy the shape from `observer-list.json.example` and replace the placeholder IPs with real public observer IPs. If you use DNS names, set `TSS_SELF_OBSERVER_URL` on each party so it can identify its own observer.
 - **Observer setup flag** (`chain-config.json`):
-  - `isRemote: false` (default): if `observerUrls` is empty, peers default to `http://127.0.0.1:8101..`.
-  - `isRemote: true`: `observerUrls` is required and startup fails when it is missing/empty.
+  - `isRemote: false` (default): if `observer-list.json` is empty, peers default to `http://127.0.0.1:8101..`.
+  - `isRemote: true`: `observer-list.json` is required and startup fails when it is missing/empty.
 - Optional local dev shortcut: set `observerSkipOldData: true` in `chain-config.json`, run with
   `OBSERVER_SKIP_OLD_DATA=true`, or pass `--skip-old-data` to the observer to seed both EVM
   and Liberdus monitor cursors instead of scanning historical data;

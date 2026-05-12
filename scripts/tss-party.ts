@@ -17,6 +17,7 @@ import {
   toNetworkChainId,
   ParamsConfig,
   paramsConfigRaw,
+  validateObserverSetup,
 } from '../shared/config'
 import {resolveProjectRoot} from '../shared/utils/paths'
 import {startDriftResistantScheduler} from '../shared/utils/scheduler'
@@ -24,6 +25,7 @@ import {toEthereumAddress, toShardusAddress} from '../shared/utils/transformAddr
 import {isNormalizedTxId, normalizeTxId} from '../shared/utils/transformTxId'
 import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
 import {initializeChainRpcConfig} from '../shared/chainRpc'
+import {deriveSelfObserverUrl} from '../shared/utils/observerPeers'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import {deriveObserverUrl, deriveTransactionsDbPath, resolveRuntimePartyIdx} from '../tss-tools/lib/tssPartyDefaults'
 import {gossipBridgeIn} from './gossip'
@@ -183,7 +185,7 @@ function tryGC(): void {
 
 const ourParty: PartyInfo = {idx: resolveRuntimePartyIdx(parsedIdx)}
 
-const observerUrl = deriveObserverUrl(ourParty.idx)
+let observerUrl = deriveObserverUrl(ourParty.idx)
 const dbPath = deriveTransactionsDbPath(process.cwd(), ourParty.idx)
 
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
@@ -2263,6 +2265,12 @@ async function main(): Promise<void> {
     await sleep(200) // Small delay before exiting to show up the error in logs
     process.exit(1)
   }
+
+  validateObserverSetup(chainConfigs)
+  observerUrl = await deriveSelfObserverUrl(ourParty.idx, {
+    isRemote: chainConfigs.isRemote === true,
+  })
+  console.log(`[tss-party] Observer URL: ${observerUrl}`)
 
   // Initialize local DB (shared with the paired observer process)
   try {
