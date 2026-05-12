@@ -1831,9 +1831,17 @@ async function processTokenToCoin(
   // Operator-imposed local limit check — only on non-refund calls
   if (!isRefund) {
     const valueBN = ethers.BigNumber.from(value.toHexString())
+    const minBridgeOutAmountConfig = chainConfigs.liberdusBridgeGuards.minBridgeOutAmount
     const maxBridgeOutAmountConfig = chainConfigs.liberdusBridgeGuards.maxBridgeOutAmount
+    const localMinBridgeAmount = minBridgeOutAmountConfig !== "0" ? ethers.utils.parseEther(minBridgeOutAmountConfig) : null
     const localMaxBridgeAmount = maxBridgeOutAmountConfig !== "0" ? ethers.utils.parseEther(maxBridgeOutAmountConfig) : null
-    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${maxBridgeOutAmountConfig !== "0" ? maxBridgeOutAmountConfig : 'none'} LIB`)
+    console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local min ${minBridgeOutAmountConfig !== "0" ? minBridgeOutAmountConfig : 'none'} LIB, local max ${maxBridgeOutAmountConfig !== "0" ? maxBridgeOutAmountConfig : 'none'} LIB`)
+    if (localMinBridgeAmount && valueBN.lt(localMinBridgeAmount)) {
+      console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB is below local minimum ${minBridgeOutAmountConfig} LIB — initiating refund`)
+      const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB is below local BRIDGE_OUT minimum of ${minBridgeOutAmountConfig} LIB`
+      // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
+      return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
+    }
     if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
       console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${maxBridgeOutAmountConfig} LIB — initiating refund`)
       const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${maxBridgeOutAmountConfig} LIB`
