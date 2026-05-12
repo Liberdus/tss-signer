@@ -53,6 +53,6 @@
   "liberdusBridgeGuards": {
     "maxBridgeInAmount": "0",
     "maxBridgeOutAmount": "0",
-    "enforceRecipientExists": true
+    "requirePublicRecipientAccount": true
   }
 }

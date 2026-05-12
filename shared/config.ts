@@ -33,7 +33,7 @@ export function requireSigningChainConfig(
 export interface LiberdusBridgeGuards {
   maxBridgeInAmount: string       // LIB amount — operator-imposed max for BRIDGE_IN txs (Liberdus → EVM); "0" disables the limit
   maxBridgeOutAmount: string      // LIB amount — operator-imposed max for BRIDGE_OUT txs (EVM → Liberdus); "0" disables the limit
-  enforceRecipientExists: boolean // When true, refunds BRIDGE_OUT txs whose Liberdus recipient account does not exist
+  requirePublicRecipientAccount: boolean // When true, refunds BRIDGE_OUT txs whose Liberdus recipient account does not exist or is private
 }
 
 
@@ -124,8 +124,8 @@ function validateLiberdusBridgeGuards(chainConfigs: ChainConfigs): void {
   }
   validateBridgeGuardAmount(guards.maxBridgeInAmount, 'maxBridgeInAmount')
   validateBridgeGuardAmount(guards.maxBridgeOutAmount, 'maxBridgeOutAmount')
-  if (typeof guards.enforceRecipientExists !== 'boolean') {
-    throw new Error('[config] liberdusBridgeGuards.enforceRecipientExists must be a boolean')
+  if (typeof guards.requirePublicRecipientAccount !== 'boolean') {
+    throw new Error('[config] liberdusBridgeGuards.requirePublicRecipientAccount must be a boolean')
   }
 }
 
