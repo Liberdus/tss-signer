@@ -1,6 +1,7 @@
 import fs from 'fs'
 import {ethers} from 'ethers'
 import {resolveRepoConfigPath} from './utils/paths'
+import {loadObserverUrlsFromRoot} from './utils/observerPeers'
 
 export interface ChainConfig {
   name: string
@@ -41,7 +42,6 @@ export interface ChainConfigs {
   vaultChain?: VaultChainConfig
   secondaryChainConfig?: ChainConfig
   isRemote?: boolean
-  observerUrls?: string[]
   enableLiberdusNetwork: boolean
   /**
    * When true, the observer prefers Infura-based RPC URLs (when supported for the
@@ -129,18 +129,16 @@ function validateLiberdusBridgeGuards(chainConfigs: ChainConfigs): void {
   }
 }
 
-function validateObserverSetup(chainConfigs: ChainConfigs): void {
+export function validateObserverSetup(chainConfigs: ChainConfigs): void {
   if (typeof chainConfigs.isRemote !== 'undefined' && typeof chainConfigs.isRemote !== 'boolean') {
     throw new Error('[config] isRemote must be a boolean when provided')
   }
   const isRemote = chainConfigs.isRemote === true
   if (isRemote) {
-    const observerUrls = Array.isArray(chainConfigs.observerUrls)
-      ? chainConfigs.observerUrls.map((url) => `${url ?? ''}`.trim()).filter(Boolean)
-      : []
+    const observerUrls = loadObserverUrlsFromRoot()
     if (observerUrls.length === 0) {
       throw new Error(
-        '[config] isRemote is true but observerUrls is empty. Configure chain-config.json observerUrls for remote deployments.',
+        '[config] isRemote is true but observer-list.json is missing or empty. Configure observer-list.json for remote deployments.',
       )
     }
   }
@@ -148,7 +146,6 @@ function validateObserverSetup(chainConfigs: ChainConfigs): void {
 
 export function validateChainConfigs(chainConfigs: ChainConfigs): ChainConfigs {
   validateLiberdusBridgeGuards(chainConfigs)
-  validateObserverSetup(chainConfigs)
 
   if (chainConfigs.enableLiberdusNetwork) {
     for (const [chainId, config] of Object.entries(chainConfigs.supportedChains)) {
