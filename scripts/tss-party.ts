@@ -1078,9 +1078,26 @@ async function injectEthereumTx(
     console.log('BridgeIn transaction sent successfully!', txResponse.hash)
     return {success: true}
   } catch (e: any) {
-    console.log('Error sending ethereum transaction:', txHash, e.message)
+    const reason = e?.message ?? String(e)
+    if (isAlreadyAcceptedEvmTxError(reason)) {
+      // Another party already submitted the same deterministic signed tx. Treat
+      // as submit success so this party can mark SUBMITTED and gossip it.
+      console.log('Ethereum transaction already accepted (treating as submitted):', txHash, reason)
+      return {success: true, reason: 'already_accepted'}
+    }
+    console.log('Error sending ethereum transaction:', txHash, reason)
     throw e
   }
+}
+
+function isAlreadyAcceptedEvmTxError(reason: string): boolean {
+  const normalizedReason = `${reason}`.toLowerCase()
+  return [
+    'already known',
+    'known transaction',
+    'transaction already imported',
+    'already imported',
+  ].some((pattern) => normalizedReason.includes(pattern))
 }
 
 async function injectLiberdusTx(
