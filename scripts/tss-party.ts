@@ -1841,13 +1841,19 @@ async function processTokenToCoin(
       return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
     }
 
-    if (chainConfigs.liberdusBridgeGuards.enforceRecipientExists) {
+    if (chainConfigs.liberdusBridgeGuards.requirePublicRecipientAccount) {
       const shardusTo = toShardusAddress(to)
       const accountCheck = await checkLiberdusAccountExists(shardusTo)
       console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient account ${shardusTo} — ${accountCheck}`)
       if (accountCheck === 'not-found') {
         console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient ${shardusTo} does not exist on Liberdus network — initiating refund`)
         const revertReason = `Recipient account does not exist on Liberdus network`
+        // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
+        return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
+      }
+      if (accountCheck === 'private') {
+        console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: recipient ${shardusTo} is a private Liberdus account — initiating refund`)
+        const revertReason = `Recipient account is private on Liberdus network`
         // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
         return processCoinToToken(to, valueBN, txId, sourceChainId, txTimestampMs, true, revertReason)
       }
@@ -2213,7 +2219,7 @@ async function getLiberdusAccountBalance(address: string): Promise<string | null
   return balance
 }
 
-async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exists' | 'not-found' | 'error'> {
+async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exists' | 'private' | 'not-found' | 'error'> {
   const url = proxyServerHost + '/account/' + shardusAddress
   const maxAttempts = 3
   let lastResult: 'not-found' | 'error' = 'error'
@@ -2221,7 +2227,8 @@ async function checkLiberdusAccountExists(shardusAddress: string): Promise<'exis
     try {
       const response = await axios.get(url, { timeout: 3000 })
       if (response.status === 200) {
-        if (response.data?.account != null) return 'exists'
+        const account = response.data?.account
+        if (account != null) return account.private === true ? 'private' : 'exists'
         lastResult = 'not-found'
       } else {
         lastResult = 'error'
