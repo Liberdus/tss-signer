@@ -83,7 +83,7 @@ function usage(exitCode = 1): never {
   console.log('  --sign-discovery-timeout <duration>')
   console.log('                            Native BNB TSS peer discovery window (default: 60s)')
   console.log('  --bigint-fields <fields>  Comma-separated tx fields to convert to BigInt')
-  console.log('                            (default: "amount")')
+  console.log('                            (default: "amount"; amount is parsed as full LIB units)')
   console.log('  --cal-chatid              Compute chatId from from+to and add it to the tx')
   console.log('  --dry-run                 Sign but do not inject')
   console.log('')
@@ -99,7 +99,7 @@ function usage(exitCode = 1): never {
       {
         from: '35576352aabcbce19aece1ffd376f7c49f022706000000000000000000000000',
         to: '<recipient-shardus-address>',
-        amount: '1000000000000000000',
+        amount: '1', // Full LIB amount, not base units.
         type: 'transfer',
         networkId: chainConfigsRaw.liberdusNetworkId,
         memo: 'optional memo',
@@ -365,6 +365,11 @@ async function main(): Promise<void> {
 
   if (tx.type === 'register') {
     tx.aliasHash = crypto.hash(`${tx.alias || ''}`)
+  }
+
+  if (tx.amount) {
+    // Convert full LIB amount to base units before signing.
+    tx.amount = ethers.utils.parseEther(`${tx.amount}`).toHexString()
   }
 
   for (const field of bigintFields) {

@@ -281,8 +281,8 @@ npm run tss-sign-ethereum-tx -- --party 4 --chain-id 97 --tx-file ethereum-tx.js
 # - publicKey from the selected BNB TSS uncompressed public key
 # - aliasHash from alias
 #
-# For transfer txs, keep large numeric values as decimal strings.
-# By default --bigint-fields amount converts amount to BigInt before hashing.
+# For transfer txs, write amount as a full decimal token value, not wei/base units.
+# By default --bigint-fields amount converts amount to base-unit BigInt before hashing.
 # Use --cal-chatid when the tx should include chatId derived from from+to.
 #
 # Use --dry-run first to verify the signature without posting to /inject.
