@@ -50,6 +50,10 @@ const {utils: ethersUtils} = ethers
   }
 })()
 
+process.on('SIGUSR2', () => {
+  console.warn('[tss-party] Ignoring SIGUSR2; observer admin signals must be sent to the observer process.')
+})
+
 const {stringify} = require(path.join(process.cwd(), 'external/stringify-shardus'))
 
 interface ChainState {

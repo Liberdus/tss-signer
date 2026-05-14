@@ -11,11 +11,11 @@ import { resolveProjectRoot } from "../shared/utils/paths";
 
 const ADMIN_SIGNAL_FILE = "admin-signal.json";
 const ADMIN_LOG_PREFIX = "[observer/admin]";
-const LOG_FETCH_TIMEOUT_MS = 5 * 60 * 1000;
-const LOG_ARCHIVE_TIMEOUT_MS = 5 * 60 * 1000;
-const RESTART_TIMEOUT_MS = 10 * 1000;
-const RESTART_DELAY_MS = 1000;
-const PROCESS_NAME_PATTERN = /^(observer|tss-party)(-[1-9][0-9]*)?$/;
+const LOG_FETCH_TIMEOUT_MS = 5 * 60 * 1000; // Peer archive download timeout.
+const LOG_ARCHIVE_TIMEOUT_MS = 5 * 60 * 1000; // Local tar creation timeout.
+const RESTART_TIMEOUT_MS = 10 * 1000; // PM2 command timeout.
+const RESTART_DELAY_MS = 1000; // Delay before invoking PM2 restart.
+const PROCESS_NAME_PATTERN = /^(observer|tss-party)(-[1-9][0-9]*)?$/; // Only observer/TSS party names.
 
 type AdminSignal =
   | { action: "collect-logs"; target: "all" | string }
@@ -62,6 +62,7 @@ interface LogCollectionResult {
 export interface AdminContext {
   partyIndex: number;
   projectRoot: string;
+  // Loaded once at startup.
   observerUrls: string[];
   observerInfos: ObserverUrlInfo[];
   selfObserverUrl: string;
@@ -96,6 +97,7 @@ export function isAdminRequesterAllowed(
   for (const rawUrl of observerUrls) {
     const info = parseObserverUrl(rawUrl);
     if (!info) continue;
+    // Only IP-literal observer URLs authorize admin callers.
     if (!info.isIpLiteral) {
       ignoredDnsHosts.push(info.hostname);
       continue;
@@ -290,6 +292,7 @@ export function resolvePm2ProcessNameFromSet(requestedName: string, partyIndex: 
 
   if (names.has(trimmed)) return trimmed;
 
+  // Generic names resolve to this party's indexed PM2 process.
   const indexed = `${trimmed}-${partyIndex}`;
   if (names.has(indexed)) return indexed;
 
@@ -301,6 +304,7 @@ async function restartPm2Process(resolvedName: string): Promise<CommandResult> {
 }
 
 function scheduleResolvedPm2Restart(requestedName: string, resolvedName: string): void {
+  // Let responses/manifests flush before PM2 may restart this process.
   setTimeout(() => {
     restartPm2Process(resolvedName)
       .then((result) => {
@@ -361,6 +365,7 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
   });
   res.on("close", () => {
     if (!responseFinished && !tarClosed) {
+      // Do not leave tar running after client aborts.
       console.warn(`${ADMIN_LOG_PREFIX} archive client disconnected filename=${sanitizeLogValue(filename)}; terminating tar`);
       tar.kill("SIGTERM");
     }
@@ -447,7 +452,7 @@ async function downloadPeerLogs(observerUrl: string, outputPath: string): Promis
     try {
       fs.unlinkSync(outputPath);
     } catch {
-      // Best-effort cleanup of partial archives.
+      // Best-effort partial archive cleanup.
     }
     throw error;
   }
@@ -498,6 +503,15 @@ function formatUniqueAdminTimestamp(date = new Date()): string {
   return `${formatAdminTimestamp(date)}-${`${date.getMilliseconds()}`.padStart(3, "0")}`;
 }
 
+function formatResultSummary<T extends { url: string; status: string; error?: string }>(results: T[]): string {
+  const failed = results.filter((result) => result.status === "failed");
+  const succeeded = results.length - failed.length;
+  const failedDetails = failed
+    .map((result) => `${result.url}${result.error ? `:${result.error}` : ""}`)
+    .join(",");
+  return `success=${succeeded}/${results.length} fail=${failed.length}/${results.length}${failedDetails ? ` failed=${sanitizeLogValue(failedDetails)}` : ""}`;
+}
+
 async function collectLogsFromTargets(targets: string[], selfObserverUrl: string, projectRoot: string): Promise<string> {
   const timestamp = formatUniqueAdminTimestamp();
   const outputDir = path.join(projectRoot, "collected-logs", timestamp);
@@ -540,7 +554,7 @@ async function collectLogsFromTargets(targets: string[], selfObserverUrl: string
     manifestPath,
     JSON.stringify({ action: "collect-logs", createdAt: new Date().toISOString(), results }, null, 2),
   );
-  console.log(`${ADMIN_LOG_PREFIX} collect-logs manifest=${manifestPath}`);
+  console.log(`${ADMIN_LOG_PREFIX} collect-logs manifest=${manifestPath} ${formatResultSummary(results)}`);
   return manifestPath;
 }
 
@@ -568,6 +582,7 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
   const selfTargets = targets.filter((url) => isSelfObserverUrl(url, selfObserverUrl));
   const peerTargets = targets.filter((url) => !isSelfObserverUrl(url, selfObserverUrl));
   const results: RestartResult[] = [];
+  // Self restarts must wait until the manifest is written.
   const deferredSelfRestarts: Array<{ requestedName: string; resolvedName: string }> = [];
 
   await Promise.all(peerTargets.map(async (observerUrl) => {
@@ -619,7 +634,7 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
     manifestPath,
     JSON.stringify({ action: "restart", createdAt: new Date().toISOString(), requestedName, results }, null, 2),
   );
-  console.log(`${ADMIN_LOG_PREFIX} restart manifest=${sanitizeLogValue(manifestPath)}`);
+  console.log(`${ADMIN_LOG_PREFIX} restart manifest=${sanitizeLogValue(manifestPath)} ${formatResultSummary(results)}`);
   return { manifestPath, deferredSelfRestarts };
 }
 
@@ -696,6 +711,7 @@ export function registerAdminSignalHandler(getAdminContext: AdminContextProvider
 
 export function createAdminRouter(getAdminContext: AdminContextProvider): Router {
   const router = express.Router();
+  // Keep allowlist/audit before JSON parsing.
   router.use((req, res, next) => {
     const adminContext = getAdminContext();
     if (!adminContext) {
