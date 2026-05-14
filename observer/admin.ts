@@ -61,6 +61,7 @@ interface LogCollectionResult {
 
 let adminSignalInProgress = false;
 let warnedDnsHosts = new Set<string>();
+let warnedSelfObserverFallback = false;
 
 export function normalizeRemoteAddress(address?: string | null): string {
   const raw = `${address ?? ""}`.trim();
@@ -165,7 +166,15 @@ function getSelfObserverUrl(partyIndex: number, projectRoot = resolveProjectRoot
 
   const observerUrls = loadObserverUrlsFromRoot(projectRoot);
   const fromList = observerUrls[partyIndex - 1];
-  if (fromList) return normalizeObserverUrl(fromList);
+  if (fromList) {
+    if (chainConfigsRaw.isRemote === true && !warnedSelfObserverFallback) {
+      warnedSelfObserverFallback = true;
+      console.warn(
+        `${ADMIN_LOG_PREFIX} TSS_SELF_OBSERVER_URL is not set; using observer-list.json position ${partyIndex} to identify this observer for admin signal self-target handling`,
+      );
+    }
+    return normalizeObserverUrl(fromList);
+  }
 
   return `http://127.0.0.1:${8100 + partyIndex}`;
 }
@@ -367,22 +376,31 @@ function createLocalLogsArchive(projectRoot: string, outputPath: string): Promis
 
 async function downloadPeerLogs(observerUrl: string, outputPath: string): Promise<number> {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  const response = await axios.get(`${normalizeObserverUrl(observerUrl)}/admin/logs/archive`, {
-    responseType: "stream",
-    timeout: LOG_FETCH_TIMEOUT_MS,
-    validateStatus: () => true,
-  });
-  if (response.status < 200 || response.status >= 300) {
-    response.data?.destroy?.();
-    throw new Error(`HTTP ${response.status}`);
-  }
+  try {
+    const response = await axios.get(`${normalizeObserverUrl(observerUrl)}/admin/logs/archive`, {
+      responseType: "stream",
+      timeout: LOG_FETCH_TIMEOUT_MS,
+      validateStatus: () => true,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      response.data?.destroy?.();
+      throw new Error(`HTTP ${response.status}`);
+    }
 
-  let bytes = 0;
-  response.data.on("data", (chunk: Buffer) => {
-    bytes += chunk.length;
-  });
-  await pipeline(response.data, fs.createWriteStream(outputPath));
-  return bytes;
+    let bytes = 0;
+    response.data.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+    });
+    await pipeline(response.data, fs.createWriteStream(outputPath));
+    return bytes;
+  } catch (error) {
+    try {
+      fs.unlinkSync(outputPath);
+    } catch {
+      // Best-effort cleanup of partial archives.
+    }
+    throw error;
+  }
 }
 
 function validateAdminSignal(raw: unknown): AdminSignal {
@@ -569,7 +587,15 @@ async function handleAdminSignal(partyIndex: number, projectRoot = resolveProjec
       return;
     }
 
-    const targets = resolveSignalTargets(signal.target, projectRoot);
+    let targets: string[];
+    try {
+      targets = resolveSignalTargets(signal.target, projectRoot);
+    } catch (error) {
+      console.error(
+        `${ADMIN_LOG_PREFIX} Invalid ${signalPath}: ${error instanceof Error ? error.message : String(error)}. No action taken.`,
+      );
+      return;
+    }
     let manifestPath: string;
     console.log(`${ADMIN_LOG_PREFIX} SIGUSR2 action=${signal.action} target=${signal.target}`);
     if (signal.action === "collect-logs") {
