@@ -25,6 +25,7 @@ import {
 } from "./monitor/ethereum";
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "../shared/utils/scheduler";
+import { createAdminRouter, registerAdminSignalHandler } from "./admin";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -93,8 +94,10 @@ const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
 // ---------------------------------------------------------------------------
 
 const app = express();
+app.use("/admin", createAdminRouter(PARTY_INDEX));
 app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
 app.use(express.json());
+registerAdminSignalHandler(PARTY_INDEX);
 
 app.get("/status", (_req, res) => {
   res.json({ syncReady });
