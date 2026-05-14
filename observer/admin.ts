@@ -6,7 +6,7 @@ import { spawn } from "child_process";
 import { pipeline } from "stream/promises";
 import axios from "axios";
 import { chainConfigsRaw } from "../shared/config";
-import { loadObserverUrlsFromRoot } from "../shared/utils/observerPeers";
+import { deriveSelfObserverUrl, loadObserverUrlsFromRoot } from "../shared/utils/observerPeers";
 import { resolveProjectRoot } from "../shared/utils/paths";
 
 const ADMIN_SIGNAL_FILE = "admin-signal.json";
@@ -61,8 +61,6 @@ interface LogCollectionResult {
 
 let adminSignalInProgress = false;
 let warnedDnsHosts = new Set<string>();
-let warnedSelfObserverFallback = false;
-
 export function normalizeRemoteAddress(address?: string | null): string {
   const raw = `${address ?? ""}`.trim();
   if (raw.startsWith("::ffff:")) return raw.slice("::ffff:".length);
@@ -164,23 +162,18 @@ function getSelfObserverUrl(partyIndex: number, projectRoot = resolveProjectRoot
   const configured = process.env.TSS_SELF_OBSERVER_URL?.trim();
   if (configured) return normalizeObserverUrl(configured);
 
-  const observerUrls = loadObserverUrlsFromRoot(projectRoot);
-  const fromList = observerUrls[partyIndex - 1];
-  if (fromList) {
-    if (chainConfigsRaw.isRemote === true && !warnedSelfObserverFallback) {
-      warnedSelfObserverFallback = true;
-      console.warn(
-        `${ADMIN_LOG_PREFIX} TSS_SELF_OBSERVER_URL is not set; using observer-list.json position ${partyIndex} to identify this observer for admin signal self-target handling`,
-      );
-    }
-    return normalizeObserverUrl(fromList);
-  }
-
   return `http://127.0.0.1:${8100 + partyIndex}`;
 }
 
-function isSelfObserverUrl(targetUrl: string, partyIndex: number, projectRoot = resolveProjectRoot()): boolean {
-  return normalizeObserverUrl(targetUrl) === getSelfObserverUrl(partyIndex, projectRoot);
+function createSelfObserverUrlPromise(partyIndex: number, projectRoot: string): Promise<string> {
+  return deriveSelfObserverUrl(partyIndex, {
+    isRemote: chainConfigsRaw.isRemote === true,
+    rootDir: projectRoot,
+  }).then(normalizeObserverUrl);
+}
+
+function isSelfObserverUrl(targetUrl: string, selfObserverUrl: string): boolean {
+  return normalizeObserverUrl(targetUrl) === normalizeObserverUrl(selfObserverUrl);
 }
 
 function computeAllowlistDecision(req: Request, projectRoot = resolveProjectRoot()): AllowlistDecision {
@@ -327,6 +320,8 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
   });
   let stderr = "";
   let bytes = 0;
+  let tarClosed = false;
+  let responseFinished = false;
   tar.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
   });
@@ -334,12 +329,22 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
     bytes += chunk.length;
   });
   tar.stdout.pipe(res);
+  res.on("finish", () => {
+    responseFinished = true;
+  });
+  res.on("close", () => {
+    if (!responseFinished && !tarClosed) {
+      console.warn(`${ADMIN_LOG_PREFIX} archive client disconnected filename=${filename}; terminating tar`);
+      tar.kill("SIGTERM");
+    }
+  });
   tar.on("error", (error) => {
     console.error(`${ADMIN_LOG_PREFIX} archive spawn failed filename=${filename}:`, error);
     if (!res.headersSent) res.status(500).json({ Err: "Failed to create logs archive" });
     else res.destroy(error);
   });
   tar.on("close", (code) => {
+    tarClosed = true;
     if (code === 0) {
       console.log(`${ADMIN_LOG_PREFIX} archive complete filename=${filename} bytes=${bytes}`);
       return;
@@ -441,8 +446,12 @@ function resolveSignalTargets(signalTarget: string, projectRoot: string): string
   return [normalizedTarget];
 }
 
-async function collectLogsFromTargets(targets: string[], partyIndex: number, projectRoot: string): Promise<string> {
-  const timestamp = formatAdminTimestamp();
+function formatUniqueAdminTimestamp(date = new Date()): string {
+  return `${formatAdminTimestamp(date)}-${`${date.getMilliseconds()}`.padStart(3, "0")}`;
+}
+
+async function collectLogsFromTargets(targets: string[], selfObserverUrl: string, projectRoot: string): Promise<string> {
+  const timestamp = formatUniqueAdminTimestamp();
   const outputDir = path.join(projectRoot, "collected-logs", timestamp);
   fs.mkdirSync(outputDir, { recursive: true });
 
@@ -453,7 +462,7 @@ async function collectLogsFromTargets(targets: string[], partyIndex: number, pro
     const outputPath = path.join(outputDir, filename);
     try {
       let size = 0;
-      if (isSelfObserverUrl(observerUrl, partyIndex, projectRoot)) {
+      if (isSelfObserverUrl(observerUrl, selfObserverUrl)) {
         await createLocalLogsArchive(projectRoot, outputPath);
         size = fs.statSync(outputPath).size;
       } else {
@@ -502,13 +511,13 @@ async function postPeerRestart(observerUrl: string, requestedName: string): Prom
   return { resolvedName: response.data?.resolvedName };
 }
 
-async function restartTargets(targets: string[], requestedName: string, partyIndex: number, projectRoot: string): Promise<string> {
-  const timestamp = formatAdminTimestamp();
+async function restartTargets(targets: string[], requestedName: string, partyIndex: number, selfObserverUrl: string, projectRoot: string): Promise<string> {
+  const timestamp = formatUniqueAdminTimestamp();
   const outputDir = path.join(projectRoot, "admin-results");
   fs.mkdirSync(outputDir, { recursive: true });
   const manifestPath = path.join(outputDir, `restart-${timestamp}.json`);
-  const selfTargets = targets.filter((url) => isSelfObserverUrl(url, partyIndex, projectRoot));
-  const peerTargets = targets.filter((url) => !isSelfObserverUrl(url, partyIndex, projectRoot));
+  const selfTargets = targets.filter((url) => isSelfObserverUrl(url, selfObserverUrl));
+  const peerTargets = targets.filter((url) => !isSelfObserverUrl(url, selfObserverUrl));
   const results: RestartResult[] = [];
 
   await Promise.all(peerTargets.map(async (observerUrl) => {
@@ -563,7 +572,11 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
   return manifestPath;
 }
 
-async function handleAdminSignal(partyIndex: number, projectRoot = resolveProjectRoot()): Promise<void> {
+async function handleAdminSignal(
+  partyIndex: number,
+  projectRoot = resolveProjectRoot(),
+  getSelfObserverUrlForSignal = () => createSelfObserverUrlPromise(partyIndex, projectRoot),
+): Promise<void> {
   if (adminSignalInProgress) {
     console.warn(`${ADMIN_LOG_PREFIX} admin signal already in progress, ignoring`);
     return;
@@ -598,12 +611,21 @@ async function handleAdminSignal(partyIndex: number, projectRoot = resolveProjec
     }
     let manifestPath: string;
     console.log(`${ADMIN_LOG_PREFIX} SIGUSR2 action=${signal.action} target=${signal.target}`);
-    if (signal.action === "collect-logs") {
-      manifestPath = await collectLogsFromTargets(targets, partyIndex, projectRoot);
-    } else {
-      manifestPath = await restartTargets(targets, signal.name, partyIndex, projectRoot);
+    let selfObserverUrl: string;
+    try {
+      selfObserverUrl = await getSelfObserverUrlForSignal();
+    } catch (error) {
+      console.error(
+        `${ADMIN_LOG_PREFIX} Unable to identify this observer for admin signal self-target handling: ${error instanceof Error ? error.message : String(error)}. No action taken.`,
+      );
+      return;
     }
-    const processedPath = path.join(projectRoot, `${ADMIN_SIGNAL_PROCESSED_PREFIX}-${formatAdminTimestamp()}.json`);
+    if (signal.action === "collect-logs") {
+      manifestPath = await collectLogsFromTargets(targets, selfObserverUrl, projectRoot);
+    } else {
+      manifestPath = await restartTargets(targets, signal.name, partyIndex, selfObserverUrl, projectRoot);
+    }
+    const processedPath = path.join(projectRoot, `${ADMIN_SIGNAL_PROCESSED_PREFIX}-${formatUniqueAdminTimestamp()}.json`);
     fs.renameSync(signalPath, processedPath);
     console.log(`${ADMIN_LOG_PREFIX} admin signal processed manifest=${manifestPath}; moved ${signalPath} to ${processedPath}`);
   } catch (error) {
@@ -614,8 +636,18 @@ async function handleAdminSignal(partyIndex: number, projectRoot = resolveProjec
 }
 
 export function registerAdminSignalHandler(partyIndex: number, projectRoot = resolveProjectRoot()): void {
+  let selfObserverUrlPromise: Promise<string> | null = null;
+  const getSelfObserverUrlForSignal = () => {
+    if (!selfObserverUrlPromise) {
+      selfObserverUrlPromise = createSelfObserverUrlPromise(partyIndex, projectRoot).catch((error) => {
+        selfObserverUrlPromise = null;
+        throw error;
+      });
+    }
+    return selfObserverUrlPromise;
+  };
   process.on("SIGUSR2", () => {
-    handleAdminSignal(partyIndex, projectRoot).catch((error) => {
+    handleAdminSignal(partyIndex, projectRoot, getSelfObserverUrlForSignal).catch((error) => {
       console.error(`${ADMIN_LOG_PREFIX} unhandled admin signal error:`, error);
     });
   });
@@ -623,7 +655,6 @@ export function registerAdminSignalHandler(partyIndex: number, projectRoot = res
 
 export function createAdminRouter(partyIndex: number, projectRoot = resolveProjectRoot()): Router {
   const router = express.Router();
-  router.use(express.json({ limit: "16kb" }));
   router.use((req, res, next) => {
     const decision = computeAllowlistDecision(req, projectRoot);
     if (!decision.allowed) {
@@ -634,6 +665,18 @@ export function createAdminRouter(partyIndex: number, projectRoot = resolveProje
     res.locals.adminAllowlistDecision = decision;
     logAdminRequest(req, decision, "allowed");
     next();
+  });
+  router.use(express.json({ limit: "16kb" }));
+  router.use((error: any, req: Request, res: Response, next: express.NextFunction) => {
+    if (!error || typeof error.status !== "number") {
+      next(error);
+      return;
+    }
+    const decision = res.locals.adminAllowlistDecision as AllowlistDecision | undefined;
+    console.warn(
+      `${ADMIN_LOG_PREFIX} invalid request body requester=${decision?.normalizedRemoteAddress ?? normalizeRemoteAddress(req.socket.remoteAddress)} path=${req.path} status=${error.status}: ${error.message}`,
+    );
+    res.status(error.status).json({ Err: error.status === 413 ? "Request body too large" : "Invalid JSON body" });
   });
 
   router.get("/logs/archive", (_req, res) => {
