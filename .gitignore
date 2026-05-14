@@ -8,6 +8,10 @@ package-lock.json
 *.log
 logs/
 tx.json
+admin-signal.json
+admin-signal.tmp.json
+collected-logs/
+admin-results/
 
 # Environment variables
 .env
