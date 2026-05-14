@@ -25,7 +25,7 @@ import {
 } from "./monitor/ethereum";
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "../shared/utils/scheduler";
-import { createAdminRouter, registerAdminSignalHandler } from "./admin";
+import { createAdminContext, createAdminRouter, registerAdminSignalHandler } from "./admin";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -94,10 +94,11 @@ const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
 // ---------------------------------------------------------------------------
 
 const app = express();
-app.use("/admin", createAdminRouter(PARTY_INDEX));
+const adminContextPromise = createAdminContext(PARTY_INDEX);
+app.use("/admin", createAdminRouter(adminContextPromise));
 app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
 app.use(express.json());
-registerAdminSignalHandler(PARTY_INDEX);
+registerAdminSignalHandler(adminContextPromise);
 
 app.get("/status", (_req, res) => {
   res.json({ syncReady });
@@ -526,6 +527,8 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
   try {
     TransactionDB.initializeTransactionsDatabase(DB_PATH);
     console.log("[observer] Database initialized");
+    await adminContextPromise;
+    console.log("[observer] Admin context initialized");
 
     initMonitorState(STATE_PATH);
     console.log(

@@ -143,14 +143,14 @@ async function getPublicIp(timeoutMs = 2_000): Promise<string | null> {
   return null;
 }
 
-export async function deriveSelfObserverUrl(partyIdx: number, options: { isRemote?: boolean; rootDir?: string } = {}): Promise<string> {
+export async function deriveSelfObserverUrl(partyIdx: number, options: { isRemote?: boolean; rootDir?: string; observerUrls?: string[] } = {}): Promise<string> {
   const configuredSelfUrl = resolveSelfObserverUrl({});
   if (configuredSelfUrl) {
     return configuredSelfUrl;
   }
 
   if (options.isRemote === true) {
-    const observerUrls = loadObserverUrlsFromRoot(options.rootDir ?? resolveProjectRoot());
+    const observerUrls = options.observerUrls ?? loadObserverUrlsFromRoot(options.rootDir ?? resolveProjectRoot());
     const publicIp = await getPublicIp();
     const matchingPublicObserverUrl = publicIp
       ? findObserverUrlByHost(observerUrls, publicIp)
