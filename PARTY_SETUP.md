@@ -330,6 +330,8 @@ Log files are at:
 - `logs/observer-combined.log`
 - `logs/tss-party-combined.log`
 
+For distributed log collection and controlled PM2 restarts through the observer admin interface, see [OBSERVER_ADMIN.md](OBSERVER_ADMIN.md).
+
 ---
 
 ## Regroup (Replacing a Party or Changing the Threshold)

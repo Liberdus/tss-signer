@@ -10,7 +10,6 @@ import { deriveSelfObserverUrl, loadObserverUrlsFromRoot } from "../shared/utils
 import { resolveProjectRoot } from "../shared/utils/paths";
 
 const ADMIN_SIGNAL_FILE = "admin-signal.json";
-const ADMIN_SIGNAL_PROCESSED_PREFIX = "admin-signal.processed";
 const ADMIN_LOG_PREFIX = "[observer/admin]";
 const LOG_FETCH_TIMEOUT_MS = 5 * 60 * 1000;
 const LOG_ARCHIVE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -676,9 +675,7 @@ async function handleAdminSignal(
       manifestPath = restartResult.manifestPath;
       deferredSelfRestarts = restartResult.deferredSelfRestarts;
     }
-    const processedPath = path.join(projectRoot, `${ADMIN_SIGNAL_PROCESSED_PREFIX}-${formatUniqueAdminTimestamp()}.json`);
-    fs.renameSync(signalPath, processedPath);
-    console.log(`${ADMIN_LOG_PREFIX} admin signal processed manifest=${sanitizeLogValue(manifestPath)}; moved ${sanitizeLogValue(signalPath)} to ${sanitizeLogValue(processedPath)}`);
+    console.log(`${ADMIN_LOG_PREFIX} admin signal processed manifest=${sanitizeLogValue(manifestPath)}`);
     for (const restart of deferredSelfRestarts) {
       scheduleResolvedPm2Restart(restart.requestedName, restart.resolvedName);
     }
