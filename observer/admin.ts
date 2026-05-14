@@ -60,6 +60,14 @@ interface LogCollectionResult {
   error?: string;
 }
 
+export interface AdminContext {
+  partyIndex: number;
+  projectRoot: string;
+  observerUrls: string[];
+  observerInfos: ObserverUrlInfo[];
+  selfObserverUrl: string;
+}
+
 let adminSignalInProgress = false;
 let warnedDnsHosts = new Set<string>();
 export function normalizeRemoteAddress(address?: string | null): string {
@@ -141,8 +149,8 @@ function parseObserverUrl(rawUrl: string): ObserverUrlInfo | null {
   }
 }
 
-function getObserverUrlInfos(projectRoot = resolveProjectRoot()): ObserverUrlInfo[] {
-  return loadObserverUrlsFromRoot(projectRoot)
+function parseObserverUrlInfos(observerUrls: string[]): ObserverUrlInfo[] {
+  return observerUrls
     .map(parseObserverUrl)
     .filter((entry): entry is ObserverUrlInfo => entry !== null);
 }
@@ -163,32 +171,34 @@ export function getArchiveFilenameForObserverUrl(observerUrl: string): string {
   return `${sanitizeArchiveFilenamePart(info.hostname)}-${sanitizeArchiveFilenamePart(info.port)}.tar.gz`;
 }
 
-function getSelfObserverUrl(partyIndex: number, projectRoot = resolveProjectRoot()): string {
-  const configured = process.env.TSS_SELF_OBSERVER_URL?.trim();
-  if (configured) return normalizeObserverUrl(configured);
-
-  return `http://127.0.0.1:${8100 + partyIndex}`;
-}
-
-function createSelfObserverUrlPromise(partyIndex: number, projectRoot: string): Promise<string> {
-  return deriveSelfObserverUrl(partyIndex, {
+export async function createAdminContext(partyIndex: number, projectRoot = resolveProjectRoot()): Promise<AdminContext> {
+  const observerUrls = Array.from(new Set(loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl)));
+  const observerInfos = parseObserverUrlInfos(observerUrls);
+  warnIgnoredDnsHosts(observerInfos);
+  const selfObserverUrl = await deriveSelfObserverUrl(partyIndex, {
     isRemote: chainConfigsRaw.isRemote === true,
     rootDir: projectRoot,
+    observerUrls,
   }).then(normalizeObserverUrl);
+  if (!observerUrls.includes(selfObserverUrl)) {
+    throw new Error(
+      `${selfObserverUrl} is this observer URL but is not present in observer-list.json; update observer-list.json or TSS_SELF_OBSERVER_URL`,
+    );
+  }
+  console.log(`${ADMIN_LOG_PREFIX} loaded admin observer context self=${sanitizeLogValue(selfObserverUrl)} observers=${observerUrls.length}`);
+  return { partyIndex, projectRoot, observerUrls, observerInfos, selfObserverUrl };
 }
 
 function isSelfObserverUrl(targetUrl: string, selfObserverUrl: string): boolean {
   return normalizeObserverUrl(targetUrl) === normalizeObserverUrl(selfObserverUrl);
 }
 
-function computeAllowlistDecision(req: Request, projectRoot = resolveProjectRoot()): AllowlistDecision {
+function computeAllowlistDecision(req: Request, adminContext: AdminContext): AllowlistDecision {
   const rawRemoteAddress = `${req.socket.remoteAddress ?? ""}`;
   const normalizedRemoteAddress = normalizeRemoteAddress(rawRemoteAddress);
-  const observerInfos = getObserverUrlInfos(projectRoot);
-  warnIgnoredDnsHosts(observerInfos);
   const decision = isAdminRequesterAllowed(
     rawRemoteAddress,
-    observerInfos.map((info) => info.url),
+    adminContext.observerUrls,
     chainConfigsRaw.isRemote === true,
   );
   return {
@@ -472,8 +482,7 @@ function validateAdminSignal(raw: unknown): AdminSignal {
   return { action: "collect-logs", target: signal.target };
 }
 
-function resolveSignalTargets(signalTarget: string, projectRoot: string): string[] {
-  const observerUrls = loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl);
+function resolveSignalTargets(signalTarget: string, observerUrls: string[]): string[] {
   if (signalTarget === "all") return Array.from(new Set(observerUrls));
 
   const normalizedTarget = normalizeObserverUrl(signalTarget);
@@ -613,9 +622,7 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
 }
 
 async function handleAdminSignal(
-  partyIndex: number,
-  projectRoot = resolveProjectRoot(),
-  getSelfObserverUrlForSignal = () => createSelfObserverUrlPromise(partyIndex, projectRoot),
+  adminContextPromise: Promise<AdminContext>,
 ): Promise<void> {
   if (adminSignalInProgress) {
     console.warn(`${ADMIN_LOG_PREFIX} admin signal already in progress, ignoring`);
@@ -623,6 +630,15 @@ async function handleAdminSignal(
   }
   adminSignalInProgress = true;
 
+  let adminContext: AdminContext;
+  try {
+    adminContext = await adminContextPromise;
+  } catch (error) {
+    console.error(`${ADMIN_LOG_PREFIX} admin context unavailable; no admin signal action taken:`, error);
+    adminSignalInProgress = false;
+    return;
+  }
+  const { partyIndex, projectRoot, selfObserverUrl } = adminContext;
   const signalPath = path.join(projectRoot, ADMIN_SIGNAL_FILE);
   try {
     if (!fs.existsSync(signalPath)) {
@@ -642,7 +658,7 @@ async function handleAdminSignal(
 
     let targets: string[];
     try {
-      targets = resolveSignalTargets(signal.target, projectRoot);
+      targets = resolveSignalTargets(signal.target, adminContext.observerUrls);
     } catch (error) {
       console.error(
         `${ADMIN_LOG_PREFIX} Invalid ${signalPath}: ${error instanceof Error ? error.message : String(error)}. No action taken.`,
@@ -652,15 +668,6 @@ async function handleAdminSignal(
     let manifestPath: string;
     let deferredSelfRestarts: Array<{ requestedName: string; resolvedName: string }> = [];
     console.log(`${ADMIN_LOG_PREFIX} SIGUSR2 action=${sanitizeLogValue(signal.action)} target=${sanitizeLogValue(signal.target)}`);
-    let selfObserverUrl: string;
-    try {
-      selfObserverUrl = await getSelfObserverUrlForSignal();
-    } catch (error) {
-      console.error(
-        `${ADMIN_LOG_PREFIX} Unable to identify this observer for admin signal self-target handling: ${error instanceof Error ? error.message : String(error)}. No action taken.`,
-      );
-      return;
-    }
     if (signal.action === "collect-logs") {
       manifestPath = await collectLogsFromTargets(targets, selfObserverUrl, projectRoot);
     } else {
@@ -681,38 +688,27 @@ async function handleAdminSignal(
   }
 }
 
-export function registerAdminSignalHandler(partyIndex: number, projectRoot = resolveProjectRoot()): void {
-  let selfObserverUrlPromise: Promise<string> | null = null;
-  const getSelfObserverUrlForSignal = () => {
-    if (!selfObserverUrlPromise) {
-      selfObserverUrlPromise = createSelfObserverUrlPromise(partyIndex, projectRoot).catch((error) => {
-        selfObserverUrlPromise = null;
-        throw error;
-      });
-    }
-    return selfObserverUrlPromise;
-  };
+export function registerAdminSignalHandler(adminContextPromise: Promise<AdminContext>): void {
   process.on("SIGUSR2", () => {
-    handleAdminSignal(partyIndex, projectRoot, getSelfObserverUrlForSignal).catch((error) => {
+    handleAdminSignal(adminContextPromise).catch((error) => {
       console.error(`${ADMIN_LOG_PREFIX} unhandled admin signal error:`, error);
     });
   });
 }
 
-export function createAdminRouter(partyIndex: number, projectRoot = resolveProjectRoot()): Router {
+export function createAdminRouter(adminContextPromise: Promise<AdminContext>): Router {
   const router = express.Router();
-  let selfObserverUrlPromise: Promise<string> | null = null;
-  const getSelfObserverUrlForArchiveName = () => {
-    if (!selfObserverUrlPromise) {
-      selfObserverUrlPromise = createSelfObserverUrlPromise(partyIndex, projectRoot).catch((error) => {
-        selfObserverUrlPromise = null;
-        throw error;
-      });
+  router.use(async (req, res, next) => {
+    let adminContext: AdminContext;
+    try {
+      adminContext = await adminContextPromise;
+    } catch (error) {
+      console.error(`${ADMIN_LOG_PREFIX} admin context unavailable for request path=${sanitizeLogValue(req.path)}:`, error);
+      res.status(503).json({ Err: "Admin context unavailable" });
+      return;
     }
-    return selfObserverUrlPromise;
-  };
-  router.use((req, res, next) => {
-    const decision = computeAllowlistDecision(req, projectRoot);
+    res.locals.adminContext = adminContext;
+    const decision = computeAllowlistDecision(req, adminContext);
     if (!decision.allowed) {
       logAdminRequest(req, decision, "denied");
       res.status(403).json({ Err: "Admin endpoint not allowed from requester IP" });
@@ -742,14 +738,9 @@ export function createAdminRouter(partyIndex: number, projectRoot = resolveProje
   });
 
   router.get("/logs/archive", async (_req, res) => {
-    let selfUrl = getSelfObserverUrl(partyIndex, projectRoot);
-    try {
-      selfUrl = await getSelfObserverUrlForArchiveName();
-    } catch (error) {
-      console.warn(
-        `${ADMIN_LOG_PREFIX} unable to derive self observer URL for archive filename; using local fallback: ${sanitizeLogValue(error instanceof Error ? error.message : String(error))}`,
-      );
-    }
+    const adminContext = res.locals.adminContext as AdminContext;
+    const { partyIndex, projectRoot, selfObserverUrl } = adminContext;
+    const selfUrl = selfObserverUrl;
     const info = parseObserverUrl(selfUrl);
     const hostname = info ? sanitizeArchiveFilenamePart(info.hostname) : `party-${partyIndex}`;
     const port = info ? sanitizeArchiveFilenamePart(info.port) : `${8100 + partyIndex}`;
@@ -758,6 +749,8 @@ export function createAdminRouter(partyIndex: number, projectRoot = resolveProje
   });
 
   router.post("/pm2/restart", async (req, res) => {
+    const adminContext = res.locals.adminContext as AdminContext;
+    const { partyIndex } = adminContext;
     const requestedName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const decision = res.locals.adminAllowlistDecision as AllowlistDecision | undefined;
     if (!isValidAdminProcessName(requestedName)) {
