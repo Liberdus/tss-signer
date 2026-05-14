@@ -46,7 +46,7 @@ interface RestartResult {
   url: string;
   requestedName: string;
   resolvedName?: string;
-  status: "accepted" | "scheduled" | "failed";
+  status: "scheduled" | "failed";
   durationMs: number;
   error?: string;
 }
@@ -67,6 +67,8 @@ export interface AdminContext {
   observerInfos: ObserverUrlInfo[];
   selfObserverUrl: string;
 }
+
+export type AdminContextProvider = () => AdminContext | null;
 
 let adminSignalInProgress = false;
 let warnedDnsHosts = new Set<string>();
@@ -118,7 +120,7 @@ export function sanitizeArchiveFilenamePart(value: string): string {
 }
 
 function sanitizeLogValue(value: unknown): string {
-  return `${value ?? ""}`.replace(/[\r\n\t\x00-\x1F\x7F]/g, " ").slice(0, 1000);
+  return `${value ?? ""}`.replace(/[\r\n\t\x00-\x1F\x7F]/g, " ").slice(0, 2000);
 }
 
 export function formatAdminTimestamp(date = new Date()): string {
@@ -172,15 +174,16 @@ export function getArchiveFilenameForObserverUrl(observerUrl: string): string {
 }
 
 export async function createAdminContext(partyIndex: number, projectRoot = resolveProjectRoot()): Promise<AdminContext> {
+  const isRemote = chainConfigsRaw.isRemote === true;
   const observerUrls = Array.from(new Set(loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl)));
   const observerInfos = parseObserverUrlInfos(observerUrls);
   warnIgnoredDnsHosts(observerInfos);
   const selfObserverUrl = await deriveSelfObserverUrl(partyIndex, {
-    isRemote: chainConfigsRaw.isRemote === true,
+    isRemote,
     rootDir: projectRoot,
     observerUrls,
   }).then(normalizeObserverUrl);
-  if (!observerUrls.includes(selfObserverUrl)) {
+  if ((isRemote || observerUrls.length > 0) && !observerUrls.includes(selfObserverUrl)) {
     throw new Error(
       `${selfObserverUrl} is this observer URL but is not present in observer-list.json; update observer-list.json or TSS_SELF_OBSERVER_URL`,
     );
@@ -576,7 +579,7 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
         url: observerUrl,
         requestedName,
         resolvedName: peer.resolvedName,
-        status: "accepted",
+        status: "scheduled",
         durationMs: Date.now() - started,
       });
     } catch (error) {
@@ -622,7 +625,7 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
 }
 
 async function handleAdminSignal(
-  adminContextPromise: Promise<AdminContext>,
+  getAdminContext: AdminContextProvider,
 ): Promise<void> {
   if (adminSignalInProgress) {
     console.warn(`${ADMIN_LOG_PREFIX} admin signal already in progress, ignoring`);
@@ -630,11 +633,9 @@ async function handleAdminSignal(
   }
   adminSignalInProgress = true;
 
-  let adminContext: AdminContext;
-  try {
-    adminContext = await adminContextPromise;
-  } catch (error) {
-    console.error(`${ADMIN_LOG_PREFIX} admin context unavailable; no admin signal action taken:`, error);
+  const adminContext = getAdminContext();
+  if (!adminContext) {
+    console.error(`${ADMIN_LOG_PREFIX} admin context unavailable; no admin signal action taken`);
     adminSignalInProgress = false;
     return;
   }
@@ -688,22 +689,20 @@ async function handleAdminSignal(
   }
 }
 
-export function registerAdminSignalHandler(adminContextPromise: Promise<AdminContext>): void {
+export function registerAdminSignalHandler(getAdminContext: AdminContextProvider): void {
   process.on("SIGUSR2", () => {
-    handleAdminSignal(adminContextPromise).catch((error) => {
+    handleAdminSignal(getAdminContext).catch((error) => {
       console.error(`${ADMIN_LOG_PREFIX} unhandled admin signal error:`, error);
     });
   });
 }
 
-export function createAdminRouter(adminContextPromise: Promise<AdminContext>): Router {
+export function createAdminRouter(getAdminContext: AdminContextProvider): Router {
   const router = express.Router();
-  router.use(async (req, res, next) => {
-    let adminContext: AdminContext;
-    try {
-      adminContext = await adminContextPromise;
-    } catch (error) {
-      console.error(`${ADMIN_LOG_PREFIX} admin context unavailable for request path=${sanitizeLogValue(req.path)}:`, error);
+  router.use((req, res, next) => {
+    const adminContext = getAdminContext();
+    if (!adminContext) {
+      console.error(`${ADMIN_LOG_PREFIX} admin context unavailable for request path=${sanitizeLogValue(req.path)}`);
       res.status(503).json({ Err: "Admin context unavailable" });
       return;
     }
@@ -764,9 +763,9 @@ export function createAdminRouter(adminContextPromise: Promise<AdminContext>): R
     try {
       const resolvedName = await schedulePm2Restart(requestedName, partyIndex);
       console.log(
-        `${ADMIN_LOG_PREFIX} restart accepted requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? "unknown")} requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)}`,
+        `${ADMIN_LOG_PREFIX} restart scheduled requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? "unknown")} requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)}`,
       );
-      res.status(202).json({ Ok: "restart_accepted", requestedName, resolvedName });
+      res.status(202).json({ Ok: "restart_scheduled", requestedName, resolvedName });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`${ADMIN_LOG_PREFIX} restart rejected requested=${sanitizeLogValue(requestedName)}: ${sanitizeLogValue(message)}`);
