@@ -95,9 +95,11 @@ const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
 
 const app = express();
 let adminContext: AdminContext | null = null;
+// Mount admin routes before CORS; admin auth is source-IP based, not browser-origin based.
 app.use("/admin", createAdminRouter(() => adminContext));
 app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
 app.use(express.json());
+// Register early so SIGUSR2 before startup logs cleanly instead of using the default signal action.
 registerAdminSignalHandler(() => adminContext);
 
 app.get("/status", (_req, res) => {
@@ -527,6 +529,7 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
   try {
     TransactionDB.initializeTransactionsDatabase(DB_PATH);
     console.log("[observer] Database initialized");
+    // Loads observer-list.json once and validates this observer's self URL.
     adminContext = await createAdminContext(PARTY_INDEX);
     console.log("[observer] Admin context initialized");
 
