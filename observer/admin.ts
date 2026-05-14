@@ -13,6 +13,7 @@ const ADMIN_SIGNAL_FILE = "admin-signal.json";
 const ADMIN_SIGNAL_PROCESSED_PREFIX = "admin-signal.processed";
 const ADMIN_LOG_PREFIX = "[observer/admin]";
 const LOG_FETCH_TIMEOUT_MS = 5 * 60 * 1000;
+const LOG_ARCHIVE_TIMEOUT_MS = 5 * 60 * 1000;
 const RESTART_TIMEOUT_MS = 10 * 1000;
 const RESTART_DELAY_MS = 1000;
 const PROCESS_NAME_PATTERN = /^(observer|tss-party)(-[1-9][0-9]*)?$/;
@@ -45,7 +46,7 @@ interface RestartResult {
   url: string;
   requestedName: string;
   resolvedName?: string;
-  status: "accepted" | "failed";
+  status: "accepted" | "scheduled" | "failed";
   durationMs: number;
   error?: string;
 }
@@ -108,6 +109,10 @@ export function sanitizeArchiveFilenamePart(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
+function sanitizeLogValue(value: unknown): string {
+  return `${value ?? ""}`.replace(/[\r\n\t\x00-\x1F\x7F]/g, " ").slice(0, 1000);
+}
+
 export function formatAdminTimestamp(date = new Date()): string {
   const pad = (value: number) => `${value}`.padStart(2, "0");
   return [
@@ -146,7 +151,7 @@ function warnIgnoredDnsHosts(infos: ObserverUrlInfo[]): void {
   for (const info of infos) {
     if (info.isIpLiteral || warnedDnsHosts.has(info.hostname)) continue;
     warnedDnsHosts.add(info.hostname);
-    console.warn(`${ADMIN_LOG_PREFIX} DNS observer URL ignored for admin source-IP allowlist: ${info.url}`);
+    console.warn(`${ADMIN_LOG_PREFIX} DNS observer URL ignored for admin source-IP allowlist: ${sanitizeLogValue(info.url)}`);
   }
 }
 
@@ -196,9 +201,9 @@ function computeAllowlistDecision(req: Request, projectRoot = resolveProjectRoot
 
 function logAdminRequest(req: Request, decision: AllowlistDecision, result: string): void {
   const forwardedFor = req.headers["x-forwarded-for"];
-  const forwarded = typeof forwardedFor === "string" ? ` xff=${forwardedFor}` : "";
+  const forwarded = typeof forwardedFor === "string" ? ` xff=${sanitizeLogValue(forwardedFor)}` : "";
   console.log(
-    `${ADMIN_LOG_PREFIX} request method=${req.method} path=${req.path} remote=${decision.rawRemoteAddress} normalized=${decision.normalizedRemoteAddress} allowed=${decision.allowed} matched=${decision.matchedObserverUrl ?? "none"} result=${result}${forwarded}`,
+    `${ADMIN_LOG_PREFIX} request method=${sanitizeLogValue(req.method)} path=${sanitizeLogValue(req.path)} remote=${sanitizeLogValue(decision.rawRemoteAddress)} normalized=${sanitizeLogValue(decision.normalizedRemoteAddress)} allowed=${decision.allowed} matched=${sanitizeLogValue(decision.matchedObserverUrl ?? "none")} result=${sanitizeLogValue(result)}${forwarded}`,
   );
 }
 
@@ -283,23 +288,27 @@ async function restartPm2Process(resolvedName: string): Promise<CommandResult> {
   return runCommand("pm2", ["restart", resolvedName], { timeoutMs: RESTART_TIMEOUT_MS });
 }
 
-async function schedulePm2Restart(requestedName: string, partyIndex: number): Promise<string> {
-  const resolvedName = await resolvePm2ProcessName(requestedName, partyIndex);
+function scheduleResolvedPm2Restart(requestedName: string, resolvedName: string): void {
   setTimeout(() => {
     restartPm2Process(resolvedName)
       .then((result) => {
         const ok = result.code === 0;
         console.log(
-          `${ADMIN_LOG_PREFIX} restart ${ok ? "completed" : "failed"} requested=${requestedName} resolved=${resolvedName} code=${result.code}`,
+          `${ADMIN_LOG_PREFIX} restart ${ok ? "completed" : "failed"} requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)} code=${result.code}`,
         );
         if (!ok) {
-          console.error(`${ADMIN_LOG_PREFIX} restart stderr resolved=${resolvedName}: ${result.stderr || result.stdout}`);
+          console.error(`${ADMIN_LOG_PREFIX} restart stderr resolved=${sanitizeLogValue(resolvedName)}: ${sanitizeLogValue(result.stderr || result.stdout)}`);
         }
       })
       .catch((error) => {
-        console.error(`${ADMIN_LOG_PREFIX} restart failed requested=${requestedName} resolved=${resolvedName}:`, error);
+        console.error(`${ADMIN_LOG_PREFIX} restart failed requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)}:`, error);
       });
   }, RESTART_DELAY_MS);
+}
+
+async function schedulePm2Restart(requestedName: string, partyIndex: number): Promise<string> {
+  const resolvedName = await resolvePm2ProcessName(requestedName, partyIndex);
+  scheduleResolvedPm2Restart(requestedName, resolvedName);
   return resolvedName;
 }
 
@@ -310,7 +319,7 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
     return;
   }
 
-  console.log(`${ADMIN_LOG_PREFIX} archive start filename=${filename}`);
+  console.log(`${ADMIN_LOG_PREFIX} archive start filename=${sanitizeLogValue(filename)}`);
   res.setHeader("Content-Type", "application/gzip");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
@@ -322,6 +331,12 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
   let bytes = 0;
   let tarClosed = false;
   let responseFinished = false;
+  const archiveTimeout = setTimeout(() => {
+    if (!tarClosed) {
+      console.error(`${ADMIN_LOG_PREFIX} archive timed out filename=${sanitizeLogValue(filename)} after ${LOG_ARCHIVE_TIMEOUT_MS}ms; terminating tar`);
+      tar.kill("SIGTERM");
+    }
+  }, LOG_ARCHIVE_TIMEOUT_MS);
   tar.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
   });
@@ -334,22 +349,24 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
   });
   res.on("close", () => {
     if (!responseFinished && !tarClosed) {
-      console.warn(`${ADMIN_LOG_PREFIX} archive client disconnected filename=${filename}; terminating tar`);
+      console.warn(`${ADMIN_LOG_PREFIX} archive client disconnected filename=${sanitizeLogValue(filename)}; terminating tar`);
       tar.kill("SIGTERM");
     }
   });
   tar.on("error", (error) => {
-    console.error(`${ADMIN_LOG_PREFIX} archive spawn failed filename=${filename}:`, error);
+    clearTimeout(archiveTimeout);
+    console.error(`${ADMIN_LOG_PREFIX} archive spawn failed filename=${sanitizeLogValue(filename)}:`, error);
     if (!res.headersSent) res.status(500).json({ Err: "Failed to create logs archive" });
     else res.destroy(error);
   });
   tar.on("close", (code) => {
     tarClosed = true;
+    clearTimeout(archiveTimeout);
     if (code === 0) {
-      console.log(`${ADMIN_LOG_PREFIX} archive complete filename=${filename} bytes=${bytes}`);
+      console.log(`${ADMIN_LOG_PREFIX} archive complete filename=${sanitizeLogValue(filename)} bytes=${bytes}`);
       return;
     }
-    console.error(`${ADMIN_LOG_PREFIX} archive failed filename=${filename} code=${code} stderr=${stderr.trim()}`);
+    console.error(`${ADMIN_LOG_PREFIX} archive failed filename=${sanitizeLogValue(filename)} code=${code} stderr=${sanitizeLogValue(stderr.trim())}`);
     if (!res.headersSent) res.status(500).json({ Err: "Failed to create logs archive" });
     else res.destroy(new Error(`tar failed with code ${code}`));
   });
@@ -368,13 +385,28 @@ function createLocalLogsArchive(projectRoot: string, outputPath: string): Promis
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
+    let settled = false;
+    const archiveTimeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      tar.kill("SIGTERM");
+      reject(new Error(`tar timed out after ${LOG_ARCHIVE_TIMEOUT_MS}ms`));
+    }, LOG_ARCHIVE_TIMEOUT_MS);
     tar.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    tar.on("error", reject);
+    tar.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(archiveTimeout);
+      reject(error);
+    });
     tar.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(archiveTimeout);
       if (code === 0) resolve();
-      else reject(new Error(`tar failed with code ${code}: ${stderr.trim()}`));
+      else reject(new Error(`tar failed with code ${code}: ${sanitizeLogValue(stderr.trim())}`));
     });
   });
 }
@@ -385,6 +417,7 @@ async function downloadPeerLogs(observerUrl: string, outputPath: string): Promis
     const response = await axios.get(`${normalizeObserverUrl(observerUrl)}/admin/logs/archive`, {
       responseType: "stream",
       timeout: LOG_FETCH_TIMEOUT_MS,
+      maxRedirects: 0,
       validateStatus: () => true,
     });
     if (response.status < 200 || response.status >= 300) {
@@ -420,10 +453,14 @@ function validateAdminSignal(raw: unknown): AdminSignal {
     throw new Error("admin signal target must be a non-empty string");
   }
   if (signal.target !== "all") {
+    let parsed: URL;
     try {
-      new URL(signal.target);
+      parsed = new URL(signal.target);
     } catch {
       throw new Error("admin signal target must be all or an observer URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("admin signal target URL must use http or https");
     }
   }
   if (signal.action === "restart") {
@@ -437,13 +474,13 @@ function validateAdminSignal(raw: unknown): AdminSignal {
 
 function resolveSignalTargets(signalTarget: string, projectRoot: string): string[] {
   const observerUrls = loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl);
-  if (signalTarget === "all") return observerUrls;
+  if (signalTarget === "all") return Array.from(new Set(observerUrls));
 
   const normalizedTarget = normalizeObserverUrl(signalTarget);
   if (!observerUrls.includes(normalizedTarget)) {
     throw new Error(`admin signal target ${signalTarget} is not present in observer-list.json`);
   }
-  return [normalizedTarget];
+  return Array.from(new Set([normalizedTarget]));
 }
 
 function formatUniqueAdminTimestamp(date = new Date()): string {
@@ -502,6 +539,7 @@ async function postPeerRestart(observerUrl: string, requestedName: string): Prom
     { name: requestedName },
     {
       timeout: RESTART_TIMEOUT_MS,
+      maxRedirects: 0,
       validateStatus: () => true,
     },
   );
@@ -511,7 +549,7 @@ async function postPeerRestart(observerUrl: string, requestedName: string): Prom
   return { resolvedName: response.data?.resolvedName };
 }
 
-async function restartTargets(targets: string[], requestedName: string, partyIndex: number, selfObserverUrl: string, projectRoot: string): Promise<string> {
+async function restartTargets(targets: string[], requestedName: string, partyIndex: number, selfObserverUrl: string, projectRoot: string): Promise<{ manifestPath: string; deferredSelfRestarts: Array<{ requestedName: string; resolvedName: string }> }> {
   const timestamp = formatUniqueAdminTimestamp();
   const outputDir = path.join(projectRoot, "admin-results");
   fs.mkdirSync(outputDir, { recursive: true });
@@ -519,6 +557,7 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
   const selfTargets = targets.filter((url) => isSelfObserverUrl(url, selfObserverUrl));
   const peerTargets = targets.filter((url) => !isSelfObserverUrl(url, selfObserverUrl));
   const results: RestartResult[] = [];
+  const deferredSelfRestarts: Array<{ requestedName: string; resolvedName: string }> = [];
 
   await Promise.all(peerTargets.map(async (observerUrl) => {
     const started = Date.now();
@@ -545,12 +584,13 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
   for (const observerUrl of selfTargets) {
     const started = Date.now();
     try {
-      const resolvedName = await schedulePm2Restart(requestedName, partyIndex);
+      const resolvedName = await resolvePm2ProcessName(requestedName, partyIndex);
+      deferredSelfRestarts.push({ requestedName, resolvedName });
       results.push({
         url: observerUrl,
         requestedName,
         resolvedName,
-        status: "accepted",
+        status: "scheduled",
         durationMs: Date.now() - started,
       });
     } catch (error) {
@@ -568,8 +608,8 @@ async function restartTargets(targets: string[], requestedName: string, partyInd
     manifestPath,
     JSON.stringify({ action: "restart", createdAt: new Date().toISOString(), requestedName, results }, null, 2),
   );
-  console.log(`${ADMIN_LOG_PREFIX} restart manifest=${manifestPath}`);
-  return manifestPath;
+  console.log(`${ADMIN_LOG_PREFIX} restart manifest=${sanitizeLogValue(manifestPath)}`);
+  return { manifestPath, deferredSelfRestarts };
 }
 
 async function handleAdminSignal(
@@ -610,7 +650,8 @@ async function handleAdminSignal(
       return;
     }
     let manifestPath: string;
-    console.log(`${ADMIN_LOG_PREFIX} SIGUSR2 action=${signal.action} target=${signal.target}`);
+    let deferredSelfRestarts: Array<{ requestedName: string; resolvedName: string }> = [];
+    console.log(`${ADMIN_LOG_PREFIX} SIGUSR2 action=${sanitizeLogValue(signal.action)} target=${sanitizeLogValue(signal.target)}`);
     let selfObserverUrl: string;
     try {
       selfObserverUrl = await getSelfObserverUrlForSignal();
@@ -623,11 +664,16 @@ async function handleAdminSignal(
     if (signal.action === "collect-logs") {
       manifestPath = await collectLogsFromTargets(targets, selfObserverUrl, projectRoot);
     } else {
-      manifestPath = await restartTargets(targets, signal.name, partyIndex, selfObserverUrl, projectRoot);
+      const restartResult = await restartTargets(targets, signal.name, partyIndex, selfObserverUrl, projectRoot);
+      manifestPath = restartResult.manifestPath;
+      deferredSelfRestarts = restartResult.deferredSelfRestarts;
     }
     const processedPath = path.join(projectRoot, `${ADMIN_SIGNAL_PROCESSED_PREFIX}-${formatUniqueAdminTimestamp()}.json`);
     fs.renameSync(signalPath, processedPath);
-    console.log(`${ADMIN_LOG_PREFIX} admin signal processed manifest=${manifestPath}; moved ${signalPath} to ${processedPath}`);
+    console.log(`${ADMIN_LOG_PREFIX} admin signal processed manifest=${sanitizeLogValue(manifestPath)}; moved ${sanitizeLogValue(signalPath)} to ${sanitizeLogValue(processedPath)}`);
+    for (const restart of deferredSelfRestarts) {
+      scheduleResolvedPm2Restart(restart.requestedName, restart.resolvedName);
+    }
   } catch (error) {
     console.error(`${ADMIN_LOG_PREFIX} admin signal failed:`, error);
   } finally {
@@ -655,6 +701,16 @@ export function registerAdminSignalHandler(partyIndex: number, projectRoot = res
 
 export function createAdminRouter(partyIndex: number, projectRoot = resolveProjectRoot()): Router {
   const router = express.Router();
+  let selfObserverUrlPromise: Promise<string> | null = null;
+  const getSelfObserverUrlForArchiveName = () => {
+    if (!selfObserverUrlPromise) {
+      selfObserverUrlPromise = createSelfObserverUrlPromise(partyIndex, projectRoot).catch((error) => {
+        selfObserverUrlPromise = null;
+        throw error;
+      });
+    }
+    return selfObserverUrlPromise;
+  };
   router.use((req, res, next) => {
     const decision = computeAllowlistDecision(req, projectRoot);
     if (!decision.allowed) {
@@ -674,17 +730,30 @@ export function createAdminRouter(partyIndex: number, projectRoot = resolveProje
     }
     const decision = res.locals.adminAllowlistDecision as AllowlistDecision | undefined;
     console.warn(
-      `${ADMIN_LOG_PREFIX} invalid request body requester=${decision?.normalizedRemoteAddress ?? normalizeRemoteAddress(req.socket.remoteAddress)} path=${req.path} status=${error.status}: ${error.message}`,
+      `${ADMIN_LOG_PREFIX} invalid request body requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? normalizeRemoteAddress(req.socket.remoteAddress))} path=${sanitizeLogValue(req.path)} status=${error.status}: ${sanitizeLogValue(error.message)}`,
     );
-    res.status(error.status).json({ Err: error.status === 413 ? "Request body too large" : "Invalid JSON body" });
+    const bodyError =
+      error.status === 413
+        ? "Request body too large"
+        : error.status === 415
+          ? "Unsupported request body type"
+          : "Invalid JSON body";
+    res.status(error.status).json({ Err: bodyError });
   });
 
-  router.get("/logs/archive", (_req, res) => {
-    const selfUrl = getSelfObserverUrl(partyIndex, projectRoot);
+  router.get("/logs/archive", async (_req, res) => {
+    let selfUrl = getSelfObserverUrl(partyIndex, projectRoot);
+    try {
+      selfUrl = await getSelfObserverUrlForArchiveName();
+    } catch (error) {
+      console.warn(
+        `${ADMIN_LOG_PREFIX} unable to derive self observer URL for archive filename; using local fallback: ${sanitizeLogValue(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
     const info = parseObserverUrl(selfUrl);
     const hostname = info ? sanitizeArchiveFilenamePart(info.hostname) : `party-${partyIndex}`;
     const port = info ? sanitizeArchiveFilenamePart(info.port) : `${8100 + partyIndex}`;
-    const filename = `logs-${hostname}-${port}-${formatAdminTimestamp()}.tar.gz`;
+    const filename = `logs-${hostname}-${port}-${formatUniqueAdminTimestamp()}.tar.gz`;
     streamLogsArchive(res, projectRoot, filename);
   });
 
@@ -693,7 +762,7 @@ export function createAdminRouter(partyIndex: number, projectRoot = resolveProje
     const decision = res.locals.adminAllowlistDecision as AllowlistDecision | undefined;
     if (!isValidAdminProcessName(requestedName)) {
       console.warn(
-        `${ADMIN_LOG_PREFIX} restart rejected requester=${decision?.normalizedRemoteAddress ?? "unknown"} requested=${requestedName || "missing"}`,
+        `${ADMIN_LOG_PREFIX} restart rejected requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? "unknown")} requested=${sanitizeLogValue(requestedName || "missing")}`,
       );
       res.status(400).json({ Err: "Invalid PM2 process name" });
       return;
@@ -702,12 +771,12 @@ export function createAdminRouter(partyIndex: number, projectRoot = resolveProje
     try {
       const resolvedName = await schedulePm2Restart(requestedName, partyIndex);
       console.log(
-        `${ADMIN_LOG_PREFIX} restart accepted requester=${decision?.normalizedRemoteAddress ?? "unknown"} requested=${requestedName} resolved=${resolvedName}`,
+        `${ADMIN_LOG_PREFIX} restart accepted requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? "unknown")} requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)}`,
       );
       res.status(202).json({ Ok: "restart_accepted", requestedName, resolvedName });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`${ADMIN_LOG_PREFIX} restart rejected requested=${requestedName}: ${message}`);
+      console.error(`${ADMIN_LOG_PREFIX} restart rejected requested=${sanitizeLogValue(requestedName)}: ${sanitizeLogValue(message)}`);
       res.status(500).json({ Err: message });
     }
   });
