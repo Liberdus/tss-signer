@@ -150,11 +150,12 @@ export async function createAdminContext(partyIndex: number, projectRoot = resol
   const observerUrls = Array.from(new Set(loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl)));
   const observerInfos = parseObserverUrlInfos(observerUrls);
   warnIgnoredDnsHosts(observerInfos);
-  const selfObserverUrl = await deriveSelfObserverUrl(partyIndex, {
+  const rawSelfObserverUrl = await deriveSelfObserverUrl(partyIndex, {
     isRemote,
     rootDir: projectRoot,
     observerUrls,
-  }).then(normalizeObserverUrl);
+  });
+  const selfObserverUrl = normalizeObserverUrl(rawSelfObserverUrl);
   if ((isRemote || observerUrls.length > 0) && !observerUrls.includes(selfObserverUrl)) {
     throw new Error(
       `${selfObserverUrl} is this observer URL but is not present in observer-list.json; update observer-list.json or TSS_SELF_OBSERVER_URL`,
@@ -334,6 +335,7 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
     }
   });
   tar.on("error", (error) => {
+    tarClosed = true;
     clearTimeout(archiveTimeout);
     console.error(`${ADMIN_LOG_PREFIX} archive spawn failed filename=${sanitizeLogValue(filename)}:`, error);
     if (!res.headersSent) res.status(500).json({ Err: "Failed to create logs archive" });
@@ -392,11 +394,10 @@ export function createAdminRouter(getAdminContext: AdminContextProvider): Router
     res.status(error.status).json({ Err: bodyError });
   });
 
-  router.get("/logs/archive", async (_req, res) => {
+  router.get("/logs/archive", (_req, res) => {
     const adminContext = res.locals.adminContext as AdminContext;
     const { partyIndex, projectRoot, selfObserverUrl } = adminContext;
-    const selfUrl = selfObserverUrl;
-    const info = parseObserverUrl(selfUrl);
+    const info = parseObserverUrl(selfObserverUrl);
     const hostname = info ? sanitizeArchiveFilenamePart(info.hostname) : `party-${partyIndex}`;
     const port = info ? sanitizeArchiveFilenamePart(info.port) : `${8100 + partyIndex}`;
     const filename = `logs-${hostname}-${port}-${formatAdminTimestamp()}.tar.gz`;
