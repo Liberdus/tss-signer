@@ -4,7 +4,7 @@ import path from 'path'
 import {pipeline} from 'stream/promises'
 import axios from 'axios'
 import readlineSync from 'readline-sync'
-import {getArchiveFilenameForObserverUrl, isValidAdminProcessName} from '../observer/admin'
+import {formatAdminTimestamp, getArchiveFilenameForObserverUrl, isValidAdminProcessName} from '../observer/admin'
 import {loadObserverUrlsFromRoot} from '../shared/utils/observerPeers'
 import {resolveProjectRoot} from '../shared/utils/paths'
 
@@ -98,8 +98,8 @@ export function parseArgs(argv: string[]): Options {
   return options
 }
 
-export function validateOptionsForAction(options: Options, action: AdminAction): void {
-  if (action !== 'restart' && options.name) {
+export function validateOptions(options: Options): void {
+  if (options.name && options.action !== 'restart') {
     throw new UsageError('--name can only be used with --action restart')
   }
 }
@@ -137,19 +137,6 @@ export function validateRestartName(name: string): string {
   return trimmed
 }
 
-export function formatAdminTimestamp(date = new Date()): string {
-  const pad = (value: number) => `${value}`.padStart(2, '0')
-  return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
-  ].join('-') + '-' + [
-    pad(date.getHours()),
-    pad(date.getMinutes()),
-    pad(date.getSeconds()),
-  ].join('-')
-}
-
 export function formatResultSummary(results: Array<{status: ResultStatus; url: string; error?: string}>): string {
   const total = results.length
   const success = results.filter((result) => result.status !== 'failed').length
@@ -171,6 +158,22 @@ export function formatHttpError(status: number, statusText: string | undefined, 
   const payload = typeof data === 'string' ? data : JSON.stringify(data)
   const statusLabel = statusText ? ` ${statusText}` : ''
   return payload ? `HTTP ${status}${statusLabel}: ${payload}` : `HTTP ${status}${statusLabel}`
+}
+
+async function readStreamBody(stream: any, maxBytes = 4096): Promise<string> {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const remaining = maxBytes - bytes
+    chunks.push(buffer.subarray(0, Math.max(0, remaining)))
+    bytes += Math.min(buffer.length, remaining)
+    if (bytes >= maxBytes) {
+      stream.destroy?.()
+      break
+    }
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 function selectAction(options: Options): AdminAction {
@@ -215,8 +218,8 @@ async function downloadLogsArchive(observerUrl: string, outputPath: string): Pro
       validateStatus: () => true,
     })
     if (response.status < 200 || response.status >= 300) {
-      response.data?.destroy?.()
-      throw new Error(formatHttpError(response.status, response.statusText, response.data))
+      const body = await readStreamBody(response.data)
+      throw new Error(formatHttpError(response.status, response.statusText, body))
     }
     response.data.on('data', (chunk: Buffer) => {
       size += chunk.length
@@ -313,6 +316,7 @@ async function restartTargets(projectRoot: string, targets: string[], requestedN
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) usage(0)
+  validateOptions(options)
 
   const projectRoot = resolveProjectRoot()
   const observerUrls = loadAdminObserverUrls(projectRoot)
@@ -321,7 +325,6 @@ async function main(): Promise<void> {
   }
 
   const action = selectAction(options)
-  validateOptionsForAction(options, action)
   const target = selectTarget(options, observerUrls)
   const targets = resolveTargets(target, observerUrls)
   const name = action === 'restart' ? selectRestartName(options) : undefined
@@ -345,8 +348,9 @@ if (require.main === module) {
     if (error instanceof UsageError) {
       console.error(error.message)
       usage()
+    } else {
+      console.error(error instanceof Error ? error.message : error)
+      process.exit(1)
     }
-    console.error(error instanceof Error ? error.message : error)
-    process.exit(1)
   })
 }
