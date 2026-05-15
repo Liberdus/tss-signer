@@ -106,8 +106,8 @@ function validateBridgeGuardAmount(value: unknown, fieldName: keyof LiberdusBrid
     throw new Error(`[config] liberdusBridgeGuards.${fieldName} must be a non-empty LIB amount string; use "0" to disable`)
   }
   try {
-    const parsed = ethers.utils.parseEther(value)
-    if (parsed.lt(0)) {
+    const parsed = ethers.parseEther(value)
+    if (parsed < 0n) {
       throw new Error('amount must be non-negative')
     }
   } catch (e) {

@@ -1,6 +1,6 @@
 import path from "path";
 import { ethers } from "ethers";
-import * as crypto from "@shardus/crypto-utils";
+import * as crypto from "@shardus/lib-crypto-utils";
 import { toShardusAddress } from "./transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "./transformTxId";
 import { DEFAULT_SHARDUS_CRYPTO_HASH_KEY } from "../../tss-tools/lib/channelId";
@@ -75,7 +75,7 @@ export function verifyLiberdusBridgeInGossipPayload(
     const unsignedTx = { ...parsedSignedTx };
     delete unsignedTx.sign;
     const message = crypto.hashObj(unsignedTx);
-    const recoveredAddress = ethers.utils.verifyMessage(message, parsedSignedTx.sign.sig);
+    const recoveredAddress = ethers.verifyMessage(message, parsedSignedTx.sign.sig);
     const recoveredShardusAddress = toShardusAddress(recoveredAddress);
     const ownerShardusAddress = toShardusAddress(parsedSignedTx.sign.owner);
     if (recoveredShardusAddress.toLowerCase() !== ownerShardusAddress.toLowerCase()) {

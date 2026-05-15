@@ -97,9 +97,9 @@ function parseArgs(argv: string[]): bnbTss.SignEthereumTxOptions & {chainId: num
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const tx = JSON.parse(fs.readFileSync(options.txFile, 'utf8')) as ethers.UnsignedTransaction;
-  const unsignedTx = ethers.utils.serializeTransaction(tx);
-  const txHash = ethers.utils.keccak256(unsignedTx);
+  const tx = JSON.parse(fs.readFileSync(options.txFile, 'utf8')) as ethers.TransactionLike;
+  const unsignedTx = ethers.Transaction.from(tx).unsignedSerialized;
+  const txHash = ethers.keccak256(unsignedTx);
   const txTimestampMs = Math.floor(Date.now() / SIGN_CHANNEL_TIME_BUCKET_MS) * SIGN_CHANNEL_TIME_BUCKET_MS;
   const channelId =
     options.channelId ||

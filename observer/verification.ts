@@ -10,7 +10,7 @@ const RETRY_DELAY_MS = 2000;
 
 const BRIDGE_IN_EVENT_ABI =
   "event BridgedIn(address indexed to, uint256 amount, uint256 indexed chainId, bytes32 indexed txId, uint256 timestamp)";
-const bridgeInterface = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
+const bridgeInterface = new ethers.Interface([BRIDGE_IN_EVENT_ABI]);
 
 /**
  * Verify that a terminal transaction result matches its reported outcome.

@@ -5,7 +5,7 @@ import { toEthereumAddress } from "./transformAddress";
 const BRIDGE_IN_FUNCTION_ABI =
   "function bridgeIn(address to, uint256 amount, uint256 _chainId, bytes32 txId) public";
 
-const bridgeInIface = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
+const bridgeInIface = new ethers.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 export interface EVMBridgeInGossipPayload {
   txId: string;
@@ -47,7 +47,7 @@ export function verifyEVMBridgeInGossipPayload(
       return { ok: false, reason: "invalid_nonce" };
     }
 
-    const parsed = ethers.utils.parseTransaction(normalized.signedTx);
+    const parsed = ethers.Transaction.from(normalized.signedTx);
     const parsedHash = normalizeTxId(parsed.hash ?? "");
     if (parsedHash !== normalized.receiptId) {
       return { ok: false, reason: "receiptId_mismatch" };

@@ -5,7 +5,7 @@ import * as path from 'path'
 import axios, {AxiosResponse} from 'axios'
 import http from 'http'
 import https from 'https'
-import * as crypto from '@shardus/crypto-utils'
+import * as crypto from '@shardus/lib-crypto-utils'
 import {
   ChainConfig,
   ChainConfigs,
@@ -32,7 +32,23 @@ import {gossipBridgeIn} from './gossip'
 import * as TransactionDB from '../shared/storage/transactiondb'
 import {Transaction, TransactionStatus, TransactionType, ExecutionHistoryEntry} from '../shared/storage/transactiondb'
 
-const {utils: ethersUtils} = ethers
+const ethersUtils = {
+  parseUnits: ethers.parseUnits,
+  formatEther: ethers.formatEther,
+  formatUnits: ethers.formatUnits,
+  verifyMessage: ethers.verifyMessage,
+  keccak256: ethers.keccak256,
+  computeAddress: ethers.computeAddress,
+  Interface: ethers.Interface,
+  joinSignature: (sig: {r: string; s: string; v: number}) =>
+    ethers.Signature.from(sig).serialized,
+  recoverPublicKey: (digest: string, sig: {r: string; s: string; v: number}) =>
+    ethers.SigningKey.recoverPublicKey(digest, ethers.Signature.from(sig)),
+  serializeTransaction: (tx: ethers.TransactionLike, sig?: {r: string; s: string; v: number}) =>
+    sig
+      ? ethers.Transaction.from({...tx, signature: ethers.Signature.from(sig)}).serialized
+      : ethers.Transaction.from(tx).unsignedSerialized,
+}
 
 ;(function enableTimestampedConsoleLogs() {
   const methods: Array<'log' | 'info' | 'warn' | 'error'> = ['log', 'info', 'warn', 'error']
@@ -57,16 +73,16 @@ interface ChainState {
   contract?: ethers.Contract
   // Bridge contract state (cooldown, max amount, last bridge-in time)
   bridgeInCooldown: number         // seconds
-  maxBridgeInAmount: ethers.BigNumber
+  maxBridgeInAmount: bigint
   lastBridgeInTime: number         // unix timestamp in seconds
-  // Precomputed BigNumber values of gasConfig.gasPriceTiers (avoids parseUnits per-tx)
-  gasPriceTiersBN: ethers.BigNumber[]
+  // Precomputed bigint values of gasConfig.gasPriceTiers (avoids parseUnits per-tx)
+  gasPriceTiersBN: bigint[]
 }
 
 interface TransactionQueueItem {
   receipt: any
   from: string
-  value: ethers.BigNumber | bigint
+  value: bigint
   txId: string
   type: 'tokenToCoin' | 'coinToToken' | 'vaultBridge'
   chainId: number // Add chainId to track which chain this transaction belongs to
@@ -200,7 +216,7 @@ const chainStateByChainId: Map<number, ChainState> = new Map(
     {
       config,
       bridgeInCooldown: 0,
-      maxBridgeInAmount: ethers.BigNumber.from(0),
+      maxBridgeInAmount: BigInt(0),
       lastBridgeInTime: 0,
       gasPriceTiersBN: (config.gasConfig?.gasPriceTiers ?? []).map((t) =>
         ethersUtils.parseUnits(t.toString(), 'gwei'),
@@ -240,9 +256,9 @@ async function fetchBridgeState(
           { maxRetries: 3 },
         ),
       ])
-      chainState.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+      chainState.bridgeInCooldown = Number(BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0])
       chainState.maxBridgeInAmount = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('maxBridgeInAmount', maxAmountRaw)[0]
-      chainState.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+      chainState.lastBridgeInTime = Number(BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0])
       const lastBridgeInStr = chainState.lastBridgeInTime > 0
         ? new Date(chainState.lastBridgeInTime * 1000).toISOString()
         : 'never'
@@ -258,7 +274,7 @@ async function fetchBridgeState(
         provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('lastBridgeInTime')}),
         { maxRetries: 3 },
       )
-      chainState.lastBridgeInTime = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0].toNumber()
+      chainState.lastBridgeInTime = Number(BRIDGE_CONTRACT_IFACE.decodeFunctionResult('lastBridgeInTime', lastTimeRaw)[0])
       const lastBridgeInStr = chainState.lastBridgeInTime > 0
         ? new Date(chainState.lastBridgeInTime * 1000).toISOString()
         : 'never'
@@ -268,7 +284,7 @@ async function fetchBridgeState(
         provider.call({to: contractAddr, data: BRIDGE_CONTRACT_IFACE.encodeFunctionData('bridgeInCooldown')}),
         { maxRetries: 3 },
       )
-      chainState.bridgeInCooldown = BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0].toNumber()
+      chainState.bridgeInCooldown = Number(BRIDGE_CONTRACT_IFACE.decodeFunctionResult('bridgeInCooldown', cooldownRaw)[0])
       console.log(`Bridge bridgeInCooldown fetched for ${chainState.config.name}: ${chainState.bridgeInCooldown}s`)
     } else if (fields === 'maxBridgeInAmount') {
       const maxAmountRaw = await chainRpcConfig.withChainHttpProvider(chainId, (provider) =>
@@ -290,7 +306,7 @@ async function waitForBridgeCooldown(
   chainName: string,
   txId: string,
   txHash: string,
-): Promise<{ receipt: ethers.providers.TransactionReceipt | null; outcome: ProcessOutcome | null }> {
+): Promise<{ receipt: ethers.TransactionReceipt | null; outcome: ProcessOutcome | null }> {
   const latestBlock = await chainRpcConfig.withChainHttpProvider(
     chainState.config.chainId,
     (provider) => provider.getBlock('latest'),
@@ -349,15 +365,15 @@ async function waitForBridgeCooldown(
 
 async function checkMaxBridgeAmount(
   chainState: ChainState,
-  value: ethers.BigNumber,
+  value: bigint,
   skipRefetch = false,
 ): Promise<boolean> {
-  if (value.lte(chainState.maxBridgeInAmount)) return true
+  if (value <= chainState.maxBridgeInAmount) return true
   if (skipRefetch) return false
   // Cached check failed — re-fetch in case the limit was raised on-chain
   console.log(`[bridge-limits] Cached maxBridgeInAmount check failed, re-fetching for chain ${chainState.config.chainId}`)
   await fetchBridgeState(chainState.config.chainId, 'maxBridgeInAmount')
-  return value.lte(chainState.maxBridgeInAmount)
+  return value <= chainState.maxBridgeInAmount
 }
 
 
@@ -659,7 +675,7 @@ async function pollPendingTransactionsFromLocalDB(): Promise<void> {
             ? 'vaultBridge'
             : 'tokenToCoin'
 
-      const value = ethers.BigNumber.from(tx.value)
+      const value = BigInt(tx.value)
 
       const txData: TransactionQueueItem = {
         receipt: null as any,
@@ -741,19 +757,22 @@ async function getLatestChainNonce(chainId: number, tssSender: string): Promise<
     chainId, (provider) => provider.getTransactionCount(tssSender), { maxRetries: 3 })
 }
 
-async function getChainTransactionReceipt(chainId: number, txHash: string): Promise<ethers.providers.TransactionReceipt | null> {
+async function getChainTransactionReceipt(chainId: number, txHash: string): Promise<ethers.TransactionReceipt | null> {
   return chainRpcConfig.withChainHttpProvider(
     chainId, (provider) => provider.getTransactionReceipt(txHash), { maxRetries: 3 })
 }
 
 // Fetches gas price from a fixed RPC URL so all parties query the same endpoint,
 // avoiding payload divergence from different Chainlist RPCs returning different values.
-async function getGasPriceFromFixedRpc(rpcUrl: string, maxRetries = 3): Promise<ethers.BigNumber> {
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl)
+async function getGasPriceFromFixedRpc(rpcUrl: string, maxRetries = 3): Promise<bigint> {
+  const provider = new ethers.JsonRpcProvider(rpcUrl)
   let lastError: unknown
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await provider.getGasPrice()
+      const feeData = await provider.getFeeData()
+      const gasPrice = feeData.gasPrice
+      if (gasPrice == null) throw new Error('gasPrice not available from fee data')
+      return gasPrice
     } catch (err) {
       lastError = err
       if (attempt < maxRetries) {
@@ -1072,7 +1091,7 @@ async function injectEthereumTx(
   try {
     const txResponse = await chainRpcConfig.withChainHttpProvider(
       chainId,
-      (provider) => provider.sendTransaction(signedTx),
+      (provider) => provider.broadcastTransaction(signedTx),
       { maxRetries: 1, timeoutMs: TSS_PARTY_SEND_TX_TIMEOUT_MS },
     )
     console.log('BridgeIn transaction sent successfully!', txResponse.hash)
@@ -1129,14 +1148,14 @@ async function injectLiberdusTx(
 
 async function processCoinToToken(
   to: string,
-  value: ethers.BigNumber,
+  value: bigint,
   txId: string,
   targetChainId: number,
   txTimestampMs: number,
   isRefund?: boolean,
   revertReason?: string,
 ): Promise<ProcessOutcome> {
-  value = ethers.BigNumber.from(value)
+  value = BigInt(value)
   console.log('Processing coin to token transaction', {
     to,
     value: value.toString(),
@@ -1161,9 +1180,9 @@ async function processCoinToToken(
   // Operator-imposed local limit check — fires before the on-chain check
   if (!isRefund) {
     const maxBridgeInAmountConfig = chainConfigs.liberdusBridgeGuards.maxBridgeInAmount
-    const localMaxBridgeAmount = maxBridgeInAmountConfig !== "0" ? ethers.utils.parseEther(maxBridgeInAmountConfig) : null
+    const localMaxBridgeAmount = maxBridgeInAmountConfig !== "0" ? ethers.parseEther(maxBridgeInAmountConfig) : null
     console.log(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB, local limit ${maxBridgeInAmountConfig !== "0" ? maxBridgeInAmountConfig : 'none'} LIB`)
-    if (localMaxBridgeAmount && value.gt(localMaxBridgeAmount)) {
+    if (localMaxBridgeAmount !== null && value > localMaxBridgeAmount) {
       console.warn(`[bridge-guards] BRIDGE_IN on ${targetChainName}: amount ${ethersUtils.formatEther(value)} LIB exceeds local limit ${maxBridgeInAmountConfig} LIB — initiating refund`)
       const revertReason = `Amount ${ethersUtils.formatEther(value)} LIB exceeds local BRIDGE_IN limit of ${maxBridgeInAmountConfig} LIB`
       return processTokenToCoin(to, value, txId, targetChainId, txTimestampMs, true, revertReason)
@@ -1291,7 +1310,7 @@ async function processCoinToToken(
 
   // Apply gas price logic based on chain configuration
   for (const tierGwei of chainState.gasPriceTiersBN) {
-    if (currentGasPrice.lte(tierGwei)) {
+    if (currentGasPrice <= tierGwei) {
       currentGasPrice = tierGwei
       break
     }
@@ -1418,7 +1437,7 @@ async function processCoinToToken(
     }, n, observerUrl)
   }
 
-  let receipt: ethers.providers.TransactionReceipt | null = null
+  let receipt: ethers.TransactionReceipt | null = null
   try {
     receipt = await getChainTransactionReceipt(targetChainId, txHash)
     if (!receipt) {
@@ -1472,13 +1491,13 @@ async function processCoinToToken(
 
 async function processVaultBridge(
   to: string,
-  value: ethers.BigNumber,
+  value: bigint,
   txId: string,
   sourceChainId: number,
   destinationChainId: number,
   txTimestampMs: number,
 ): Promise<ProcessOutcome> {
-  value = ethers.BigNumber.from(value)
+  value = BigInt(value)
   console.log('Processing vault bridge transaction', {
     to,
     value: value.toString(),
@@ -1631,7 +1650,7 @@ async function processVaultBridge(
 
   // Apply gas price logic based on destination chain configuration
   for (const tierGwei of destChainState.gasPriceTiersBN) {
-    if (currentGasPrice.lte(tierGwei)) {
+    if (currentGasPrice <= tierGwei) {
       currentGasPrice = tierGwei
       break
     }
@@ -1758,7 +1777,7 @@ async function processVaultBridge(
     }, n, observerUrl)
   }
 
-  let receipt: ethers.providers.TransactionReceipt | null = null
+  let receipt: ethers.TransactionReceipt | null = null
   try {
     receipt = await getChainTransactionReceipt(destinationChainId, txHash)
     if (!receipt) {
@@ -1830,11 +1849,11 @@ async function processTokenToCoin(
 
   // Operator-imposed local limit check — only on non-refund calls
   if (!isRefund) {
-    const valueBN = ethers.BigNumber.from(value.toHexString())
+    const valueBN = value
     const maxBridgeOutAmountConfig = chainConfigs.liberdusBridgeGuards.maxBridgeOutAmount
-    const localMaxBridgeAmount = maxBridgeOutAmountConfig !== "0" ? ethers.utils.parseEther(maxBridgeOutAmountConfig) : null
+    const localMaxBridgeAmount = maxBridgeOutAmountConfig !== "0" ? ethers.parseEther(maxBridgeOutAmountConfig) : null
     console.log(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB, local limit ${maxBridgeOutAmountConfig !== "0" ? maxBridgeOutAmountConfig : 'none'} LIB`)
-    if (localMaxBridgeAmount && valueBN.gt(localMaxBridgeAmount)) {
+    if (localMaxBridgeAmount !== null && valueBN > localMaxBridgeAmount) {
       console.warn(`[bridge-guards] BRIDGE_OUT from ${sourceChainName}: amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local limit ${maxBridgeOutAmountConfig} LIB — initiating refund`)
       const revertReason = `Amount ${ethersUtils.formatEther(valueBN)} LIB exceeds local BRIDGE_OUT limit of ${maxBridgeOutAmountConfig} LIB`
       // Observer stores the BRIDGE_OUT targetAddress as transaction.sender; refund assumes it matches the original sender.
@@ -1882,7 +1901,7 @@ async function processTokenToCoin(
   )
   console.log('Transaction:', tx)
   const hashMessage = crypto.hashObj(tx)
-  let digest = ethersUtils.hashMessage(hashMessage)
+  let digest = ethers.hashMessage(hashMessage)
   const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
@@ -2370,7 +2389,7 @@ async function main(): Promise<void> {
       if (validTx.type === 'coinToToken') {
         processPromise = processCoinToToken(
           validTx.from,
-          validTx.value as ethers.BigNumber,
+          validTx.value as bigint,
           validTx.txId,
           validTx.chainId,
           validTx.txTimestamp,
@@ -2379,7 +2398,7 @@ async function main(): Promise<void> {
         console.log('Processing token to coin transaction', validTx)
         processPromise = processTokenToCoin(
           validTx.from,
-          validTx.value as ethers.BigNumber,
+          validTx.value as bigint,
           validTx.txId,
           validTx.chainId,
           validTx.txTimestamp,
@@ -2388,7 +2407,7 @@ async function main(): Promise<void> {
         console.log('Processing vault bridge (EVM-to-EVM) transaction', validTx)
         processPromise = processVaultBridge(
           validTx.from,
-          validTx.value as ethers.BigNumber,
+          validTx.value as bigint,
           validTx.txId,
           validTx.chainId,
           chainConfigs.secondaryChainConfig!.chainId,

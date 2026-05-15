@@ -10,11 +10,11 @@ import { monitorState, saveMonitorState } from "./state";
 
 const BRIDGE_OUT_EVENT_ABI =
   "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)";
-const BRIDGE_OUT_IFACE = new ethers.utils.Interface([BRIDGE_OUT_EVENT_ABI]);
+const BRIDGE_OUT_IFACE = new ethers.Interface([BRIDGE_OUT_EVENT_ABI]);
 
 type ParsedLiberdusBridgeTxBase = {
   sender: string;
-  value: ethers.BigNumber;
+  value: bigint;
   status: TransactionDB.TransactionStatus;
   txTimestamp: number;
 };
@@ -130,7 +130,7 @@ export async function monitorLiberdusTransactions(): Promise<void> {
             const tx: TransactionDB.Transaction = {
               txId,
               sender: toEthereumAddress(sender),
-              value: ethers.utils.hexValue(value),
+              value: ethers.toQuantity(value),
               type: TransactionDB.TransactionType.BRIDGE_IN,
               txTimestamp,
               chainId,
@@ -197,7 +197,7 @@ function parseLiberdusBridgeTx(
     if (type !== "transfer") return null;
 
     const txId = normalizeTxId(rawTxId);
-    const value = ethers.BigNumber.from("0x" + additionalInfo.amount.value);
+    const value = BigInt("0x" + additionalInfo.amount.value);
     const txTimestamp = Number(timestamp);
     if (!Number.isInteger(txTimestamp) || txTimestamp <= 0) return null;
 
@@ -288,14 +288,14 @@ async function verifyEvmBridgeOutSourceTx(
         if (parsed.name !== "BridgedOut") continue;
 
         const targetAddress = toEthereumAddress(parsed.args.targetAddress as string);
-        const amount = parsed.args.amount as ethers.BigNumber;
-        const chainId = (parsed.args.chainId as ethers.BigNumber).toNumber();
-        const timestampMs = (parsed.args.timestamp as ethers.BigNumber).toNumber() * 1000;
+        const amount = parsed.args.amount as bigint;
+        const chainId = Number(parsed.args.chainId as bigint);
+        const timestampMs = Number(parsed.args.timestamp as bigint) * 1000;
 
         if (targetAddress !== toEthereumAddress(tx.sender)) {
           return { ok: false, reason: "source_targetAddress_mismatch" };
         }
-        if (!amount.eq(ethers.BigNumber.from(tx.value))) {
+        if (amount !== BigInt(tx.value)) {
           return { ok: false, reason: "source_amount_mismatch" };
         }
         if (chainId !== tx.chainId) {
@@ -376,9 +376,9 @@ async function verifyLiberdusTx(
       return { ok: false, reason: "missing_liberdus_tx_amount" };
     }
     const rawAmount = amountValue.trim();
-    const actualAmount = ethers.BigNumber.from(rawAmount.startsWith("0x") ? rawAmount : `0x${rawAmount}`);
-    const expectedAmount = ethers.BigNumber.from(expected.amount);
-    if (!actualAmount.eq(expectedAmount)) {
+    const actualAmount = BigInt(rawAmount.startsWith("0x") ? rawAmount : `0x${rawAmount}`);
+    const expectedAmount = BigInt(expected.amount);
+    if (actualAmount !== expectedAmount) {
       return {
         ok: false,
         reason: `liberdus_tx_amount_mismatch(expected=${expectedAmount.toString()}, found=${actualAmount.toString()})`,
