@@ -42,11 +42,9 @@ curl -X POST http://<observer-ip>:<observer-port>/admin/pm2/restart \
 Allowed names:
 
 - `observer`
-- `observer-N`
 - `tss-party`
-- `tss-party-N`
 
-Generic names resolve on the receiving machine. For example, `tss-party` resolves to `tss-party` if present in PM2, otherwise `tss-party-${PARTY_INDEX}`.
+Names resolve on the receiving machine. For example, `tss-party` resolves to `tss-party` if present in PM2, otherwise `tss-party-${PARTY_INDEX}`.
 
 Successful requests return:
 
@@ -54,75 +52,53 @@ Successful requests return:
 { "Ok": "restart_scheduled", "requestedName": "tss-party", "resolvedName": "tss-party-1" }
 ```
 
-## Signal-Based Operations
+## Operator Admin CLI
 
-The observer handles `SIGUSR2` by reading:
-
-```text
-<project-root>/admin-signal.json
-```
-
-Write the file atomically:
+Run the CLI from an observer machine so the source IP is allowed by the admin endpoints:
 
 ```bash
-cat > admin-signal.tmp.json <<'JSON'
-{ "action": "collect-logs", "target": "all" }
-JSON
-mv admin-signal.tmp.json admin-signal.json
-kill -USR2 <observer-pid>
+npm run operator-admin
 ```
 
-On success, `admin-signal.json` is left in place. A later `SIGUSR2` will process the same file again unless the operator changes or removes it.
+The CLI prompts for:
 
-On parse or validation failure, the file is left in place for inspection and correction.
+- action: `collect-logs` or `restart`
+- target: `all` or one observer URL from `observer-list.json`
+- PM2 process name for restart: `observer` or `tss-party`
 
-## Collect Logs By Signal
+Non-interactive example:
 
-Collect from every observer in `observer-list.json`:
-
-```json
-{ "action": "collect-logs", "target": "all" }
+```bash
+npm run operator-admin -- --action collect-logs --target all --yes
 ```
 
-Collect from one explicit observer:
+Restart example:
 
-```json
-{ "action": "collect-logs", "target": "http://203.0.113.3:8103" }
+```bash
+npm run operator-admin -- --action restart --target http://203.0.113.3:8103 --name tss-party --yes
 ```
 
-The explicit target must exactly match a normalized URL in `observer-list.json`.
+The explicit target must match a normalized URL in `observer-list.json`.
+
+## Collected Logs Output
 
 Output:
 
 ```text
-collected-logs/YYYY-MM-DD-HH-mm-ss-SSS/
+collected-logs/YYYY-MM-DD-HH-mm-ss/
   203.0.113.1-8101.tar.gz
   203.0.113.2-8102.tar.gz
   manifest.json
 ```
 
-`manifest.json` records each target URL, archive filename, status, size, duration, and error if any.
+`manifest.json` records each target URL, archive filename, status, `sizeKb`, duration, and error if any.
 
-## Restart By Signal
-
-Restart on every observer in `observer-list.json`:
-
-```json
-{ "action": "restart", "target": "all", "name": "tss-party" }
-```
-
-Restart one explicit observer:
-
-```json
-{ "action": "restart", "target": "http://203.0.113.3:8103", "name": "tss-party-3" }
-```
-
-For `target: "all"`, peer restart requests are sent first. If the local observer is also a target, its restart is deferred until after the restart manifest is written.
+## Restart Output
 
 Output:
 
 ```text
-admin-results/restart-YYYY-MM-DD-HH-mm-ss-SSS.json
+admin-results/restart-YYYY-MM-DD-HH-mm-ss.json
 ```
 
 The manifest records requested target, requested name, resolved process name, status, duration, and error if any.
@@ -130,7 +106,7 @@ The manifest records requested target, requested name, resolved process name, st
 ## Timeouts And Logs
 
 - Local archive creation timeout: 5 minutes.
-- Peer log download timeout: 5 minutes.
+- CLI log download timeout: 5 minutes.
 - PM2 restart command timeout: 10 seconds.
 - Admin endpoint attempts are logged with requester IP, normalized IP, allow/deny result, route, and outcome.
 - Log values are sanitized to avoid control-character log injection.

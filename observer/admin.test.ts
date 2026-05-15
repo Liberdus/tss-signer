@@ -39,18 +39,17 @@ function testAdminAllowlistLocalhostMode(): void {
 
 function testProcessNameValidation(): void {
   assert.equal(isValidAdminProcessName("observer"), true);
-  assert.equal(isValidAdminProcessName("observer-1"), true);
   assert.equal(isValidAdminProcessName("tss-party"), true);
-  assert.equal(isValidAdminProcessName("tss-party-99"), true);
   assert.equal(isValidAdminProcessName("pm2"), false);
-  assert.equal(isValidAdminProcessName("observer-0"), false);
+  assert.equal(isValidAdminProcessName("observer-1"), false);
+  assert.equal(isValidAdminProcessName("tss-party-99"), false);
   assert.equal(isValidAdminProcessName("tss-party-a"), false);
 }
 
 function testPm2NameResolutionFromSet(): void {
   assert.equal(resolvePm2ProcessNameFromSet("tss-party", 3, new Set(["tss-party"])), "tss-party");
   assert.equal(resolvePm2ProcessNameFromSet("tss-party", 3, new Set(["tss-party-3"])), "tss-party-3");
-  assert.equal(resolvePm2ProcessNameFromSet("tss-party-4", 3, new Set()), "tss-party-4");
+  assert.throws(() => resolvePm2ProcessNameFromSet("tss-party-4", 3, new Set(["tss-party-4"])), /Invalid/);
   assert.throws(() => resolvePm2ProcessNameFromSet("observer", 2, new Set(["tss-party-2"])), /not found/);
 }
 

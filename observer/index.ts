@@ -25,7 +25,7 @@ import {
 } from "./monitor/ethereum";
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "../shared/utils/scheduler";
-import { AdminContext, createAdminContext, createAdminRouter, registerAdminSignalHandler } from "./admin";
+import { AdminContext, createAdminContext, createAdminRouter } from "./admin";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -99,8 +99,6 @@ let adminContext: AdminContext | null = null;
 app.use("/admin", createAdminRouter(() => adminContext));
 app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
 app.use(express.json());
-// Register early so SIGUSR2 before startup logs cleanly instead of using the default signal action.
-registerAdminSignalHandler(() => adminContext);
 
 app.get("/status", (_req, res) => {
   res.json({ syncReady });

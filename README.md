@@ -210,7 +210,7 @@ Observer processes (`observer-N`) run with a 1 GB memory limit. TSS party proces
 
 Log files are at `logs/{process-name}-combined.log`.
 
-Observer admin endpoints and `SIGUSR2` workflows for collecting logs and restarting observer/TSS PM2 processes are documented in [OBSERVER_ADMIN.md](OBSERVER_ADMIN.md).
+Observer admin endpoints and the `operator-admin` CLI for collecting logs and restarting observer/TSS PM2 processes are documented in [OBSERVER_ADMIN.md](OBSERVER_ADMIN.md).
 
 ## Bridge Transaction Flow
 
