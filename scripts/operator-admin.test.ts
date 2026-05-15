@@ -1,12 +1,14 @@
 import assert from 'assert'
 import {
   bytesToKb,
+  formatHttpError,
   formatResultSummary,
-  formatUniqueAdminTimestamp,
+  formatAdminTimestamp,
   normalizeObserverUrl,
   parseArgs,
   resolveTargets,
   UsageError,
+  validateOptionsForAction,
   validateRestartName,
 } from './operator-admin'
 import {getArchiveFilenameForObserverUrl} from '../observer/admin'
@@ -33,6 +35,11 @@ function testParseArgs(): void {
   })
   assertThrowsMessage(() => parseArgs(['--action', 'stop']), /Invalid action/)
   assert.throws(() => parseArgs(['--bad']), UsageError)
+  assertThrowsMessage(
+    () => validateOptionsForAction({action: 'collect-logs', name: 'tss-party'}, 'collect-logs'),
+    /--name can only be used/,
+  )
+  assert.doesNotThrow(() => validateOptionsForAction({name: 'tss-party'}, 'restart'))
 }
 
 function testTargetSelection(): void {
@@ -61,8 +68,10 @@ function testArchiveFilenameGeneration(): void {
 function testTimestampsAndSummary(): void {
   assert.strictEqual(bytesToKb(10240), 10)
   assert.strictEqual(bytesToKb(1536), 1.5)
+  assert.strictEqual(formatHttpError(403, 'Forbidden', {Err: 'denied'}), 'HTTP 403 Forbidden: {"Err":"denied"}')
+  assert.strictEqual(formatHttpError(500, undefined, ''), 'HTTP 500')
   assert.strictEqual(
-    formatUniqueAdminTimestamp(new Date(2026, 4, 14, 18, 30, 0, 7)),
+    formatAdminTimestamp(new Date(2026, 4, 14, 18, 30, 0, 7)),
     '2026-05-14-18-30-00',
   )
   assert.strictEqual(

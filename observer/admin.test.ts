@@ -5,6 +5,7 @@ import {
   isAdminRequesterAllowed,
   isValidAdminProcessName,
   normalizeRemoteAddress,
+  parseObserverUrlInfos,
   resolvePm2ProcessNameFromSet,
   sanitizeArchiveFilenamePart,
 } from "./admin";
@@ -21,14 +22,15 @@ function testAdminAllowlistIpLiterals(): void {
     "http://observer.example.com:8102",
     "http://[2001:db8::1]:8103",
   ];
+  const observerInfos = parseObserverUrlInfos(observerUrls);
 
-  assert.deepEqual(isAdminRequesterAllowed("::ffff:203.0.113.1", observerUrls, true), {
+  assert.deepEqual(isAdminRequesterAllowed("::ffff:203.0.113.1", observerInfos, true), {
     allowed: true,
     matchedObserverUrl: "http://203.0.113.1:8101",
     ignoredDnsHosts: [],
   });
-  assert.equal(isAdminRequesterAllowed("observer.example.com", observerUrls, true).allowed, false);
-  assert.equal(isAdminRequesterAllowed("2001:db8::1", observerUrls, true).allowed, true);
+  assert.equal(isAdminRequesterAllowed("observer.example.com", observerInfos, true).allowed, false);
+  assert.equal(isAdminRequesterAllowed("2001:db8::1", observerInfos, true).allowed, true);
 }
 
 function testAdminAllowlistLocalhostMode(): void {

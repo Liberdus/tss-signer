@@ -13,7 +13,7 @@ const RESTART_TIMEOUT_MS = 10 * 1000; // PM2 command timeout.
 const RESTART_DELAY_MS = 1000; // Delay before invoking PM2 restart.
 const PROCESS_NAME_PATTERN = /^(observer|tss-party)$/; // Restart only this machine's observer/TSS pair.
 
-interface ObserverUrlInfo {
+export interface ObserverUrlInfo {
   url: string;
   hostname: string;
   port: string;
@@ -62,14 +62,12 @@ function isLocalhostAddress(address: string): boolean {
 
 export function isAdminRequesterAllowed(
   remoteAddress: string,
-  observerUrls: string[],
+  observerInfos: ObserverUrlInfo[],
   isRemote: boolean,
 ): { allowed: boolean; matchedObserverUrl?: string; ignoredDnsHosts: string[] } {
   const normalizedRemoteAddress = normalizeRemoteAddress(remoteAddress);
   const ignoredDnsHosts: string[] = [];
-  for (const rawUrl of observerUrls) {
-    const info = parseObserverUrl(rawUrl);
-    if (!info) continue;
+  for (const info of observerInfos) {
     // Only IP-literal observer URLs authorize admin callers.
     if (!info.isIpLiteral) {
       ignoredDnsHosts.push(info.hostname);
@@ -125,7 +123,7 @@ function parseObserverUrl(rawUrl: string): ObserverUrlInfo | null {
   }
 }
 
-function parseObserverUrlInfos(observerUrls: string[]): ObserverUrlInfo[] {
+export function parseObserverUrlInfos(observerUrls: string[]): ObserverUrlInfo[] {
   return observerUrls
     .map(parseObserverUrl)
     .filter((entry): entry is ObserverUrlInfo => entry !== null);
@@ -171,7 +169,7 @@ function computeAllowlistDecision(req: Request, adminContext: AdminContext): All
   const normalizedRemoteAddress = normalizeRemoteAddress(rawRemoteAddress);
   const decision = isAdminRequesterAllowed(
     rawRemoteAddress,
-    adminContext.observerUrls,
+    adminContext.observerInfos,
     chainConfigsRaw.isRemote === true,
   );
   return {
