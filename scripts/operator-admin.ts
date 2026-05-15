@@ -98,6 +98,12 @@ export function parseArgs(argv: string[]): Options {
   return options
 }
 
+export function validateOptionsForAction(options: Options, action: AdminAction): void {
+  if (action !== 'restart' && options.name) {
+    throw new UsageError('--name can only be used with --action restart')
+  }
+}
+
 export function normalizeObserverUrl(rawUrl: string): string {
   try {
     return new URL(rawUrl.trim()).href.replace(/\/$/, '')
@@ -131,7 +137,7 @@ export function validateRestartName(name: string): string {
   return trimmed
 }
 
-export function formatUniqueAdminTimestamp(date = new Date()): string {
+export function formatAdminTimestamp(date = new Date()): string {
   const pad = (value: number) => `${value}`.padStart(2, '0')
   return [
     date.getFullYear(),
@@ -159,6 +165,12 @@ export function formatResultSummary(results: Array<{status: ResultStatus; url: s
 
 export function bytesToKb(bytes: number): number {
   return Math.round((bytes / 1024) * 100) / 100
+}
+
+export function formatHttpError(status: number, statusText: string | undefined, data: unknown): string {
+  const payload = typeof data === 'string' ? data : JSON.stringify(data)
+  const statusLabel = statusText ? ` ${statusText}` : ''
+  return payload ? `HTTP ${status}${statusLabel}: ${payload}` : `HTTP ${status}${statusLabel}`
 }
 
 function selectAction(options: Options): AdminAction {
@@ -204,7 +216,7 @@ async function downloadLogsArchive(observerUrl: string, outputPath: string): Pro
     })
     if (response.status < 200 || response.status >= 300) {
       response.data?.destroy?.()
-      throw new Error(`HTTP ${response.status} ${response.statusText}`.trim())
+      throw new Error(formatHttpError(response.status, response.statusText, response.data))
     }
     response.data.on('data', (chunk: Buffer) => {
       size += chunk.length
@@ -230,14 +242,13 @@ async function postRestart(observerUrl: string, requestedName: string): Promise<
     },
   )
   if (response.status < 200 || response.status >= 300) {
-    const payload = typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
-    throw new Error(`HTTP ${response.status}: ${payload}`)
+    throw new Error(formatHttpError(response.status, response.statusText, response.data))
   }
   return {resolvedName: response.data?.resolvedName}
 }
 
 async function collectLogs(projectRoot: string, targets: string[]): Promise<void> {
-  const outputDir = path.join(projectRoot, 'collected-logs', formatUniqueAdminTimestamp())
+  const outputDir = path.join(projectRoot, 'collected-logs', formatAdminTimestamp())
   fs.mkdirSync(outputDir, {recursive: true})
 
   const results = await Promise.all(targets.map(async (url): Promise<LogCollectionResult> => {
@@ -288,7 +299,7 @@ async function restartTargets(projectRoot: string, targets: string[], requestedN
     }
   }))
 
-  const manifestPath = path.join(outputDir, `restart-${formatUniqueAdminTimestamp()}.json`)
+  const manifestPath = path.join(outputDir, `restart-${formatAdminTimestamp()}.json`)
   fs.writeFileSync(manifestPath, `${JSON.stringify({
     action: 'restart',
     createdAt: new Date().toISOString(),
@@ -310,6 +321,7 @@ async function main(): Promise<void> {
   }
 
   const action = selectAction(options)
+  validateOptionsForAction(options, action)
   const target = selectTarget(options, observerUrls)
   const targets = resolveTargets(target, observerUrls)
   const name = action === 'restart' ? selectRestartName(options) : undefined

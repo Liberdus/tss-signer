@@ -52,6 +52,8 @@ Successful requests return:
 { "Ok": "restart_scheduled", "requestedName": "tss-party", "resolvedName": "tss-party-1" }
 ```
 
+This means the restart was accepted and scheduled. The actual PM2 command result is logged by the target observer after the response is sent.
+
 ## Operator Admin CLI
 
 Run the CLI from an observer machine so the source IP is allowed by the admin endpoints:
@@ -101,7 +103,7 @@ Output:
 admin-results/restart-YYYY-MM-DD-HH-mm-ss.json
 ```
 
-The manifest records requested target, requested name, resolved process name, status, duration, and error if any.
+The manifest records requested target, requested name, resolved process name, status, duration, and error if any. Restart status `scheduled` means the target endpoint accepted the restart request; it does not mean PM2 has already completed the restart.
 
 ## Timeouts And Logs
 
