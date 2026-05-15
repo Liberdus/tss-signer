@@ -3,15 +3,14 @@ import {
   bytesToKb,
   formatHttpError,
   formatResultSummary,
-  formatAdminTimestamp,
   normalizeObserverUrl,
   parseArgs,
   resolveTargets,
   UsageError,
-  validateOptionsForAction,
+  validateOptions,
   validateRestartName,
 } from './operator-admin'
-import {getArchiveFilenameForObserverUrl} from '../observer/admin'
+import {formatAdminTimestamp, getArchiveFilenameForObserverUrl} from '../observer/admin'
 
 function assertThrowsMessage(fn: () => unknown, pattern: RegExp): void {
   assert.throws(fn, (error) => error instanceof Error && pattern.test(error.message))
@@ -36,10 +35,14 @@ function testParseArgs(): void {
   assertThrowsMessage(() => parseArgs(['--action', 'stop']), /Invalid action/)
   assert.throws(() => parseArgs(['--bad']), UsageError)
   assertThrowsMessage(
-    () => validateOptionsForAction({action: 'collect-logs', name: 'tss-party'}, 'collect-logs'),
+    () => validateOptions({action: 'collect-logs', name: 'tss-party'}),
     /--name can only be used/,
   )
-  assert.doesNotThrow(() => validateOptionsForAction({name: 'tss-party'}, 'restart'))
+  assertThrowsMessage(
+    () => validateOptions({name: 'tss-party'}),
+    /--name can only be used/,
+  )
+  assert.doesNotThrow(() => validateOptions({action: 'restart', name: 'tss-party'}))
 }
 
 function testTargetSelection(): void {
