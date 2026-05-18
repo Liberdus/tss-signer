@@ -1,12 +1,12 @@
 /**
- * check-custom-providers
+ * check-custom-providers-dev
  *
- * Loads providers-polygon.json and providers-bsc.json, builds the final URL
- * list for each chain, then fires a live eth_blockNumber call against every
- * URL to confirm it is reachable and functional.
+ * Same as check-custom-providers but targets testnet chains:
+ *   - Polygon Amoy Testnet (chainId 80002)
+ *   - BSC Testnet / Chapel (chainId 97)
  *
  * Usage:
- *   npm run check-custom-providers:mainnet
+ *   npm run check-custom-providers:dev
  *
  * Exit code: 0 if all URLs pass, 1 if any fail.
  */
@@ -15,21 +15,15 @@ import { ethers } from 'ethers'
 import { loadCustomProviderUrls, ResolvedProviderUrl } from '../shared/lib/customProviders'
 
 const CHAINS: Array<{ chainId: number; name: string }> = [
-  { chainId: 137, name: 'Polygon Mainnet' },
-  { chainId: 56,  name: 'BSC Mainnet' },
+  { chainId: 80002, name: 'Polygon Amoy Testnet' },
+  { chainId: 97,    name: 'BSC Testnet' },
 ]
 
 const PROBE_TIMEOUT_MS = 15_000
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function maskUrl(url: string): string {
   try {
     const u = new URL(url)
-    // Mask the last segment of the path (where API keys commonly live) and
-    // any query-string values, while keeping the host visible for debugging.
     const pathParts = u.pathname.split('/')
     if (pathParts.length > 1) {
       const last = pathParts[pathParts.length - 1]
@@ -49,7 +43,7 @@ function pad(s: string, len: number): string {
   return s.length >= len ? s : s + ' '.repeat(len - s.length)
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let handle: NodeJS.Timeout
   const timeout = new Promise<never>((_, reject) => {
     handle = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
@@ -61,10 +55,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   }
 }
 
-// ---------------------------------------------------------------------------
-// Probe one URL
-// ---------------------------------------------------------------------------
-
 interface ProbeResult {
   name: string
   url: string
@@ -73,21 +63,14 @@ interface ProbeResult {
   error?: string
 }
 
-async function probeUrl(
-  entry: ResolvedProviderUrl,
-  chainId: number,
-): Promise<ProbeResult> {
-  // StaticJsonRpcProvider skips auto network-detection, avoiding false
-  // "underlying network changed" errors on providers that return a different
-  // chainId from eth_chainId than what ethers expects.
+async function probeUrl(entry: ResolvedProviderUrl, chainId: number): Promise<ProbeResult> {
   const provider = new ethers.providers.StaticJsonRpcProvider(entry.url, {
     chainId,
     name: 'unknown',
   })
-
   const start = Date.now()
   try {
-    await withTimeout(provider.getBlockNumber(), PROBE_TIMEOUT_MS, entry.url)
+    await withTimeout(provider.getBlockNumber(), PROBE_TIMEOUT_MS)
     return { name: entry.name, url: entry.url, pass: true, latencyMs: Date.now() - start }
   } catch (err) {
     return {
@@ -98,16 +81,10 @@ async function probeUrl(
       error: (err as Error)?.message ?? String(err),
     }
   } finally {
-    // ethers v5 StaticJsonRpcProvider / JsonRpcProvider opens a polling
-    // interval — destroy it so the process can exit cleanly.
     provider.removeAllListeners()
     ;(provider as any)._websocket?.close?.()
   }
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 interface FailureSummary {
   chain: string
@@ -178,6 +155,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[check-custom-providers] Unexpected error:', err)
+  console.error('[check-custom-providers-dev] Unexpected error:', err)
   process.exit(1)
 })
