@@ -117,24 +117,8 @@ async function testSoftwareUpdateCommandSequenceNoop(): Promise<void> {
   assert.deepEqual(calls, SOFTWARE_UPDATE_COMMANDS.map((entry) => `${entry.command} ${entry.args.join(" ")}`));
 }
 
-async function testSoftwareUpdateAllowsUntrackedFiles(): Promise<void> {
-  const calls: string[] = [];
-  const responses = [
-    { code: 0, stdout: "", stderr: "" },
-    { code: 0, stdout: "abc123\n", stderr: "" },
-    { code: 0, stdout: "fetch ok\n", stderr: "" },
-    { code: 0, stdout: "Already up to date.\n", stderr: "" },
-    { code: 0, stdout: "abc123\n", stderr: "" },
-    { code: 0, stdout: "compile ok\n", stderr: "" },
-  ];
-
-  const result = await runSoftwareUpdate("/repo", async (command, args) => {
-    calls.push(`${command} ${args.join(" ")}`);
-    return responses.shift()!;
-  });
-
-  assert.equal(calls[0], "git status --porcelain --untracked-files=no");
-  assert.equal(result.Ok, "software_update_completed");
+function testSoftwareUpdateIgnoresUntrackedFilesInStatusCheck(): void {
+  assert.deepEqual(SOFTWARE_UPDATE_COMMANDS[0].args, ["status", "--porcelain", "--untracked-files=no"]);
 }
 
 async function testSoftwareUpdateFetchFailure(): Promise<void> {
@@ -227,7 +211,7 @@ async function main(): Promise<void> {
   await testSoftwareUpdateDirtyWorktree();
   await testSoftwareUpdateStatusFailure();
   await testSoftwareUpdateCommandSequenceNoop();
-  await testSoftwareUpdateAllowsUntrackedFiles();
+  testSoftwareUpdateIgnoresUntrackedFilesInStatusCheck();
   await testSoftwareUpdateFetchFailure();
   await testSoftwareUpdateMergeThrowsUnknownUpdated();
   await testSoftwareUpdateChangedAndCompileFailed();
