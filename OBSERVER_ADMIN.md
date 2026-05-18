@@ -1,6 +1,6 @@
 # Observer Admin Operations
 
-The observer exposes admin-only tooling for collecting logs and restarting PM2 processes across observer machines.
+The observer exposes admin-only tooling for collecting logs, restarting PM2 processes, and temporarily updating software across observer machines.
 
 ## Access Rules
 
@@ -64,7 +64,7 @@ npm run operator-admin
 
 The CLI prompts for:
 
-- action: `collect-logs` or `restart`
+- action: `collect-logs`, `restart`, or `update-software`
 - target: `all` or one observer URL from `observer-list.json`
 - PM2 process name for restart: `observer` or `tss-party`
 
@@ -81,6 +81,27 @@ npm run operator-admin -- --action restart --target http://203.0.113.3:8103 --na
 ```
 
 The explicit target must match a normalized URL in `observer-list.json`.
+
+Software update example:
+
+```bash
+npm run operator-admin -- --action update-software --target all --yes
+```
+
+This calls `POST /admin/software/update` on the selected observers. The endpoint runs only this fixed sequence from the project root:
+
+```text
+git status --porcelain --untracked-files=no
+git rev-parse HEAD
+git fetch origin main
+git merge --ff-only origin/main
+git rev-parse HEAD
+npm run compile
+```
+
+The endpoint can be enabled or disabled with `SOFTWARE_UPDATE_ENABLED` at the top of `observer/admin.ts`. Keep it disabled in production unless a controlled maintenance update is needed. The current default update target is `origin/main`, configured there with `SOFTWARE_UPDATE_REMOTE` and `SOFTWARE_UPDATE_BRANCH`.
+
+If tracked files are modified or staged, the update is rejected before fetching or merging. Untracked files are ignored by this preflight. The update endpoint does not run `npm install` and does not restart PM2; run the restart action separately after a successful update.
 
 ## Collected Logs Output
 
@@ -105,10 +126,21 @@ admin-results/restart-YYYY-MM-DD-HH-mm-ss.json
 
 The manifest records requested target, requested name, resolved process name, status, duration, and error if any. Restart status `scheduled` means the target endpoint accepted the restart request; it does not mean PM2 has already completed the restart.
 
+## Software Update Output
+
+Output:
+
+```text
+admin-results/update-YYYY-MM-DD-HH-mm-ss.json
+```
+
+The manifest records each target URL, status, before/after commit, whether code changed, compile result, duration, and capped output snippets.
+
 ## Timeouts And Logs
 
 - Local archive creation timeout: 5 minutes.
 - CLI log download timeout: 5 minutes.
 - PM2 restart command timeout: 10 seconds.
+- Software update command timeout: 5 minutes per fixed command.
 - Admin endpoint attempts are logged with requester IP, normalized IP, allow/deny result, route, and outcome.
 - Log values are sanitized to avoid control-character log injection.

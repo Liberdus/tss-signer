@@ -1,5 +1,6 @@
 import assert from 'assert'
 import {
+  buildSoftwareUpdateManifest,
   bytesToKb,
   formatHttpError,
   formatResultSummary,
@@ -33,6 +34,11 @@ function testParseArgs(): void {
     yes: true,
   })
   assertThrowsMessage(() => parseArgs(['--action', 'stop']), /Invalid action/)
+  assert.deepStrictEqual(parseArgs(['--action', 'update-software', '--target', 'all', '--yes']), {
+    action: 'update-software',
+    target: 'all',
+    yes: true,
+  })
   assert.throws(() => parseArgs(['--bad']), UsageError)
   assertThrowsMessage(
     () => validateOptions({action: 'collect-logs', name: 'tss-party'}),
@@ -43,6 +49,7 @@ function testParseArgs(): void {
     /--name can only be used/,
   )
   assert.doesNotThrow(() => validateOptions({action: 'restart', name: 'tss-party'}))
+  assert.doesNotThrow(() => validateOptions({action: 'update-software'}))
 }
 
 function testTargetSelection(): void {
@@ -86,10 +93,46 @@ function testTimestampsAndSummary(): void {
   )
 }
 
+function testSoftwareUpdateManifest(): void {
+  assert.deepStrictEqual(
+    buildSoftwareUpdateManifest([
+      {
+        url: 'http://203.0.113.1:8101',
+        status: 'ok',
+        beforeCommit: 'abc123',
+        afterCommit: 'def456',
+        updated: true,
+        compileOk: true,
+        durationMs: 1500,
+        stdout: 'ok',
+        stderr: '',
+      },
+    ], '2026-05-14T10:00:00.000Z'),
+    {
+      action: 'update-software',
+      createdAt: '2026-05-14T10:00:00.000Z',
+      results: [
+        {
+          url: 'http://203.0.113.1:8101',
+          status: 'ok',
+          beforeCommit: 'abc123',
+          afterCommit: 'def456',
+          updated: true,
+          compileOk: true,
+          durationMs: 1500,
+          stdout: 'ok',
+          stderr: '',
+        },
+      ],
+    },
+  )
+}
+
 testParseArgs()
 testTargetSelection()
 testRestartNameValidation()
 testArchiveFilenameGeneration()
 testTimestampsAndSummary()
+testSoftwareUpdateManifest()
 
 console.log('operator-admin tests passed')
