@@ -44,10 +44,12 @@ export interface ChainConfigs {
   isRemote?: boolean
   enableLiberdusNetwork: boolean
   /**
-   * When true, the observer prefers Infura-based RPC URLs (when supported for the
-   * configured chainId). Disabled by default; requires Infura API keys via env.
+   * Controls which RPC sources are used for each chain.
+   *   "custom"    — only URLs from providers-<chain>.json (no Chainlist fetch)
+   *   "chainlist" — only Chainlist (hourly fetch); custom provider files ignored
+   *   "both"      — custom URLs prepended, Chainlist fetched hourly (default)
    */
-  useInfuraRpcProviders?: boolean
+  rpcProviderMode?: 'custom' | 'chainlist' | 'both'
   liberdusNetworkId: string
   collectorHost?: string
   proxyServerHost?: string
