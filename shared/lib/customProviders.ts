@@ -19,6 +19,7 @@ export interface ProviderEntry {
 
 export interface CustomProviderConfig {
   chainId: number
+  chainName?: string
   providers: ProviderEntry[]
 }
 
@@ -119,9 +120,11 @@ export function buildUrlsFromProviderConfig(config: CustomProviderConfig): Provi
 
     const keys = (entry.keys ?? []).map((k) => (k || '').trim()).filter(Boolean)
     if (keys.length === 0) {
-      throw new Error(
-        `[customProviders] Provider "${name}" has no keys — add at least one URL or API key in the provider config file`,
+      console.warn(
+        `[customProviders] Provider "${name}" has no keys — skipping. Add at least one URL or API key to enable it.`,
       )
+      skipped.push({ name, reason: 'keys is empty' })
+      continue
     }
 
     const isUrlOnly = URL_ONLY_PROVIDERS.has(name.toLowerCase())
