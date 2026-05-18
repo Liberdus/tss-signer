@@ -8,7 +8,7 @@ import {formatAdminTimestamp, getArchiveFilenameForObserverUrl, isValidAdminProc
 import {loadObserverUrlsFromRoot} from '../shared/utils/observerPeers'
 import {resolveProjectRoot} from '../shared/utils/paths'
 
-type AdminAction = 'collect-logs' | 'restart'
+type AdminAction = 'collect-logs' | 'restart' | 'update-software'
 type ResultStatus = 'ok' | 'scheduled' | 'failed'
 
 type Options = {
@@ -37,8 +37,23 @@ type RestartResult = {
   error?: string
 }
 
+type SoftwareUpdateCliResult = {
+  url: string
+  status: ResultStatus
+  beforeCommit?: string
+  afterCommit?: string
+  updated?: boolean
+  compileOk?: boolean
+  durationMs: number
+  error?: string
+  stdout?: string
+  stderr?: string
+}
+
 const LOG_FETCH_TIMEOUT_MS = 5 * 60 * 1000
 const RESTART_TIMEOUT_MS = 10 * 1000
+// Covers the server-side fixed update sequence without leaving ordinary failures hanging too long.
+const SOFTWARE_UPDATE_TIMEOUT_MS = 15 * 60 * 1000
 
 export class UsageError extends Error {}
 
@@ -47,7 +62,7 @@ function usage(exitCode = 1): never {
     'Usage: node dist/scripts/operator-admin.js [options]',
     '',
     'Options:',
-    '  --action collect-logs|restart',
+    '  --action collect-logs|restart|update-software',
     '  --target all|<observer-url>',
     '  --name observer|tss-party',
     '  --yes',
@@ -67,7 +82,7 @@ export function parseArgs(argv: string[]): Options {
 
     switch (arg) {
       case '--action':
-        if (value !== 'collect-logs' && value !== 'restart') {
+        if (value !== 'collect-logs' && value !== 'restart' && value !== 'update-software') {
           throw new UsageError(`Invalid action: ${value}`)
         }
         options.action = value
@@ -178,7 +193,7 @@ async function readStreamBody(stream: any, maxBytes = 4096): Promise<string> {
 
 function selectAction(options: Options): AdminAction {
   if (options.action) return options.action
-  const choices: AdminAction[] = ['collect-logs', 'restart']
+  const choices: AdminAction[] = ['collect-logs', 'restart', 'update-software']
   console.log('Operator admin actions:')
   const selected = readlineSync.keyInSelect(choices, 'Select admin action:', {cancel: false})
   return choices[selected]
@@ -313,6 +328,73 @@ async function restartTargets(projectRoot: string, targets: string[], requestedN
   console.log(formatResultSummary(results))
 }
 
+// Software update action. Keep separate from log/restart helpers.
+async function postSoftwareUpdate(observerUrl: string): Promise<{
+  ok: boolean
+  beforeCommit?: string
+  afterCommit?: string
+  updated?: boolean
+  compileOk?: boolean
+  error?: string
+  stdout?: string
+  stderr?: string
+}> {
+  const response = await axios.post(
+    `${observerUrl}/admin/software/update`,
+    undefined,
+    {
+      timeout: SOFTWARE_UPDATE_TIMEOUT_MS,
+      maxRedirects: 0,
+      validateStatus: () => true,
+    },
+  )
+  const body = response.data && typeof response.data === 'object' ? response.data : {}
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    beforeCommit: body.beforeCommit,
+    afterCommit: body.afterCommit,
+    updated: body.updated,
+    compileOk: body.compileOk,
+    error: response.status >= 200 && response.status < 300 ? undefined : body.Err ?? formatHttpError(response.status, response.statusText, response.data),
+    stdout: body.stdout,
+    stderr: body.stderr,
+  }
+}
+
+export function buildSoftwareUpdateManifest(results: SoftwareUpdateCliResult[], createdAt = new Date().toISOString()): object {
+  return {
+    action: 'update-software',
+    createdAt,
+    results,
+  }
+}
+
+async function updateSoftwareTargets(projectRoot: string, targets: string[]): Promise<void> {
+  const outputDir = path.join(projectRoot, 'admin-results')
+  fs.mkdirSync(outputDir, {recursive: true})
+
+  const results = await Promise.all(targets.map(async (url): Promise<SoftwareUpdateCliResult> => {
+    const startedAt = Date.now()
+    try {
+      const update = await postSoftwareUpdate(url)
+      const {ok, ...fields} = update
+      return {url, status: ok ? 'ok' : 'failed', durationMs: Date.now() - startedAt, ...fields}
+    } catch (error) {
+      return {
+        url,
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }))
+
+  const manifestPath = path.join(outputDir, `update-${formatAdminTimestamp()}.json`)
+  fs.writeFileSync(manifestPath, `${JSON.stringify(buildSoftwareUpdateManifest(results), null, 2)}\n`)
+  console.log(`manifest=${manifestPath}`)
+  console.log(formatResultSummary(results))
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) usage(0)
@@ -338,8 +420,10 @@ async function main(): Promise<void> {
 
   if (action === 'collect-logs') {
     await collectLogs(projectRoot, targets)
-  } else {
+  } else if (action === 'restart') {
     await restartTargets(projectRoot, targets, name as string)
+  } else {
+    await updateSoftwareTargets(projectRoot, targets)
   }
 }
 

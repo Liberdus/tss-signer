@@ -13,6 +13,22 @@ const RESTART_TIMEOUT_MS = 10 * 1000; // PM2 command timeout.
 const RESTART_DELAY_MS = 1000; // Delay before invoking PM2 restart.
 const PROCESS_NAME_PATTERN = /^(observer|tss-party)$/; // Restart only this machine's observer/TSS pair.
 
+// Software update admin endpoint. Keep this block easy to remove later.
+// Keep disabled in production unless a controlled maintenance update is needed.
+export const SOFTWARE_UPDATE_ENABLED = true;
+const SOFTWARE_UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
+const SOFTWARE_UPDATE_OUTPUT_LIMIT = 20_000;
+export const SOFTWARE_UPDATE_REMOTE = "origin";
+export const SOFTWARE_UPDATE_BRANCH = "main";
+export const SOFTWARE_UPDATE_COMMANDS = [
+  { command: "git", args: ["status", "--porcelain", "--untracked-files=no"], label: "git status --porcelain --untracked-files=no" },
+  { command: "git", args: ["rev-parse", "HEAD"], label: "git rev-parse HEAD before" },
+  { command: "git", args: ["fetch", SOFTWARE_UPDATE_REMOTE, SOFTWARE_UPDATE_BRANCH], label: `git fetch ${SOFTWARE_UPDATE_REMOTE} ${SOFTWARE_UPDATE_BRANCH}` },
+  { command: "git", args: ["merge", "--ff-only", `${SOFTWARE_UPDATE_REMOTE}/${SOFTWARE_UPDATE_BRANCH}`], label: `git merge --ff-only ${SOFTWARE_UPDATE_REMOTE}/${SOFTWARE_UPDATE_BRANCH}` },
+  { command: "git", args: ["rev-parse", "HEAD"], label: "git rev-parse HEAD after" },
+  { command: "npm", args: ["run", "compile"], label: "npm run compile" },
+] as const;
+
 export interface ObserverUrlInfo {
   url: string;
   hostname: string;
@@ -29,6 +45,24 @@ interface AllowlistDecision {
 
 interface CommandResult {
   code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export type SoftwareUpdateCommandRunner = (
+  command: string,
+  args: string[],
+  options?: { cwd?: string; timeoutMs?: number },
+) => Promise<CommandResult>;
+
+export interface SoftwareUpdateResult {
+  Ok?: "software_update_completed";
+  Err?: string;
+  beforeCommit?: string;
+  afterCommit?: string;
+  updated?: boolean;
+  compileOk: boolean;
+  durationMs: number;
   stdout: string;
   stderr: string;
 }
@@ -93,6 +127,11 @@ export function sanitizeArchiveFilenamePart(value: string): string {
 
 function sanitizeLogValue(value: unknown): string {
   return `${value ?? ""}`.replace(/[\r\n\t\x00-\x1F\x7F]/g, " ").slice(0, 2000);
+}
+
+export function capAdminOutput(value: string, limit = SOFTWARE_UPDATE_OUTPUT_LIMIT): string {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}\n...[truncated ${value.length - limit} chars]`;
 }
 
 export function formatAdminTimestamp(date = new Date()): string {
@@ -354,6 +393,142 @@ function streamLogsArchive(res: Response, projectRoot: string, filename: string)
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Software update admin endpoint. Keep this section easy to remove later.
+// ---------------------------------------------------------------------------
+
+function appendCommandOutput(
+  output: { stdout: string; stderr: string },
+  label: string,
+  result: CommandResult,
+): void {
+  if (result.stdout) output.stdout += `\n[${label} stdout]\n${result.stdout}`;
+  if (result.stderr) output.stderr += `\n[${label} stderr]\n${result.stderr}`;
+}
+
+function buildSoftwareUpdateResult(
+  startedAt: number,
+  output: { stdout: string; stderr: string },
+  fields: Partial<SoftwareUpdateResult>,
+): SoftwareUpdateResult {
+  return {
+    compileOk: false,
+    durationMs: Date.now() - startedAt,
+    stdout: capAdminOutput(output.stdout.trim()),
+    stderr: capAdminOutput(output.stderr.trim()),
+    ...fields,
+  };
+}
+
+async function runUpdateCommand(
+  runner: SoftwareUpdateCommandRunner,
+  projectRoot: string,
+  commandSpec: typeof SOFTWARE_UPDATE_COMMANDS[number],
+): Promise<CommandResult> {
+  return runner(commandSpec.command, [...commandSpec.args], {
+    cwd: projectRoot,
+    timeoutMs: SOFTWARE_UPDATE_TIMEOUT_MS,
+  });
+}
+
+export async function runSoftwareUpdate(
+  projectRoot: string,
+  runner: SoftwareUpdateCommandRunner = runCommand,
+): Promise<SoftwareUpdateResult> {
+  const [statusCmd, beforeCmd, fetchCmd, mergeCmd, afterCmd, compileCmd] = SOFTWARE_UPDATE_COMMANDS;
+  const startedAt = Date.now();
+  const output = { stdout: "", stderr: "" };
+  let beforeCommit: string | undefined;
+  let afterCommit: string | undefined;
+
+  try {
+    const status = await runUpdateCommand(runner, projectRoot, statusCmd);
+    appendCommandOutput(output, statusCmd.label, status);
+    if (status.code !== 0) {
+      return buildSoftwareUpdateResult(startedAt, output, {
+        Err: `git status failed with code ${status.code}`,
+        beforeCommit,
+        afterCommit,
+        updated: false,
+      });
+    }
+    if (status.stdout.trim()) {
+      return buildSoftwareUpdateResult(startedAt, output, {
+        Err: "Worktree is dirty; software update aborted",
+        beforeCommit,
+        afterCommit,
+        updated: false,
+      });
+    }
+
+    const before = await runUpdateCommand(runner, projectRoot, beforeCmd);
+    appendCommandOutput(output, beforeCmd.label, before);
+    if (before.code !== 0) {
+      return buildSoftwareUpdateResult(startedAt, output, {
+        Err: `git rev-parse HEAD failed with code ${before.code}`,
+        beforeCommit,
+        afterCommit,
+        updated: false,
+      });
+    }
+    beforeCommit = before.stdout.trim();
+
+    for (const commandSpec of [fetchCmd, mergeCmd]) {
+      const result = await runUpdateCommand(runner, projectRoot, commandSpec);
+      appendCommandOutput(output, commandSpec.label, result);
+      if (result.code !== 0) {
+        return buildSoftwareUpdateResult(startedAt, output, {
+          Err: `${commandSpec.label} failed with code ${result.code}`,
+          beforeCommit,
+          afterCommit,
+          updated: false,
+        });
+      }
+    }
+
+    const after = await runUpdateCommand(runner, projectRoot, afterCmd);
+    appendCommandOutput(output, afterCmd.label, after);
+    if (after.code !== 0) {
+      return buildSoftwareUpdateResult(startedAt, output, {
+        Err: `git rev-parse HEAD failed with code ${after.code}`,
+        beforeCommit,
+        afterCommit,
+        updated: false,
+      });
+    }
+    afterCommit = after.stdout.trim();
+
+    const compile = await runUpdateCommand(runner, projectRoot, compileCmd);
+    appendCommandOutput(output, compileCmd.label, compile);
+    if (compile.code !== 0) {
+      return buildSoftwareUpdateResult(startedAt, output, {
+        Err: `npm run compile failed with code ${compile.code}`,
+        beforeCommit,
+        afterCommit,
+        updated: beforeCommit !== afterCommit,
+        compileOk: false,
+      });
+    }
+
+    return buildSoftwareUpdateResult(startedAt, output, {
+      Ok: "software_update_completed",
+      beforeCommit,
+      afterCommit,
+      updated: beforeCommit !== afterCommit,
+      compileOk: true,
+    });
+  } catch (error) {
+    return buildSoftwareUpdateResult(startedAt, output, {
+      Err: error instanceof Error ? error.message : String(error),
+      beforeCommit,
+      afterCommit,
+      updated: beforeCommit !== undefined && afterCommit !== undefined ? beforeCommit !== afterCommit : undefined,
+      compileOk: false,
+    });
+  }
+}
+
 export function createAdminRouter(getAdminContext: AdminContextProvider): Router {
   const router = express.Router();
   // Keep allowlist/audit before JSON parsing.
@@ -428,6 +603,28 @@ export function createAdminRouter(getAdminContext: AdminContextProvider): Router
       console.error(`${ADMIN_LOG_PREFIX} restart rejected requested=${sanitizeLogValue(requestedName)}: ${sanitizeLogValue(message)}`);
       res.status(500).json({ Err: message });
     }
+  });
+
+  // Software update admin endpoint. Keep restart as a separate operator action.
+  router.post("/software/update", async (_req, res) => {
+    if (!SOFTWARE_UPDATE_ENABLED) {
+      console.warn(`${ADMIN_LOG_PREFIX} software update rejected: endpoint disabled`);
+      res.status(403).json({ Err: "Software update admin endpoint disabled" });
+      return;
+    }
+
+    const adminContext = res.locals.adminContext as AdminContext;
+    const decision = res.locals.adminAllowlistDecision as AllowlistDecision | undefined;
+    console.log(
+      `${ADMIN_LOG_PREFIX} software update started requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? "unknown")}`,
+    );
+
+    const result = await runSoftwareUpdate(adminContext.projectRoot);
+    const ok = result.Ok === "software_update_completed";
+    console.log(
+      `${ADMIN_LOG_PREFIX} software update ${ok ? "completed" : "failed"} requester=${sanitizeLogValue(decision?.normalizedRemoteAddress ?? "unknown")} before=${sanitizeLogValue(result.beforeCommit ?? "unknown")} after=${sanitizeLogValue(result.afterCommit ?? "unknown")} updated=${result.updated === true} compileOk=${result.compileOk} durationMs=${result.durationMs}`,
+    );
+    res.status(ok ? 200 : 500).json(result);
   });
 
   return router;
