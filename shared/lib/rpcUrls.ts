@@ -5,10 +5,43 @@ const HOURLY_MS = 60 * 60 * 1000;
 
 const httpRpcUrlsByChain = new Map<number, string[]>();
 const urlBlacklistExpiry = new Map<string, number>();
+const urlProviderNames = new Map<string, string>();
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 function normalizeRpcUrl(url: string): string {
   return (url || "").trim();
+}
+
+/**
+ * Returns a safe representation of an RPC URL with the API key redacted.
+ * Keeps the hostname visible (useful for identifying the provider) but
+ * replaces the last path segment (where keys are typically embedded) and
+ * any query string with "***".
+ *
+ * Examples:
+ *   https://rpc.ankr.com/bsc_testnet_chapel/SECRET  →  https://rpc.ankr.com/bsc_testnet_chapel/***
+ *   https://polygon-mainnet.rpcfast.com?api_key=KEY  →  https://polygon-mainnet.rpcfast.com?***
+ *   https://slug.quiknode.pro/SECRET                 →  https://slug.quiknode.pro/***
+ */
+function maskUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length > 0) {
+      segments[segments.length - 1] = '***';
+      parsed.pathname = '/' + segments.join('/');
+    }
+    parsed.search = parsed.search ? '?***' : '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return '[invalid url]';
+  }
+}
+
+/** Replaces every http(s) URL embedded in a string with its masked form. */
+export function scrubUrls(text: string): string {
+  return text.replace(/https?:\/\/\S+/g, (match) => maskUrl(match));
 }
 
 export interface ChainConfigForUrls {
@@ -34,15 +67,17 @@ export function initFromConfig(
 export function addHttpUrls(
   chainId: number,
   urls: string[],
-  options: { prepend?: boolean } = {}
+  options: { prepend?: boolean; providerNames?: string[] } = {}
 ): void {
   const list = httpRpcUrlsByChain.get(chainId) ?? [];
   const normalized: string[] = [];
-  for (const u of urls) {
-    const url = normalizeRpcUrl(u);
+  for (let i = 0; i < urls.length; i++) {
+    const url = normalizeRpcUrl(urls[i]);
     if (!url) continue;
     if (!(url.startsWith("http://") || url.startsWith("https://"))) continue;
     if (!normalized.includes(url)) normalized.push(url);
+    const name = options.providerNames?.[i];
+    if (name) urlProviderNames.set(url, name);
   }
   if (normalized.length === 0) return;
 
@@ -118,9 +153,10 @@ export function startHourlyChainlistFetch(
 
 export function markUrlFailed(url: string, ttlMs?: number, reason?: string): void {
   urlBlacklistExpiry.set(url, Date.now() + (ttlMs ?? DEFAULT_TTL_MS));
-  const reasonText = reason ? ` reason=${reason}` : "";
+  const safeReason = reason ? scrubUrls(reason) : undefined;
+  const reasonText = safeReason ? ` reason=${safeReason}` : "";
   console.warn(
-    `[rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}`
+    `[rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${maskUrl(url)}`
   );
   // Prune expired entries to prevent unbounded growth. URLs removed from the
   // active chainlist are never accessed again via pickAvailableUrlFromList, so
@@ -177,4 +213,8 @@ export function shouldBlacklistForError(error: unknown): boolean {
 
 export function getHttpUrls(chainId: number): string[] {
   return httpRpcUrlsByChain.get(chainId) ?? [];
+}
+
+export function getProviderNameForUrl(url: string): string | undefined {
+  return urlProviderNames.get(url);
 }
