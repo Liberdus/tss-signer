@@ -1,5 +1,6 @@
 {
   "chainId": 137,
+  "chainName": "Polygon Mainnet",
   "_note": "quicknode requires a full URL — API key construction is not supported.",
   "providers": [
     { "name": "drpc",       "keys": ["https://lb.drpc.live/polygon/YOUR_DRPC_KEY"] },
