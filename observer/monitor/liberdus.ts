@@ -1,8 +1,8 @@
 import { ethers } from "ethers";
 import axios from "axios";
 import * as TransactionDB from "../../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, paramsConfigRaw, parseBooleanOption } from "../../shared/config";
-import { getCachedPeerObserverUrls } from "../../shared/utils/observerPeers";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, parseBooleanOption } from "../../shared/config";
+import { getPeerObserverUrls } from "../../shared/utils/observerPeers";
 import { toEthereumAddress, toShardusAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
 import { observerChainRpc } from "../chainRpc";
@@ -235,7 +235,7 @@ function parseLiberdusBridgeTx(
 }
 
 async function fetchPeerTransactionByReceiptId(receiptId: string): Promise<TransactionDB.Transaction | null> {
-  const peerUrls = getCachedPeerObserverUrls(paramsConfigRaw.parties);
+  const peerUrls = getPeerObserverUrls();
   for (const baseUrl of peerUrls) {
     try {
       const response = await axios.get(`${baseUrl}/transaction`, {
