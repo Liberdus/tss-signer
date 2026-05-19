@@ -136,7 +136,7 @@ export async function withCachedHttpProvider<T>(
       }
       const evictedName = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
       providerCache.delete(chainId);
-      console.warn(`[httpProvider] Invalidated cached provider chain=${chainId} provider=${evictedName}:`, (error as Error)?.message ?? error);
+      console.warn(`[httpProvider] Invalidated cached provider chain=${chainId} provider=${evictedName}:`, scrubUrls(errorMessage));
       if (attempt < maxRetries - 1) continue;
       if (maxRetries > 1) {
         console.warn(
