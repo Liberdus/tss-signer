@@ -71,10 +71,14 @@ function testPeerSelectionUsesConfiguredSelfUrl(): void {
   if (observerUrls.length < 2) return;
 
   setSelfObserverUrl(`${observerUrls[0]}/`);
-  assert.deepEqual(
-    getPeerObserverUrls(),
-    observerUrls.slice(1),
-  );
+  try {
+    assert.deepEqual(
+      getPeerObserverUrls(),
+      observerUrls.slice(1),
+    );
+  } finally {
+    setSelfObserverUrl('');
+  }
 }
 
 function main(): void {
