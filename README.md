@@ -97,9 +97,9 @@ Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](t
 
 ### 4. Configure chains and params
 
-- **`params.json`** — TSS parameters. Default: `{"parties": 5, "threshold": 3}`
+- **`params.json`** — TSS keygen/regroup parameters. Default: `{"parties": 5, "threshold": 3}`. Keygen/regroup store these values in the keystore. Signing uses the keystore values, not `params.json`.
 - **`chain-config.json`** — RPC endpoints, contract addresses, gas config per chain.
-- **`observer-list.json`** — observer peer URLs as a plain JSON array; copy the shape from `observer-list.json.example` and replace the placeholder IPs with real public observer IPs. If you use DNS names, set `TSS_SELF_OBSERVER_URL` on each party so it can identify its own observer.
+- **`observer-list.json`** — observer peer URLs as a JSON array. When configured, the app uses this list to choose observer peers and determine the observer count. Copy the shape from `observer-list.json.example` and replace the placeholder IPs with real public observer IPs. If you use DNS names, set `TSS_SELF_OBSERVER_URL` on each party so it can identify its own observer.
 - **Observer setup flag** (`chain-config.json`):
   - `isRemote: false` (default): if `observer-list.json` is empty, peers default to `http://127.0.0.1:8101..`.
   - `isRemote: true`: `observer-list.json` is required and startup fails when it is missing/empty.
@@ -149,7 +149,7 @@ For manual Liberdus transaction signing/injection with `npm run inject-liberdus-
 
 ### Assisted keygen wrapper
 
-For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for the chain-specific vault password, verifies the password can unlock the initialized vault, overwrites `params.json` with the derived `{parties, threshold}`, then runs `tss-keygen` with those env vars scoped to that child process only. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen. After the config is in place, `tss-verify` can omit `--chain-id` and will use `chainId` from that same file.
+For remote multi-party keygen, `npm run tss-keygen-ceremony -- --nonce <value>` reads a local `keygen-config.json`, derives `parties`, `threshold = floor(n/2)`, the current `partyIndex`, the other parties' `peer-addrs`, and deterministic keygen channel credentials from the shared config plus `--nonce`. It prompts for the chain-specific vault password, verifies the password can unlock the initialized vault, overwrites `params.json` with the derived `{parties, threshold}`, then runs `tss-keygen` with those env vars scoped to that child process only. Keygen stores those parameters in the native keystore. Use a fresh nonce for every retry, for example `--nonce 1`, then `--nonce 2`. The wrapper prints the derived UTC expiry before launching keygen. After the config is in place, `tss-verify` can omit `--chain-id` and will use `chainId` from that same file.
 
 Expected local config file:
 
@@ -246,7 +246,7 @@ Right now there are three TSS execution routes:
 | `shared/storage/transactiondb.ts` | SQLite transaction DB: types, statuses, queries |
 | `tss-tools/lib/bnbTss.ts` | Native BNB TSS runtime helper |
 | `chain-config.json` | Multi-chain RPC and contract configuration |
-| `params.json` | TSS parameters (parties, threshold) |
+| `params.json` | TSS keygen/regroup parameters (parties, threshold) |
 | `keystores/` | Native TSS vault files (created during keygen) |
 | `ecosystem.config.js` | PM2 process configuration for all 10 processes |
 
@@ -254,7 +254,7 @@ Right now there are three TSS execution routes:
 
 **Keygen:** All 5 parties participate simultaneously. Output: shared public key + individual key shares written to `keystores/bnbtss/party-N/chain-CHAINID/default/`.
 
-**Signing:** Any `threshold + 1` (≥ 4 of 5) parties suffice. The patched binary implements a configurable discovery window (`--sign_discovery_timeout`, default 5s) — once the first peer connects, signing proceeds with all parties that arrive within the window (minimum threshold).
+**Signing:** Any `threshold + 1` (≥ 4 of 5) parties suffice. The TSS binary reads the party/threshold values from the keystore, so signing does not use `params.json`. The patched binary implements a configurable discovery window (`--sign_discovery_timeout`, default 5s) — once the first peer connects, signing proceeds with all parties that arrive within the window (minimum threshold).
 
 **Regroup:** Transfers key shares to a new committee without regenerating the shared key. Requires at least `threshold + 1` old participants.
 
