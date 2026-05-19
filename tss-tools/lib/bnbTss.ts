@@ -421,6 +421,13 @@ function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}
       settled = true;
       cleanupTimers();
       if (timedOut) {
+        if (!shouldPrintLogs) {
+          // Live logging was suppressed; dump accumulated output so timeouts can be debugged
+          const captured = [stdout, stderr].filter(Boolean).join('\n').trim();
+          if (captured) {
+            process.stderr.write(`[tss signing timeout] captured output:\n${captured}\n`);
+          }
+        }
         reject(new Error(timeoutErrorMessage));
         return;
       }
