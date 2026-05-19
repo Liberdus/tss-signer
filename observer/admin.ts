@@ -4,7 +4,7 @@ import net from "net";
 import path from "path";
 import { spawn } from "child_process";
 import { chainConfigsRaw } from "../shared/config";
-import { deriveSelfObserverUrl, loadObserverUrlsFromRoot } from "../shared/utils/observerPeers";
+import { normalizeObserverUrl, observerPeerConfigRaw } from "../shared/utils/observerPeers";
 import { resolveProjectRoot } from "../shared/utils/paths";
 
 const ADMIN_LOG_PREFIX = "[observer/admin]";
@@ -70,8 +70,6 @@ export interface SoftwareUpdateResult {
 export interface AdminContext {
   partyIndex: number;
   projectRoot: string;
-  // Loaded once at startup.
-  observerUrls: string[];
   observerInfos: ObserverUrlInfo[];
   selfObserverUrl: string;
 }
@@ -84,10 +82,6 @@ export function normalizeRemoteAddress(address?: string | null): string {
   if (raw.startsWith("::ffff:")) return raw.slice("::ffff:".length);
   if (raw === "::1") return "::1";
   return raw;
-}
-
-function normalizeObserverUrl(rawUrl: string): string {
-  return rawUrl.trim().replace(/\/$/, "");
 }
 
 function isLocalhostAddress(address: string): boolean {
@@ -151,8 +145,10 @@ function parseObserverUrl(rawUrl: string): ObserverUrlInfo | null {
   try {
     const parsed = new URL(rawUrl);
     const hostname = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
+    const normalizedUrl = normalizeObserverUrl(parsed.href);
+    if (!normalizedUrl) return null;
     return {
-      url: normalizeObserverUrl(parsed.href),
+      url: normalizedUrl,
       hostname,
       port: parsed.port || (parsed.protocol === "https:" ? "443" : "80"),
       isIpLiteral: net.isIP(hostname) !== 0,
@@ -184,24 +180,18 @@ export function getArchiveFilenameForObserverUrl(observerUrl: string): string {
   return `${sanitizeArchiveFilenamePart(info.hostname)}-${sanitizeArchiveFilenamePart(info.port)}.tar.gz`;
 }
 
-export async function createAdminContext(partyIndex: number, projectRoot = resolveProjectRoot()): Promise<AdminContext> {
+export function createAdminContext(partyIndex: number, selfObserverUrl: string, projectRoot = resolveProjectRoot()): AdminContext {
   const isRemote = chainConfigsRaw.isRemote === true;
-  const observerUrls = Array.from(new Set(loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl)));
+  const observerUrls = observerPeerConfigRaw.observerUrls;
   const observerInfos = parseObserverUrlInfos(observerUrls);
   warnIgnoredDnsHosts(observerInfos);
-  const rawSelfObserverUrl = await deriveSelfObserverUrl(partyIndex, {
-    isRemote,
-    rootDir: projectRoot,
-    observerUrls,
-  });
-  const selfObserverUrl = normalizeObserverUrl(rawSelfObserverUrl);
   if ((isRemote || observerUrls.length > 0) && !observerUrls.includes(selfObserverUrl)) {
     throw new Error(
       `${selfObserverUrl} is this observer URL but is not present in observer-list.json; update observer-list.json or TSS_SELF_OBSERVER_URL`,
     );
   }
   console.log(`${ADMIN_LOG_PREFIX} loaded admin observer context self=${sanitizeLogValue(selfObserverUrl)} observers=${observerUrls.length}`);
-  return { partyIndex, projectRoot, observerUrls, observerInfos, selfObserverUrl };
+  return { partyIndex, projectRoot, observerInfos, selfObserverUrl };
 }
 
 function computeAllowlistDecision(req: Request, adminContext: AdminContext): AllowlistDecision {

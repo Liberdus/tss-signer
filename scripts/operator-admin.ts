@@ -5,7 +5,7 @@ import {pipeline} from 'stream/promises'
 import axios from 'axios'
 import readlineSync from 'readline-sync'
 import {formatAdminTimestamp, getArchiveFilenameForObserverUrl, isValidAdminProcessName} from '../observer/admin'
-import {loadObserverUrlsFromRoot} from '../shared/utils/observerPeers'
+import {observerPeerConfigRaw} from '../shared/utils/observerPeers'
 import {resolveProjectRoot} from '../shared/utils/paths'
 
 type AdminAction = 'collect-logs' | 'restart' | 'update-software'
@@ -127,8 +127,8 @@ export function normalizeObserverUrl(rawUrl: string): string {
   }
 }
 
-function loadAdminObserverUrls(projectRoot: string): string[] {
-  return Array.from(new Set(loadObserverUrlsFromRoot(projectRoot).map(normalizeObserverUrl)))
+function loadAdminObserverUrls(): string[] {
+  return observerPeerConfigRaw.observerUrls
 }
 
 export function resolveTargets(target: string, observerUrls: string[]): string[] {
@@ -401,7 +401,7 @@ async function main(): Promise<void> {
   validateOptions(options)
 
   const projectRoot = resolveProjectRoot()
-  const observerUrls = loadAdminObserverUrls(projectRoot)
+  const observerUrls = loadAdminObserverUrls()
   if (observerUrls.length === 0) {
     throw new Error('observer-list.json has no observer URLs')
   }

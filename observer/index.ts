@@ -4,7 +4,8 @@ import cors from "cors";
 import path from "path";
 import fs from "fs";
 import * as TransactionDB from "../shared/storage/transactiondb";
-import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, parseBooleanOption, validateObserverSetup } from "../shared/config";
+import { chainConfigsRaw, getChainConfigById, isSigningChainConfig, parseBooleanOption } from "../shared/config";
+import { deriveSelfObserverUrl, setSelfObserverUrl } from "../shared/utils/observerPeers";
 import { isEthereumAddress, toEthereumAddress } from "../shared/utils/transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "../shared/utils/transformTxId";
 import { initMonitorState, monitorState, saveMonitorState, setSyncReady, syncReady } from "./monitor/state";
@@ -62,8 +63,6 @@ console.log(`[observer] Party index: ${PARTY_INDEX}`);
 console.log(`[observer] DB path:     ${DB_PATH}`);
 console.log(`[observer] State path:  ${STATE_PATH}`);
 console.log(`[observer] HTTP port:   ${PORT}`);
-
-validateObserverSetup(chainConfigsRaw);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -528,7 +527,9 @@ app.post("/bridgein/liberdus/submitted", (req, res) => {
     TransactionDB.initializeTransactionsDatabase(DB_PATH);
     console.log("[observer] Database initialized");
     // Loads observer-list.json once and validates this observer's self URL.
-    adminContext = await createAdminContext(PARTY_INDEX);
+    const selfObserverUrl = await deriveSelfObserverUrl(PARTY_INDEX);
+    adminContext = createAdminContext(PARTY_INDEX, selfObserverUrl);
+    setSelfObserverUrl(selfObserverUrl);
     console.log("[observer] Admin context initialized");
 
     initMonitorState(STATE_PATH);

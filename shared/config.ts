@@ -1,7 +1,6 @@
 import fs from 'fs'
 import {ethers} from 'ethers'
 import {resolveRepoConfigPath} from './utils/paths'
-import {loadObserverUrlsFromRoot} from './utils/observerPeers'
 
 export interface ChainConfig {
   name: string
@@ -128,21 +127,6 @@ function validateLiberdusBridgeGuards(chainConfigs: ChainConfigs): void {
   validateBridgeGuardAmount(guards.maxBridgeOutAmount, 'maxBridgeOutAmount')
   if (typeof guards.requirePublicRecipientAccount !== 'boolean') {
     throw new Error('[config] liberdusBridgeGuards.requirePublicRecipientAccount must be a boolean')
-  }
-}
-
-export function validateObserverSetup(chainConfigs: ChainConfigs): void {
-  if (typeof chainConfigs.isRemote !== 'undefined' && typeof chainConfigs.isRemote !== 'boolean') {
-    throw new Error('[config] isRemote must be a boolean when provided')
-  }
-  const isRemote = chainConfigs.isRemote === true
-  if (isRemote) {
-    const observerUrls = loadObserverUrlsFromRoot()
-    if (observerUrls.length === 0) {
-      throw new Error(
-        '[config] isRemote is true but observer-list.json is missing or empty. Configure observer-list.json for remote deployments.',
-      )
-    }
   }
 }
 

@@ -15,9 +15,6 @@ import {
   getChainConfigById,
   requireSigningChainConfig,
   toNetworkChainId,
-  ParamsConfig,
-  paramsConfigRaw,
-  validateObserverSetup,
 } from '../shared/config'
 import {resolveProjectRoot} from '../shared/utils/paths'
 import {startDriftResistantScheduler} from '../shared/utils/scheduler'
@@ -144,10 +141,7 @@ const DEBUG_SIMULATE_NONCE_DRIFT = false
 
 const serverStartTime = Date.now()
 
-const params: ParamsConfig = paramsConfigRaw
 const chainConfigs: ChainConfigs = chainConfigsRaw
-
-let n = params.parties
 
 const TSS_SIGN_DISCOVERY_TIMEOUT_MS = 60 * 1000
 const TSS_SIGN_DISCOVERY_TIMEOUT = `${TSS_SIGN_DISCOVERY_TIMEOUT_MS / 1000}s`
@@ -1264,7 +1258,7 @@ async function processCoinToToken(
         receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
         nonce: senderNonce,
-      }, n, observerUrl)
+      }, observerUrl)
       const cachedReceipt = await getChainTransactionReceipt(targetChainId, cached.txHash)
       if (cachedReceipt?.status === 1) {
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
@@ -1415,7 +1409,7 @@ async function processCoinToToken(
       receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,
       nonce: senderNonce,
-    }, n, observerUrl)
+    }, observerUrl)
   }
 
   let receipt: ethers.providers.TransactionReceipt | null = null
@@ -1605,7 +1599,7 @@ async function processVaultBridge(
         receiptId: normalizeTxId(cached.txHash),
         signedTx: cached.signedTx,
         nonce: senderNonce,
-      }, n, observerUrl)
+      }, observerUrl)
       const receipt = await getChainTransactionReceipt(destinationChainId, cached.txHash)
       if (receipt?.status === 1) {
         const updateResult = updateTxStatusInLocalDB(txId, TransactionStatus.COMPLETED, cached.txHash, tssSender, TransactionDB.txNonce(senderNonce))
@@ -1755,7 +1749,7 @@ async function processVaultBridge(
       receiptId: normalizeTxId(txHash),
       signedTx: signedTx as string,
       nonce: senderNonce,
-    }, n, observerUrl)
+    }, observerUrl)
   }
 
   let receipt: ethers.providers.TransactionReceipt | null = null
@@ -1963,7 +1957,7 @@ async function processTokenToCoin(
       receiptId: normalizeTxId(signedTxId),
       liberdusSignedTx: stringify(signedTx as SignedTx),
       txTimestamp: liberdusReceiptTimestamp,
-    }, n, observerUrl)
+    }, observerUrl)
   }
 
   let fetchReceiptRetry = 3
@@ -2298,10 +2292,7 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  validateObserverSetup(chainConfigs)
-  observerUrl = await deriveSelfObserverUrl(ourParty.idx, {
-    isRemote: chainConfigs.isRemote === true,
-  })
+  observerUrl = await deriveSelfObserverUrl(ourParty.idx)
   console.log(`[tss-party] Observer URL: ${observerUrl}`)
 
   // Initialize local DB (shared with the paired observer process)

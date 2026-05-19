@@ -1,19 +1,23 @@
 import fs from "fs";
 import https from "https";
 import path from "path";
+import { chainConfigsRaw, paramsConfigRaw } from "../config";
 import { resolveProjectRoot } from "./paths";
-
-interface ChainConfigLike {
-  isRemote?: boolean;
-}
 
 interface PeerObserverSelectionOptions {
   selfObserverUrl?: string;
-  rootDir?: string;
 }
 
-const cachedPeerObserverUrlsByKey = new Map<string, string[]>();
+export type ObserverPeerConfig = {
+  observerUrls: string[];
+  partyCount: number;
+}
+
+
 const OBSERVER_LIST_FILE = 'observer-list.json';
+
+let configuredSelfObserverUrl: string | undefined;
+
 const PUBLIC_IP_LOOKUP_URLS = [
   "https://api.ipify.org",
   "https://ifconfig.me/ip",
@@ -31,11 +35,11 @@ function parseObserverList(raw: unknown): string[] {
     if (typeof entry !== 'string') {
       throw new Error(`[config] ${OBSERVER_LIST_FILE}[${index}] must be a string`);
     }
-    return entry.trim();
-  }).filter(Boolean);
+    return normalizeObserverUrl(entry);
+  }).filter((entry): entry is string => entry !== null);
 }
 
-export function loadObserverUrlsFromRoot(rootDir = resolveProjectRoot()): string[] {
+export function loadObserverUrlsConfig(rootDir = resolveProjectRoot()): string[] {
   const observerListPath = path.join(rootDir, OBSERVER_LIST_FILE);
   if (!fs.existsSync(observerListPath)) {
     return [];
@@ -50,46 +54,44 @@ export function loadObserverUrlsFromRoot(rootDir = resolveProjectRoot()): string
   }
 }
 
-function readRemoteFlagFromChainConfig(rootDir: string): boolean {
-  const configPath = path.join(rootDir, "chain-config.json");
-  if (!fs.existsSync(configPath)) {
-    return false;
-  }
-  try {
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as ChainConfigLike;
-    return raw.isRemote === true;
-  } catch {
-    return false;
+export function buildObserverPeerConfig(observerUrls: string[], parties: number): ObserverPeerConfig {
+  return {
+    observerUrls,
+    partyCount: observerUrls.length > 0
+      ? observerUrls.length
+      : parties,
   }
 }
 
-export function buildObserverUrls(parties: number, rootDir = resolveProjectRoot()): string[] {
-  const isRemote = readRemoteFlagFromChainConfig(rootDir);
-  const observerUrls = loadObserverUrlsFromRoot(rootDir);
-  if (isRemote) {
-    if (observerUrls.length === 0) {
-      throw new Error(
-        '[observerPeers] isRemote is true but observer-list.json is missing or empty',
-      );
-    }
-    return observerUrls;
-  }
+
+export function buildObserverUrls(): string[] {
+  const { observerUrls, partyCount } = observerPeerConfigRaw;
   if (observerUrls.length > 0) {
     return observerUrls;
   }
 
-  const count = Math.max(1, parties);
-  return Array.from({ length: count }, (_, index) => localObserverUrl(index + 1));
+  return Array.from({ length: partyCount }, (_, index) => localObserverUrl(index + 1));
 }
 
-function normalizeObserverUrl(rawUrl?: string): string | null {
+function validateObserverSetup(observerUrls: string[]): void {
+  if (typeof chainConfigsRaw.isRemote !== 'undefined' && typeof chainConfigsRaw.isRemote !== 'boolean') {
+    throw new Error('[config] isRemote must be a boolean when provided');
+  }
+  if (chainConfigsRaw.isRemote === true && observerUrls.length === 0) {
+    throw new Error(
+      '[config] isRemote is true but observer-list.json is missing or empty. Configure observer-list.json for remote deployments.',
+    );
+  }
+}
+
+export function normalizeObserverUrl(rawUrl?: string): string | null {
   const candidate = `${rawUrl ?? ""}`.trim();
   if (!candidate) return null;
   try {
     const parsed = new URL(candidate);
     return parsed.href.replace(/\/$/, "");
   } catch {
-    return candidate.replace(/\/$/, "");
+    return null;
   }
 }
 
@@ -98,7 +100,7 @@ function findObserverUrlByHost(observerUrls: string[], host: string): string | n
     try {
       const parsed = new URL(observerUrl);
       if (parsed.hostname === host) {
-        return normalizeObserverUrl(observerUrl);
+        return observerUrl;
       }
     } catch {
       // Invalid observer URLs are rejected by observer-list parsing.
@@ -143,14 +145,14 @@ async function getPublicIp(timeoutMs = 2_000): Promise<string | null> {
   return null;
 }
 
-export async function deriveSelfObserverUrl(partyIdx: number, options: { isRemote?: boolean; rootDir?: string; observerUrls?: string[] } = {}): Promise<string> {
+export async function deriveSelfObserverUrl(partyIdx: number): Promise<string> {
   const configuredSelfUrl = resolveSelfObserverUrl({});
   if (configuredSelfUrl) {
     return configuredSelfUrl;
   }
 
-  if (options.isRemote === true) {
-    const observerUrls = options.observerUrls ?? loadObserverUrlsFromRoot(options.rootDir ?? resolveProjectRoot());
+  const { observerUrls } = observerPeerConfigRaw;
+  if (chainConfigsRaw.isRemote === true) {
     const publicIp = await getPublicIp();
     const matchingPublicObserverUrl = publicIp
       ? findObserverUrlByHost(observerUrls, publicIp)
@@ -166,8 +168,12 @@ export async function deriveSelfObserverUrl(partyIdx: number, options: { isRemot
 }
 
 function resolveSelfObserverUrl(options: PeerObserverSelectionOptions): string | null {
-  const configuredSelfUrl = options.selfObserverUrl ?? process.env.TSS_SELF_OBSERVER_URL;
+  const configuredSelfUrl = options.selfObserverUrl ?? configuredSelfObserverUrl ?? process.env.TSS_SELF_OBSERVER_URL;
   return normalizeObserverUrl(configuredSelfUrl);
+}
+
+export function setSelfObserverUrl(url: string): void {
+  configuredSelfObserverUrl = normalizeObserverUrl(url) ?? undefined;
 }
 
 function resolvePartyIndex(): number | null {
@@ -176,12 +182,11 @@ function resolvePartyIndex(): number | null {
   return parsedPartyIndex;
 }
 
-export function getPeerObserverUrls(parties: number, options: PeerObserverSelectionOptions = {}): string[] {
-  const rootDir = options.rootDir ?? resolveProjectRoot();
-  const urls = buildObserverUrls(parties, rootDir);
+export function getPeerObserverUrls(options: PeerObserverSelectionOptions = {}): string[] {
+  const urls = buildObserverUrls();
   const selfObserverUrl = resolveSelfObserverUrl(options);
   if (selfObserverUrl) {
-    return urls.filter((url) => normalizeObserverUrl(url) !== selfObserverUrl);
+    return urls.filter((url) => url !== selfObserverUrl);
   }
 
   const partyIndex = resolvePartyIndex();
@@ -193,24 +198,6 @@ export function getPeerObserverUrls(parties: number, options: PeerObserverSelect
   return urls;
 }
 
-export function getCachedPeerObserverUrls(parties: number, options: PeerObserverSelectionOptions = {}): string[] {
-  const rootDir = options.rootDir ?? resolveProjectRoot();
-  const selfObserverUrl = resolveSelfObserverUrl(options);
-  const partyIndex = resolvePartyIndex();
-  const identityKey = selfObserverUrl
-    ? `url:${selfObserverUrl}`
-    : `index:${partyIndex ?? "none"}`;
-
-  const cacheKey = `${parties}|${rootDir}|${identityKey}`;
-  const cached = cachedPeerObserverUrlsByKey.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
-  const computed = getPeerObserverUrls(parties, { ...options, rootDir });
-  cachedPeerObserverUrlsByKey.set(cacheKey, computed);
-  return computed;
-}
-
-export function resetCachedPeerObserverUrls(): void {
-  cachedPeerObserverUrlsByKey.clear();
-}
+export const observerUrlsRaw = loadObserverUrlsConfig();
+validateObserverSetup(observerUrlsRaw);
+export const observerPeerConfigRaw = buildObserverPeerConfig(observerUrlsRaw, paramsConfigRaw.parties);
