@@ -9,7 +9,7 @@
     { "name": "getblock",   "keys": [] },
     { "name": "moralis",    "keys": [] },
     { "name": "quicknode",  "keys": [] },
-    { "name": "tatum",      "keys": [] },
+    { "name": "tatum",      "keys": [], "_note": "No URL template for BSC — provide a full https:// URL if you have a Tatum endpoint" },
     { "name": "rpcfast",    "keys": [] },
     { "name": "onfinality", "keys": [] },
     { "name": "ankr",       "keys": [] }
