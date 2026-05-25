@@ -34,50 +34,81 @@ export interface ProviderLoadResult {
 }
 
 // ---------------------------------------------------------------------------
-// Providers that require a full URL — API-key-only construction is not
-// supported because their endpoints are account-specific subdomains.
+// Provider registry — all per-provider metadata in one place.
+//   urlOnly: true  → provider requires a full https:// URL; bare API keys are
+//                    not supported (e.g. account-specific subdomains like quicknode)
+//   templates      → URL templates keyed by chainId; use {key} as the placeholder
 // ---------------------------------------------------------------------------
-const URL_ONLY_PROVIDERS = new Set(['quicknode'])
-
-// ---------------------------------------------------------------------------
-// Known URL templates — keyed as `${providerName}:${chainId}`.
-// ---------------------------------------------------------------------------
-const URL_TEMPLATES: Record<string, string> = {
-  // Polygon (chainId 137)
-  'alchemy:137':    'https://polygon-mainnet.g.alchemy.com/v2/{key}',
-  'infura:137':     'https://polygon-mainnet.infura.io/v3/{key}',
-  'drpc:137':       'https://lb.drpc.live/polygon/{key}',
-  'getblock:137':   'https://go.getblock.us/{key}',
-  'moralis:137':    'https://site1.moralis-nodes.com/polygon/{key}',
-  'ankr:137':       'https://rpc.ankr.com/polygon/{key}',
-  'rpcfast:137':    'https://polygon-mainnet.rpcfast.com?api_key={key}',
-  'onfinality:137': 'https://polygon.api.onfinality.io/rpc?apikey={key}',
-  'tenderly:137':   'https://polygon.gateway.tenderly.co/{key}',
-
-  // BSC Mainnet (chainId 56)
-  'alchemy:56':     'https://bnb-mainnet.g.alchemy.com/v2/{key}',
-  'infura:56':      'https://bsc-mainnet.infura.io/v3/{key}',
-  'drpc:56':        'https://lb.drpc.live/bsc/{key}',
-  'getblock:56':    'https://shared.us-east-1.getblock.io/{key}',
-  'moralis:56':     'https://site1.moralis-nodes.com/bsc/{key}',
-  'ankr:56':        'https://rpc.ankr.com/bsc/{key}',
-  'rpcfast:56':     'https://bsc-mainnet.rpcfast.com?api_key={key}',
-  'onfinality:56':  'https://bnb.api.onfinality.io/rpc?apikey={key}',
-
-  // Polygon Amoy Testnet (chainId 80002)
-  'alchemy:80002':  'https://polygon-amoy.g.alchemy.com/v2/{key}',
-  'infura:80002':   'https://polygon-amoy.infura.io/v3/{key}',
-  'drpc:80002':     'https://lb.drpc.live/polygon-amoy/{key}',
-  'ankr:80002':     'https://rpc.ankr.com/polygon_amoy/{key}',
-
-  // BSC Testnet (chainId 97)
-  'drpc:97':        'https://lb.drpc.live/bsc-testnet/{key}',
-  'ankr:97':        'https://rpc.ankr.com/bsc_testnet_chapel/{key}',
+const PROVIDER_REGISTRY: Record<string, {
+  urlOnly?: true
+  templates?: Record<number, string>
+}> = {
+  alchemy: {
+    templates: {
+      137:   'https://polygon-mainnet.g.alchemy.com/v2/{key}',
+      56:    'https://bnb-mainnet.g.alchemy.com/v2/{key}',
+      80002: 'https://polygon-amoy.g.alchemy.com/v2/{key}',
+    },
+  },
+  infura: {
+    templates: {
+      137:   'https://polygon-mainnet.infura.io/v3/{key}',
+      56:    'https://bsc-mainnet.infura.io/v3/{key}',
+      80002: 'https://polygon-amoy.infura.io/v3/{key}',
+    },
+  },
+  drpc: {
+    templates: {
+      137:   'https://lb.drpc.live/polygon/{key}',
+      56:    'https://lb.drpc.live/bsc/{key}',
+      80002: 'https://lb.drpc.live/polygon-amoy/{key}',
+      97:    'https://lb.drpc.live/bsc-testnet/{key}',
+    },
+  },
+  getblock: {
+    templates: {
+      137: 'https://go.getblock.us/{key}',
+      // Shared-tier US East endpoint. Operators with dedicated or non-US
+      // endpoints must provide a full https:// URL instead of a bare API key.
+      56:  'https://shared.us-east-1.getblock.io/{key}',
+    },
+  },
+  moralis: {
+    templates: {
+      137: 'https://site1.moralis-nodes.com/polygon/{key}',
+      56:  'https://site1.moralis-nodes.com/bsc/{key}',
+    },
+  },
+  ankr: {
+    templates: {
+      137:   'https://rpc.ankr.com/polygon/{key}',
+      56:    'https://rpc.ankr.com/bsc/{key}',
+      80002: 'https://rpc.ankr.com/polygon_amoy/{key}',
+      97:    'https://rpc.ankr.com/bsc_testnet_chapel/{key}',
+    },
+  },
+  rpcfast: {
+    templates: {
+      137: 'https://polygon-mainnet.rpcfast.com?api_key={key}',
+      56:  'https://bsc-mainnet.rpcfast.com?api_key={key}',
+    },
+  },
+  onfinality: {
+    templates: {
+      137: 'https://polygon.api.onfinality.io/rpc?apikey={key}',
+      56:  'https://bnb.api.onfinality.io/rpc?apikey={key}',
+    },
+  },
+  tenderly: {
+    templates: {
+      137: 'https://polygon.gateway.tenderly.co/{key}',
+    },
+  },
+  quicknode: { urlOnly: true },
 }
 
 function buildUrlFromTemplate(name: string, chainId: number, apiKey: string): string | undefined {
-  const templateKey = `${name.toLowerCase()}:${chainId}`
-  const template = URL_TEMPLATES[templateKey]
+  const template = PROVIDER_REGISTRY[name.toLowerCase()]?.templates?.[chainId]
   if (!template) return undefined
   return template.replace('{key}', apiKey.trim())
 }
@@ -137,7 +168,7 @@ export function buildUrlsFromProviderConfig(config: CustomProviderConfig): Provi
       continue
     }
 
-    const isUrlOnly = URL_ONLY_PROVIDERS.has(name.toLowerCase())
+    const isUrlOnly = PROVIDER_REGISTRY[name.toLowerCase()]?.urlOnly === true
 
     for (const key of keys) {
       const isUrl = key.startsWith('https://') || key.startsWith('http://')
