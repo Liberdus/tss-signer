@@ -4,6 +4,14 @@ Local patch applied onto the upstream [bnb-chain/tss](https://github.com/bnb-cha
 
 ## Changes
 
+### `go.mod` and TSS wrapper — upgrade to `tss-lib/v3`
+
+Updates the native TSS module to Go `1.23` / toolchain `1.23.12`, imports `github.com/bnb-chain/tss-lib/v3` at `v3.0.0`, refreshes the dependency graph, uses the v3 pointer result channels for keygen/regroup save-data completion and signing completion, and replaces the old `btcd/btcec` compressed public-key serialization with local SEC 1 compressed public-key encoding.
+
+**Why:** Keeps the native TSS binary compatible with `tss-lib/v3` and Go `1.23.12`, while avoiding `btcd` dependency conflicts by handling compressed public-key serialization locally.
+
+---
+
 ### `cmd/sign.go` — read `--message` from flag instead of hard-coding `"0"`
 
 The upstream `setMessage()` always set `TssCfg.Message = "0"`. This change reads the `--message` flag value first, falling back to an interactive stdin prompt when the flag is absent.

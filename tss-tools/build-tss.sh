@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_GO_VERSION="1.20.3"
+DEFAULT_GO_VERSION="1.23.12"
 DEFAULT_BINARY_NAME="tss"
 DEFAULT_DERIVE_BINARY_NAME="tss-derive-pubkey"
 DEFAULT_TBNBCLI_NAME="tbnbcli"

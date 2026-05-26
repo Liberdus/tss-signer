@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_GO_VERSION="1.20.3"
+DEFAULT_GO_VERSION="1.23.12"
 DEFAULT_MISE_VERSION="v2026.3.8"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
