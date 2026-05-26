@@ -214,7 +214,7 @@ git submodule update --init --recursive
 
 # Bootstrap vendored Go toolchain if system go is missing or wrong version
 echo -e "\n${YELLOW}Bootstrapping Go toolchain (if needed)...${NC}"
-if ! command -v go &>/dev/null || [[ "$(go version 2>/dev/null)" != *"go1.20"* ]]; then
+if ! command -v go &>/dev/null || [[ "$(go version 2>/dev/null)" != *"go1.23"* ]]; then
     ./tss-tools/setup-mise-go.sh
 fi
 

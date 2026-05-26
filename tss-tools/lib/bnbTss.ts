@@ -9,7 +9,7 @@ import {resolveProjectRoot} from '../../shared/utils/paths'
 export {}
 
 export const DEFAULT_VAULT_NAME = 'default';
-const DEFAULT_GO_VERSION = '1.20.3';
+const DEFAULT_GO_VERSION = '1.23.12';
 const DEFAULT_MISE_VERSION = 'v2026.3.8';
 const DEFAULT_BINARY_NAME = 'tss';
 const DEFAULT_DERIVE_BINARY_NAME = 'tss-derive-pubkey';

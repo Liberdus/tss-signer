@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Local smoke test for:
+# - init 5 parties
+# - keygen with parties 1,2,3 at threshold 2
+# - sign on the initial 3-party committee
+# - first regroup from old 3 -> new 5 with new threshold 3
+# - sign on the 5-party committee
+# - second regroup from old 4 -> new 3 using parties 2,3,4,5,
+#   where 3,4,5 remain in the new committee and party 2 is old-only
+# - sign on the final 3-party committee
+
+gen_channel_password() {
+	if command -v openssl >/dev/null 2>&1; then
+		openssl rand -hex 32
+	else
+		od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+	fi
+}
+
+SIGNER_ROOT="${SIGNER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BIN="${BIN:-$SIGNER_ROOT/tss/.tooling/bin/tss}"
+if [[ "$BIN" = /* ]]; then
+	BIN_ABS="$BIN"
+else
+	BIN_ABS="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+fi
+TSS_CWD="${TSS_CWD:-$(dirname "$BIN_ABS")}"
+BASE="${BASE:-$(mktemp -d /private/tmp/tss-workflow-smoke.XXXXXX)}"
+PASS="${PASS:-1234567890}"
+MESSAGE="${MESSAGE:-1234567890}"
+CHPASS="${CHPASS:-$(gen_channel_password)}"
+KEYGEN_CH="${KEYGEN_CH:-$(printf '515%08X' "$(($(date +%s)+2400))")}"
+SIGN1_CH="${SIGN1_CH:-$(printf '611%08X' "$(($(date +%s)+2400))")}"
+REGROUP1_CH="${REGROUP1_CH:-$(printf '761%08X' "$(($(date +%s)+2400))")}"
+SIGN2_CH="${SIGN2_CH:-$(printf '612%08X' "$(($(date +%s)+2400))")}"
+REGROUP2_CH="${REGROUP2_CH:-$(printf '762%08X' "$(($(date +%s)+2400))")}"
+SIGN3_CH="${SIGN3_CH:-$(printf '613%08X' "$(($(date +%s)+2400))")}"
+
+BASE_PORTS=(19131 19132 19133 19134 19135)
+ROUND1_TMP_PORTS=(19231 19232 19233)
+ROUND2_TMP_PORTS=(19333 19334 19335)
+PIDS=()
+
+cleanup() {
+	local pid
+	local pids=("${PIDS[@]:-}")
+	PIDS=()
+	for pid in "${pids[@]}"; do
+		pkill -P "$pid" 2>/dev/null || true
+		kill "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	done
+}
+trap cleanup EXIT
+
+party_home() {
+	local idx="$1"
+	printf '%s/party-%s/chain-103' "$BASE" "$idx"
+}
+
+base_addr() {
+	local idx="$1"
+	printf '/ip4/127.0.0.1/tcp/%s' "${BASE_PORTS[$((idx - 1))]}"
+}
+
+round1_tmp_addr() {
+	local idx="$1"
+	printf '/ip4/127.0.0.1/tcp/%s' "${ROUND1_TMP_PORTS[$((idx - 1))]}"
+}
+
+round2_tmp_addr() {
+	local idx="$1"
+	printf '/ip4/127.0.0.1/tcp/%s' "${ROUND2_TMP_PORTS[$((idx - 3))]}"
+}
+
+round1_committee_addr() {
+	local idx="$1"
+	case "$idx" in
+		1) round1_tmp_addr 1 ;;
+		2) round1_tmp_addr 2 ;;
+		3) round1_tmp_addr 3 ;;
+		4) base_addr 4 ;;
+		5) base_addr 5 ;;
+		*) return 1 ;;
+	esac
+}
+
+run_tss() {
+	(cd "$TSS_CWD" && "$BIN_ABS" "$@")
+}
+
+fail_phase() {
+	local _phase="$1"
+	local message="$2"
+	cleanup
+	echo "$message"
+	echo "logs: $BASE"
+	exit 1
+}
+
+wait_for_pids() {
+	local label="$1"
+	local timeout="$2"
+	local deadline=$((SECONDS + timeout))
+
+	while [ "${#PIDS[@]}" -gt 0 ]; do
+		local remaining=()
+		local pid
+		for pid in "${PIDS[@]}"; do
+			if kill -0 "$pid" 2>/dev/null; then
+				remaining+=("$pid")
+			fi
+		done
+		PIDS=()
+		if [ "${#remaining[@]}" -gt 0 ]; then
+			PIDS=("${remaining[@]}")
+		fi
+
+		if [ "${#PIDS[@]}" -eq 0 ]; then
+			return 0
+		fi
+		if [ "$SECONDS" -gt "$deadline" ]; then
+			return 124
+		fi
+		sleep 1
+	done
+}
+
+assert_key_material() {
+	local idx
+	for idx in "$@"; do
+		test -s "$(party_home "$idx")/default/sk.json"
+		test -s "$(party_home "$idx")/default/pk.json"
+	done
+}
+
+signature_from_log() {
+	local log_file="$1"
+	sed -n 's/.*received signature: \([0-9A-F]*\).*/\1/p' "$log_file" | tail -n1
+}
+
+start_keygen() {
+	local idx="$1"
+	local peers="$2"
+
+	run_tss keygen \
+		--home "$(party_home "$idx")" \
+		--vault_name default \
+		--parties 3 \
+		--threshold 2 \
+		--password "$PASS" \
+		--channel_password "$CHPASS" \
+		--channel_id "$KEYGEN_CH" \
+		--p2p.peer_addrs "$peers" \
+		--log_level debug \
+		> "$BASE/keygen-$idx.log" 2>&1 &
+	PIDS+=("$!")
+}
+
+start_sign() {
+	local phase="$1"
+	local channel_id="$2"
+	local idx="$3"
+
+	run_tss sign \
+		--home "$(party_home "$idx")" \
+		--vault_name default \
+		--password "$PASS" \
+		--channel_password "$CHPASS" \
+		--channel_id "$channel_id" \
+		--message "$MESSAGE" \
+		--log_level debug \
+		> "$BASE/$phase-$idx.log" 2>&1 &
+	PIDS+=("$!")
+}
+
+run_sign_phase() {
+	local phase="$1"
+	local channel_id="$2"
+	local timeout="$3"
+	shift 3
+
+	local idx
+	local sig
+	local ref_sig=""
+
+	PIDS=()
+	for idx in "$@"; do
+		start_sign "$phase" "$channel_id" "$idx"
+	done
+	if ! wait_for_pids "$phase" "$timeout"; then
+		fail_phase "$phase" "$phase timed out; logs in $BASE"
+	fi
+
+	for idx in "$@"; do
+		sig="$(signature_from_log "$BASE/$phase-$idx.log")"
+		if [ -z "$sig" ]; then
+			fail_phase "$phase" "$phase missing signature output for party $idx; logs in $BASE"
+		fi
+		if [ -z "$ref_sig" ]; then
+			ref_sig="$sig"
+		elif [ "$sig" != "$ref_sig" ]; then
+			fail_phase "$phase" "$phase produced mismatched signatures; logs in $BASE"
+		fi
+	done
+}
+
+start_regroup1() {
+	local idx="$1"
+	local extra_flags="$2"
+	local new_peer_addrs="$3"
+
+	# shellcheck disable=SC2086
+	run_tss regroup \
+		--home "$(party_home "$idx")" \
+		--vault_name default \
+		--password "$PASS" \
+		--log_level debug \
+		--channel_id "$REGROUP1_CH" \
+		--channel_password "$CHPASS" \
+		--threshold 2 \
+		--parties 3 \
+		--new_threshold 3 \
+		--new_parties 5 \
+		--p2p.new_peer_addrs "$new_peer_addrs" \
+		$extra_flags \
+		> "$BASE/regroup1-$idx.log" 2>&1 &
+	PIDS+=("$!")
+}
+
+start_regroup2_old_only() {
+	local idx="$1"
+	local new_peer_addrs="$2"
+
+expect <<EOF > "$BASE/regroup2-$idx.log" 2>&1 &
+set timeout -1
+cd "$TSS_CWD"
+spawn "$BIN_ABS" regroup \
+	--home "$(party_home "$idx")" \
+	--vault_name default \
+	--password "$PASS" \
+	--log_level debug \
+	--channel_id "$REGROUP2_CH" \
+	--channel_password "$CHPASS" \
+	--threshold 3 \
+	--parties 5 \
+	--new_threshold 1 \
+	--new_parties 3 \
+	--p2p.new_peer_addrs "$new_peer_addrs"
+expect "Participant as a old committee?*" { send "y\r" }
+expect "Participant as a new committee?*" { send "n\r" }
+expect eof
+EOF
+	PIDS+=("$!")
+}
+
+start_regroup2_old_new() {
+	local idx="$1"
+	local new_listen="$2"
+	local new_peer_addrs="$3"
+
+	run_tss regroup \
+		--home "$(party_home "$idx")" \
+		--vault_name default \
+		--password "$PASS" \
+		--log_level debug \
+		--channel_id "$REGROUP2_CH" \
+		--channel_password "$CHPASS" \
+		--threshold 3 \
+		--parties 5 \
+		--new_threshold 1 \
+		--new_parties 3 \
+		--p2p.new_listen "$new_listen" \
+		--p2p.new_peer_addrs "$new_peer_addrs" \
+		--is_old \
+		--is_new_member \
+		> "$BASE/regroup2-$idx.log" 2>&1 &
+	PIDS+=("$!")
+}
+
+echo "logs: $BASE"
+echo "binary: $BIN_ABS"
+echo "cwd: $TSS_CWD"
+echo "channels: keygen=$KEYGEN_CH sign1=$SIGN1_CH regroup1=$REGROUP1_CH sign2=$SIGN2_CH regroup2=$REGROUP2_CH sign3=$SIGN3_CH"
+echo "phase: init 5 parties"
+
+for idx in 1 2 3 4 5; do
+	run_tss init \
+		--home "$(party_home "$idx")" \
+		--vault_name default \
+		--moniker "party-$idx-chain-103" \
+		--password "$PASS" \
+		--p2p.listen "$(base_addr "$idx")" \
+		--log_level debug \
+		> "$BASE/init-$idx.log" 2>&1
+done
+echo "init completed"
+
+PIDS=()
+echo "phase: keygen on parties 1,2,3 with threshold 2"
+start_keygen 1 "$(base_addr 2),$(base_addr 3)"
+start_keygen 2 "$(base_addr 1),$(base_addr 3)"
+start_keygen 3 "$(base_addr 1),$(base_addr 2)"
+if ! wait_for_pids "keygen" 60; then
+	fail_phase "keygen" "keygen timed out; logs in $BASE"
+fi
+assert_key_material 1 2 3
+echo "keygen completed"
+
+echo "phase: sign on parties 1,2,3"
+run_sign_phase "sign-after-keygen" "$SIGN1_CH" 60 1 2 3
+echo "sign after keygen completed"
+
+PIDS=()
+echo "phase: first regroup old 3 -> new 5"
+start_regroup1 1 "--p2p.new_listen /ip4/0.0.0.0/tcp/19231 --is_old --is_new_member" "$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
+start_regroup1 2 "--p2p.new_listen /ip4/0.0.0.0/tcp/19232 --is_old --is_new_member" "$(base_addr 1),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
+start_regroup1 3 "--p2p.new_listen /ip4/0.0.0.0/tcp/19233 --is_old --is_new_member" "$(base_addr 1),$(base_addr 2),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
+start_regroup1 4 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 5)"
+start_regroup1 5 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4)"
+if ! wait_for_pids "regroup1" 60; then
+	fail_phase "regroup1" "first regroup timed out; logs in $BASE"
+fi
+assert_key_material 1 2 3 4 5
+echo "first regroup completed"
+
+echo "phase: sign on parties 2,3,4,5"
+run_sign_phase "sign-after-regroup1" "$SIGN2_CH" 60 2 3 4 5
+echo "sign after first regroup completed"
+
+PIDS=()
+echo "phase: second regroup old 4 -> new 3 using parties 2,3,4,5"
+start_regroup2_old_only 2 "$(round1_committee_addr 3),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+start_regroup2_old_new 3 "$(round2_tmp_addr 3)" "$(round1_committee_addr 2),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+start_regroup2_old_new 4 "$(round2_tmp_addr 4)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+start_regroup2_old_new 5 "$(round2_tmp_addr 5)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 4),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+if ! wait_for_pids "regroup2" 60; then
+	fail_phase "regroup2" "second regroup timed out; logs in $BASE"
+fi
+assert_key_material 3 4 5
+echo "second regroup completed"
+
+echo "phase: sign on parties 3,4"
+run_sign_phase "sign-after-regroup2" "$SIGN3_CH" 60 3 4
+echo "sign after second regroup completed"
