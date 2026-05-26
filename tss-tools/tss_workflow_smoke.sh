@@ -7,7 +7,7 @@ set -euo pipefail
 # - sign on the initial 3-party committee
 # - first regroup from old 3 -> new 5 with new threshold 3
 # - sign on the 5-party committee
-# - second regroup from old 4 -> new 3 using parties 2,3,4,5,
+# - second regroup from old 4 -> new 3 with final threshold 1 using parties 2,3,4,5,
 #   where 3,4,5 remain in the new committee and party 2 is old-only
 # - sign on the final 3-party committee
 
@@ -55,6 +55,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
+require_command() {
+	local cmd="$1"
+	command -v "$cmd" >/dev/null 2>&1 || {
+		echo "$cmd is required but not installed"
+		exit 1
+	}
+}
+
+port_available() {
+	local port="$1"
+	if command -v lsof >/dev/null 2>&1; then
+		! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+		return
+	fi
+	if command -v nc >/dev/null 2>&1; then
+		! nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+		return
+	fi
+	echo "warning: neither lsof nor nc found; skipping port availability check" >&2
+	return 0
+}
+
+check_required_ports() {
+	local port
+	for port in "${BASE_PORTS[@]}" "${ROUND1_TMP_PORTS[@]}" "${ROUND2_TMP_PORTS[@]}"; do
+		if ! port_available "$port"; then
+			echo "required port is already in use: $port"
+			exit 1
+		fi
+	done
+}
+
 party_home() {
 	local idx="$1"
 	printf '%s/party-%s/chain-103' "$BASE" "$idx"
@@ -101,8 +133,7 @@ fail_phase() {
 }
 
 wait_for_pids() {
-	local label="$1"
-	local timeout="$2"
+	local timeout="$1"
 	local deadline=$((SECONDS + timeout))
 
 	while [ "${#PIDS[@]}" -gt 0 ]; do
@@ -111,6 +142,12 @@ wait_for_pids() {
 		for pid in "${PIDS[@]}"; do
 			if kill -0 "$pid" 2>/dev/null; then
 				remaining+=("$pid")
+			else
+				if wait "$pid"; then
+					:
+				else
+					return 1
+				fi
 			fi
 		done
 		PIDS=()
@@ -126,6 +163,23 @@ wait_for_pids() {
 		fi
 		sleep 1
 	done
+}
+
+check_phase_result() {
+	local phase="$1"
+	local timeout="$2"
+	local status
+
+	set +e
+	wait_for_pids "$timeout"
+	status=$?
+	set -e
+	if [ "$status" -eq 124 ]; then
+		fail_phase "$phase" "$phase timed out; logs in $BASE"
+	fi
+	if [ "$status" -ne 0 ]; then
+		fail_phase "$phase" "$phase failed; logs in $BASE"
+	fi
 }
 
 assert_key_material() {
@@ -190,9 +244,7 @@ run_sign_phase() {
 	for idx in "$@"; do
 		start_sign "$phase" "$channel_id" "$idx"
 	done
-	if ! wait_for_pids "$phase" "$timeout"; then
-		fail_phase "$phase" "$phase timed out; logs in $BASE"
-	fi
+	check_phase_result "$phase" "$timeout"
 
 	for idx in "$@"; do
 		sig="$(signature_from_log "$BASE/$phase-$idx.log")"
@@ -284,6 +336,12 @@ echo "logs: $BASE"
 echo "binary: $BIN_ABS"
 echo "cwd: $TSS_CWD"
 echo "channels: keygen=$KEYGEN_CH sign1=$SIGN1_CH regroup1=$REGROUP1_CH sign2=$SIGN2_CH regroup2=$REGROUP2_CH sign3=$SIGN3_CH"
+require_command expect
+if [ ! -x "$BIN_ABS" ]; then
+	echo "tss binary not found or not executable: $BIN_ABS"
+	exit 1
+fi
+check_required_ports
 echo "phase: init 5 parties"
 
 for idx in 1 2 3 4 5; do
@@ -303,9 +361,7 @@ echo "phase: keygen on parties 1,2,3 with threshold 2"
 start_keygen 1 "$(base_addr 2),$(base_addr 3)"
 start_keygen 2 "$(base_addr 1),$(base_addr 3)"
 start_keygen 3 "$(base_addr 1),$(base_addr 2)"
-if ! wait_for_pids "keygen" 60; then
-	fail_phase "keygen" "keygen timed out; logs in $BASE"
-fi
+check_phase_result "keygen" 60
 assert_key_material 1 2 3
 echo "keygen completed"
 
@@ -320,9 +376,7 @@ start_regroup1 2 "--p2p.new_listen /ip4/0.0.0.0/tcp/19232 --is_old --is_new_memb
 start_regroup1 3 "--p2p.new_listen /ip4/0.0.0.0/tcp/19233 --is_old --is_new_member" "$(base_addr 1),$(base_addr 2),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
 start_regroup1 4 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 5)"
 start_regroup1 5 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4)"
-if ! wait_for_pids "regroup1" 60; then
-	fail_phase "regroup1" "first regroup timed out; logs in $BASE"
-fi
+check_phase_result "regroup1" 60
 assert_key_material 1 2 3 4 5
 echo "first regroup completed"
 
@@ -332,13 +386,13 @@ echo "sign after first regroup completed"
 
 PIDS=()
 echo "phase: second regroup old 4 -> new 3 using parties 2,3,4,5"
+# The second regroup uses new_threshold=1 intentionally for a minimal
+# final 2-of-3 smoke-test committee.
 start_regroup2_old_only 2 "$(round1_committee_addr 3),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
 start_regroup2_old_new 3 "$(round2_tmp_addr 3)" "$(round1_committee_addr 2),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
 start_regroup2_old_new 4 "$(round2_tmp_addr 4)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
 start_regroup2_old_new 5 "$(round2_tmp_addr 5)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 4),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
-if ! wait_for_pids "regroup2" 60; then
-	fail_phase "regroup2" "second regroup timed out; logs in $BASE"
-fi
+check_phase_result "regroup2" 60
 assert_key_material 3 4 5
 echo "second regroup completed"
 

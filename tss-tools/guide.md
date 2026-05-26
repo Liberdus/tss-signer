@@ -421,7 +421,24 @@ npm run tss-sign-ethereum-tx -- --party 1 --chain-id 97 --tx-file ethereum-tx.js
 npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.json.example --dry-run
 
 
-# 19) Sign bootstrap — flexible k-of-n signing and discovery timeout
+# 19.1) Local native workflow smoke test
+#
+# After building the native binary, this runs a same-machine end-to-end workflow:
+# - init 5 local parties
+# - keygen with parties 1,2,3
+# - sign with the initial committee
+# - regroup from 3 parties to 5 parties
+# - sign with the 5-party committee
+# - regroup down to a final 3-party committee
+# - sign with the final committee
+#
+# The script runs the native binary from tss/.tooling/bin so upstream keygen and
+# regroup can find the bundled tbnbcli in their working directory. It also checks
+# that its fixed localhost ports are free before starting.
+./tss-tools/tss_workflow_smoke.sh
+
+
+# 19.2) Sign bootstrap — flexible k-of-n signing and discovery timeout
 #
 # The patched tss binary supports flexible k-of-n signing. Once the first peer
 # connects during sign bootstrap, a discovery window opens. If all n parties
