@@ -72,9 +72,10 @@ export async function withHttpProviderRetry<T>(
 
   let lastError: unknown;
   const excludedUrls = new Set<string>();
-  const effectiveMaxRetries = Math.max(maxRetries, urls.length);
+  /** Max tries when skipping providers that reject eth_getLogs block range. */
+  const ethLogRetries = Math.max(maxRetries, urls.length);
 
-  for (let attempt = 0; attempt < effectiveMaxRetries; attempt++) {
+  for (let attempt = 0; attempt < ethLogRetries; attempt++) {
     const url = pickAvailableUrlFromList(urls, excludedUrls);
     const provider = getHttpProviderForChain([url], {
       fallbackRpcUrl: fallback,
@@ -95,14 +96,14 @@ export async function withHttpProviderRetry<T>(
         console.warn(
           `[httpProvider] Skipping provider (eth_getLogs block-range limit) provider=${name}`,
         );
-        if (attempt < effectiveMaxRetries - 1 && excludedUrls.size < urls.length) continue;
+        if (attempt < ethLogRetries - 1 && excludedUrls.size < urls.length) continue;
         throw error;
       }
       if (shouldBlacklistForError(error)) {
         const reason = scrubUrls((error as Error)?.message?.slice(0, 120) ?? String(error).slice(0, 120));
         markUrlFailed(url, undefined, reason);
       }
-      if (attempt < effectiveMaxRetries - 1 && urls.length > 1) continue;
+      if (attempt < maxRetries - 1 && urls.length > 1) continue;
       throw error;
     }
   }
@@ -129,9 +130,10 @@ export async function withCachedHttpProvider<T>(
 
   let lastError: unknown;
   const excludedUrls = new Set<string>();
-  const effectiveMaxRetries = Math.max(maxRetries, urls.length);
+  /** Max tries when skipping providers that reject eth_getLogs block range. */
+  const ethLogRetries = Math.max(maxRetries, urls.length);
 
-  for (let attempt = 0; attempt < effectiveMaxRetries; attempt++) {
+  for (let attempt = 0; attempt < ethLogRetries; attempt++) {
     let entry = providerCache.get(chainId);
     if (!entry || excludedUrls.has(entry.url)) {
       const url = pickAvailableUrlFromList(urls, excludedUrls);
@@ -161,7 +163,7 @@ export async function withCachedHttpProvider<T>(
         console.warn(
           `[httpProvider] Skipping provider (eth_getLogs block-range limit) chain=${chainId} provider=${name}`,
         );
-        if (attempt < effectiveMaxRetries - 1 && excludedUrls.size < urls.length) continue;
+        if (attempt < ethLogRetries - 1 && excludedUrls.size < urls.length) continue;
         throw error;
       }
       if (shouldBlacklistForError(error)) {
@@ -171,10 +173,10 @@ export async function withCachedHttpProvider<T>(
       const evictedName = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
       providerCache.delete(chainId);
       console.warn(`[httpProvider] Invalidated cached provider chain=${chainId} provider=${evictedName}:`, scrubUrls(errorMessage));
-      if (attempt < effectiveMaxRetries - 1) continue;
-      if (effectiveMaxRetries > 1) {
+      if (attempt < maxRetries - 1) continue;
+      if (maxRetries > 1) {
         console.warn(
-          `[httpProvider] Failed after ${attempt + 1}/${effectiveMaxRetries} attempts`,
+          `[httpProvider] Failed after ${attempt + 1}/${maxRetries} attempts`,
         );
       }
       throw error;
