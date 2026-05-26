@@ -29,6 +29,8 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
   - Windows is not supported by this bootstrap flow.
 - `test-sign-rounds.sh`
   - Multi-scenario signing test harness. Runs configurable rounds across 34 startup-delay scenarios for a configurable committee size (default 7-party, threshold=3, min_sign=4 for thorough coverage). Reports PASS/FAIL per scenario. Logs to `test-result.log` and `test-party{1..N}.log`.
+- `tss_workflow_smoke.sh`
+  - Local end-to-end native TSS workflow smoke test. It initializes five local parties, runs 3-party keygen, signs, regroups from 3 to 5 parties, signs again, regroups down to a final 3-party committee, and signs with the final committee. It runs the native binary from `tss/.tooling/bin` so the bundled `tbnbcli` is found by the upstream keygen/regroup flow.
 - `patch-peer-addrs/`
   - Standalone Go utility that patches the `peer_addrs` and `peers` fields inside each party's encrypted `config.json` vault file. Needed when keystores were generated locally (all peers on `127.0.0.1`) and must be deployed to separate machines with real public IPs. Built by `npm run tss-build` to `tss/.tooling/bin/patch-peer-addrs`. See [Patching peer addresses](#patching-peer-addresses) below.
 - `guide.md`
@@ -57,6 +59,14 @@ User-facing party indices start at 1. The binary resolves to `tss/.tooling/bin/t
 For the remote multi-IP keygen/regroup test flow, see `keygen-regroup-ceremony.md`.
 For the broader production/operator procedure, see `../PARTY_SETUP.md`.
 For the lower-level operator workflow, see `guide.md`.
+
+For a single-machine native TSS smoke test after `npm run tss-build`, run:
+
+```bash
+./tss-tools/tss_workflow_smoke.sh
+```
+
+The smoke script uses fixed localhost ports and exits early if any required port is already in use. Logs are written under `/private/tmp/tss-workflow-smoke.*` by default.
 
 ---
 

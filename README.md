@@ -190,6 +190,7 @@ These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing h
 | `tss-tools/lib/channelId.ts` | Deterministic signing `channelId` and `channelPassword` derivation helpers. |
 | `scripts/inject-liberdus-tx.ts` | Signs a Liberdus tx payload through native BNB TSS, verifies the signature, and optionally injects it into the Liberdus network. |
 | `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. See [`tss-tools/patches/README.md`](tss-tools/patches/README.md) for a description of every change. |
+| `tss-tools/tss_workflow_smoke.sh` | Local end-to-end native TSS smoke workflow: init, keygen, sign, regroup to 5, sign, regroup down to 3, and final sign. Run after `npm run tss-build`. |
 | `tss-tools/test-sign-rounds.sh` | Multi-scenario signing test harness. Runs configurable rounds across varying party startup delays and reports PASS/FAIL. Logs to `tss-tools/test-result.log` and `tss-tools/test-party{1..N}.log`. |
 | `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.ts` and post-keygen address derivation. |
 | `tss-tools/guide.md` | Step-by-step local operator guide for build, init, keygen, verify, sign, and regroup. |
