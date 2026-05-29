@@ -172,24 +172,26 @@ export function initializeTransactionsDatabase(dbPath: string): void {
 // ---------------------------------------------------------------------------
 
 export function saveTransaction(transaction: Transaction): void {
-  const result = stmtInsert.run({
-    txId: transaction.txId,
-    sender: transaction.sender,
-    value: transaction.value,
-    type: transaction.type,
-    txTimestamp: transaction.txTimestamp,
-    receiptId: transaction.receiptId,
-    chainId: transaction.chainId,
-    status: transaction.status,
-    tssSender: transaction.tssSender ?? null,
-    nonce: transaction.nonce ?? null,
-    receiptTimestamp: transaction.receiptTimestamp ?? null,
-    reason: transaction.reason ?? null,
-    executionHistory: transaction.executionHistory ?? "{}",
+  runWithBusyRetry(() => {
+    const result = stmtInsert.run({
+      txId: transaction.txId,
+      sender: transaction.sender,
+      value: transaction.value,
+      type: transaction.type,
+      txTimestamp: transaction.txTimestamp,
+      receiptId: transaction.receiptId,
+      chainId: transaction.chainId,
+      status: transaction.status,
+      tssSender: transaction.tssSender ?? null,
+      nonce: transaction.nonce ?? null,
+      receiptTimestamp: transaction.receiptTimestamp ?? null,
+      reason: transaction.reason ?? null,
+      executionHistory: transaction.executionHistory ?? "{}",
+    });
+    if (result.changes === 0) {
+      console.warn(`[db] saveTransaction: txId ${transaction.txId} already exists — insert ignored`);
+    }
   });
-  if (result.changes === 0) {
-    console.warn(`[db] saveTransaction: txId ${transaction.txId} already exists — insert ignored`);
-  }
 }
 
 export function updateTransactionSource(
@@ -221,10 +223,12 @@ export function updateTransactionSource(
   }
   sql += " WHERE txId = @txId";
 
-  const result = db.prepare(sql).run(params);
-  if (result.changes === 0) {
-    console.warn(`[db] updateTransactionSource: txId ${txId} not found — no rows updated`);
-  }
+  runWithBusyRetry(() => {
+    const result = db.prepare(sql).run(params);
+    if (result.changes === 0) {
+      console.warn(`[db] updateTransactionSource: txId ${txId} not found — no rows updated`);
+    }
+  });
 }
 
 /**
@@ -249,7 +253,7 @@ export function updateTransactionStatus(
   receiptRef: TxReceiptRef,
   reason: string | null,
 ): UpdateStatusResult {
-  return db.transaction((): UpdateStatusResult => {
+  return runWithBusyRetry(() => db.transaction((): UpdateStatusResult => {
     const current = stmtGetById.get(txId) as Transaction | undefined;
     if (!current) return "not_found";
 
@@ -322,7 +326,7 @@ export function updateTransactionStatus(
       txId,
     });
     return "ok";
-  }).immediate()
+  }).immediate());
 }
 
 export function getTransactionById(txId: string): Transaction | null {
@@ -391,7 +395,7 @@ export function appendExecutionHistory(
   key: string,
   entry: ExecutionHistoryEntry,
 ): void {
-  db.transaction(() => {
+  runWithBusyRetry(() => db.transaction(() => {
     const current = stmtGetById.get(txId) as Transaction | undefined;
     if (!current) {
       console.warn(`[db] appendExecutionHistory: txId ${txId} not found`);
@@ -403,7 +407,7 @@ export function appendExecutionHistory(
       history: JSON.stringify(history),
       txId,
     });
-  }).immediate()
+  }).immediate());
 }
 
 export function getExecutionHistory(
@@ -439,6 +443,36 @@ export function getMaxNonceForSender(chainId: number, tssSender: string): number
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+const SQLITE_BUSY_MAX_ATTEMPTS = 8;
+const SQLITE_BUSY_BACKOFF_MS = 100;
+
+function isSqliteBusyError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as { code: string }).code === "SQLITE_BUSY"
+  );
+}
+
+function sleepMs(ms: number): void {
+  const until = Date.now() + ms;
+  while (Date.now() < until) { /* sync backoff for busy_timeout follow-up */ }
+}
+
+function runWithBusyRetry<T>(fn: () => T): T {
+  for (let attempt = 0; attempt < SQLITE_BUSY_MAX_ATTEMPTS; attempt++) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!isSqliteBusyError(error) || attempt === SQLITE_BUSY_MAX_ATTEMPTS - 1) {
+        throw error;
+      }
+      sleepMs(SQLITE_BUSY_BACKOFF_MS * (attempt + 1));
+    }
+  }
+  throw new Error("[db] runWithBusyRetry: unreachable");
+}
 
 function buildWhereClause(options?: {
   sender?: string;
