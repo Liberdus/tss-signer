@@ -6,7 +6,7 @@
  * URL to confirm it is reachable and functional.
  *
  * Usage:
- *   npm run check-custom-providers:mainnet
+ *   npm run check-custom-providers
  *
  * Exit code: 0 if all URLs pass, 1 if any fail.
  */

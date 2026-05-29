@@ -1,5 +1,5 @@
 {
-  "rpcProviderMode": "chainlist",
+  "useInfuraRpcProviders": false,
   "isRemote": false,
   "vaultChain": {
     "name": "Polygon Amoy Testnet",

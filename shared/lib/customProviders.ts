@@ -54,7 +54,7 @@ const URL_TEMPLATES: Record<string, string> = {
   'onfinality:137': 'https://polygon.api.onfinality.io/rpc?apikey={key}',
   'tenderly:137':   'https://polygon.gateway.tenderly.co/{key}',
 
-  // BSC Mainnet (chainId 56)
+  // BSC (chainId 56)
   'alchemy:56':     'https://bnb-mainnet.g.alchemy.com/v2/{key}',
   'infura:56':      'https://bsc-mainnet.infura.io/v3/{key}',
   'drpc:56':        'https://lb.drpc.live/bsc/{key}',
@@ -63,16 +63,6 @@ const URL_TEMPLATES: Record<string, string> = {
   'ankr:56':        'https://rpc.ankr.com/bsc/{key}',
   'rpcfast:56':     'https://bsc-mainnet.rpcfast.com?api_key={key}',
   'onfinality:56':  'https://bnb.api.onfinality.io/rpc?apikey={key}',
-
-  // Polygon Amoy Testnet (chainId 80002)
-  'alchemy:80002':  'https://polygon-amoy.g.alchemy.com/v2/{key}',
-  'infura:80002':   'https://polygon-amoy.infura.io/v3/{key}',
-  'drpc:80002':     'https://lb.drpc.live/polygon-amoy/{key}',
-  'ankr:80002':     'https://rpc.ankr.com/polygon_amoy/{key}',
-
-  // BSC Testnet (chainId 97)
-  'drpc:97':        'https://lb.drpc.live/bsc-testnet/{key}',
-  'ankr:97':        'https://rpc.ankr.com/bsc_testnet_chapel/{key}',
 }
 
 function buildUrlFromTemplate(name: string, chainId: number, apiKey: string): string | undefined {
@@ -179,10 +169,8 @@ export function buildUrlsFromProviderConfig(config: CustomProviderConfig): Provi
  * Loads and resolves provider URLs for a given chainId.
  *
  * Looks for:
- *   - chainId   137 → providers-polygon.json        (Polygon Mainnet)
- *   - chainId    56 → providers-bsc.json             (BSC Mainnet)
- *   - chainId 80002 → providers-polygon-amoy.json    (Polygon Amoy Testnet)
- *   - chainId    97 → providers-bsc-testnet.json     (BSC Testnet)
+ *   - chainId 137 → providers-polygon.json
+ *   - chainId  56 → providers-bsc.json
  *
  * Throws if the file is missing or if no URLs can be resolved.
  */
@@ -191,10 +179,8 @@ export function loadCustomProviderUrls(
   fromDir?: string,
 ): ProviderLoadResult {
   const fileNameByChain: Record<number, string> = {
-    137:   'providers-polygon.json',
-    56:    'providers-bsc.json',
-    80002: 'providers-polygon-amoy.json',
-    97:    'providers-bsc-testnet.json',
+    137: 'providers-polygon.json',
+    56:  'providers-bsc.json',
   }
 
   const fileName = fileNameByChain[chainId]
