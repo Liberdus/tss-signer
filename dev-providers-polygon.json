@@ -10,7 +10,7 @@
     { "name": "getblock",   "keys": [] },
     { "name": "moralis",    "keys": [] },
     { "name": "quicknode",  "keys": [] },
-    { "name": "tatum",      "keys": [], "_note": "No URL template for Polygon — provide a full https:// URL if you have a Tatum endpoint" },
+    { "name": "tatum",      "keys": [] },
     { "name": "rpcfast",    "keys": [] },
     { "name": "onfinality", "keys": [] },
     { "name": "ankr",       "keys": [] }
