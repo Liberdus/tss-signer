@@ -207,8 +207,8 @@ npm install
 npm run compile
 echo -e "${GREEN}TSS signer TypeScript compiled successfully!${NC}"
 
-# Fetch the upstream tss submodule
-echo -e "\n${YELLOW}Fetching native TSS submodule...${NC}"
+# Fetch the Liberdus forked bnb-chain/tss submodule
+echo -e "\n${YELLOW}Fetching Liberdus forked BNB TSS submodule...${NC}"
 git submodule sync --recursive
 git submodule update --init --recursive
 

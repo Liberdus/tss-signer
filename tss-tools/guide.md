@@ -32,7 +32,7 @@ npm install
 npm run compile
 
 
-# 3) Ensure the upstream tss submodule is present
+# 3) Ensure the Liberdus forked bnb-chain/tss submodule is present
 git submodule update --init --recursive
 
 # 4) Bootstrap the vendored Go toolchain if build says Go is missing
@@ -44,7 +44,7 @@ git submodule update --init --recursive
 # - linux-arm64
 # Windows is not supported by this bootstrap flow.
 
-# 5) Build the patched native tss binary
+# 5) Build the native tss binary
 ./tss-tools/build-tss.sh
 
 # Expected output:
@@ -197,7 +197,7 @@ npm run tss-keygen -- --party 5 --chain-id 80002
 #
 # If you see:
 #   listen tcp 127.0.0.1:6062: bind: address already in use
-# that is the upstream debug profile port warning from tss/main.go.
+# that is the BNB TSS debug profile port warning from tss/main.go.
 # It is noisy, but the real bootstrap listener can still continue on the p2p.listen port.
 
 
@@ -385,7 +385,7 @@ npm run tss-party
 
 
 # 17) Important runtime requirements for native mode
-# - The patched binary must exist:
+# - The native binary must exist:
 #     tss/.tooling/bin/tss
 # - Shared env vars must be set for all participating parties:
 #     TSS_PASSWORD_CHAIN_<chainId>
@@ -432,7 +432,7 @@ npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.js
 # - regroup down to a final 3-party committee
 # - sign with the final committee
 #
-# The script runs the native binary from tss/.tooling/bin so upstream keygen and
+# The script runs the native binary from tss/.tooling/bin so native keygen and
 # regroup can find the bundled tbnbcli in their working directory. It also checks
 # that its fixed localhost ports are free before starting.
 ./tss-tools/tss_workflow_smoke.sh
@@ -440,7 +440,7 @@ npm run inject-liberdus-tx -- --chain-id 97 --party 1 --tx-file ./liberdus-tx.js
 
 # 19.2) Sign bootstrap — flexible k-of-n signing and discovery timeout
 #
-# The patched tss binary supports flexible k-of-n signing. Once the first peer
+# The Liberdus forked bnb-chain/tss binary supports flexible k-of-n signing. Once the first peer
 # connects during sign bootstrap, a discovery window opens. If all n parties
 # connect before the window closes, all sign. If the window expires with at
 # least threshold peers present, signing proceeds with that available subset.

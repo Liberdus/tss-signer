@@ -1,15 +1,13 @@
 # TSS Overlay
 
-This directory contains the `tss-signer`-owned native TSS tools for the upstream Binance `tss` repository.
+This directory contains the `tss-signer` native TSS tooling for the Liberdus fork of `bnb-chain/tss`, which carries the tss-lib v3 upgrade and Liberdus signing/discovery fixes.
 
 ## Structure
 
 - `../tss/`
-  - Git submodule pointing to `https://github.com/bnb-chain/tss.git`
-- `patches/tss-source.patch`
-  - Source patch applied onto `../tss` before build/use. See `patches/README.md` for a description of every change.
+  - Git submodule pointing to `https://github.com/Liberdus/tss.git`
 - `lib/bnbTss.ts`
-  - Runtime and build helpers: binary resolution, patch preparation, vault path layout, committee topology, and signing helpers. Used by all tooling scripts and by `tss-party.ts`.
+  - Runtime and build helpers: binary resolution, vault path layout, committee topology, and signing helpers. Used by all tooling scripts and by `tss-party.ts`.
 - `lib/committeeTopology.ts`
   - Committee topology helper for deterministic local peer addresses (same-machine dev/test) and parsed `tss describe` topology output.
 - `lib/channelId.ts`
@@ -20,9 +18,9 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
 - `../scripts/tss-keygen-ceremony.ts`, `../scripts/tss-regroup-ceremony.ts`
   - Higher-level ceremony wrappers for the normal multi-machine operator flow. They resolve committee position from shared ordered-IP config, derive deterministic channel credentials, and compute peer address topology automatically.
 - `derive-pubkey/main.go`
-  - Go helper source staged into `../tss/.tooling` and run inside the patched `tss` module to derive an Ethereum pubkey/address from an existing vault. Used by `verify.ts` and post-keygen address derivation.
+  - Go helper source staged into `../tss/.tooling` and run inside the Liberdus forked `bnb-chain/tss` module to derive an Ethereum pubkey/address from an existing vault. Used by `verify.ts` and post-keygen address derivation.
 - `build-tss.sh`
-  - Applies `patches/tss-source.patch` to the upstream `tss` checkout and builds the native binary to `../tss/.tooling/bin/tss` plus the `tss-derive-pubkey` helper.
+  - Builds the native binary from the Liberdus forked `bnb-chain/tss` checkout to `../tss/.tooling/bin/tss` plus the `tss-derive-pubkey` helper.
 - `setup-mise-go.sh`
   - Bootstraps a local Go toolchain under `tss/.tooling/mise` when the system `go` binary is absent or the wrong version.
   - Supports `darwin-arm64`, `linux-x64`, and `linux-arm64`.
@@ -30,17 +28,15 @@ This directory contains the `tss-signer`-owned native TSS tools for the upstream
 - `test-sign-rounds.sh`
   - Multi-scenario signing test harness. Runs configurable rounds across 34 startup-delay scenarios for a configurable committee size (default 7-party, threshold=3, min_sign=4 for thorough coverage). Reports PASS/FAIL per scenario. Logs to `test-result.log` and `test-party{1..N}.log`.
 - `tss_workflow_smoke.sh`
-  - Local end-to-end native TSS workflow smoke test. It initializes five local parties, runs 3-party keygen, signs, regroups from 3 to 5 parties, signs again, regroups down to a final 3-party committee, and signs with the final committee. It runs the native binary from `tss/.tooling/bin` so the bundled `tbnbcli` is found by the upstream keygen/regroup flow.
+  - Local end-to-end native TSS workflow smoke test. It initializes five local parties, runs 3-party keygen, signs, regroups from 3 to 5 parties, signs again, regroups down to a final 3-party committee, and signs with the final committee. It runs the native binary from `tss/.tooling/bin` so the bundled `tbnbcli` is found by the BNB TSS keygen/regroup flow.
 - `patch-peer-addrs/`
   - Standalone Go utility that patches the `peer_addrs` and `peers` fields inside each party's encrypted `config.json` vault file. Needed when keystores were generated locally (all peers on `127.0.0.1`) and must be deployed to separate machines with real public IPs. Built by `npm run tss-build` to `tss/.tooling/bin/patch-peer-addrs`. See [Patching peer addresses](#patching-peer-addresses) below.
 - `guide.md`
   - Operator guide covering both the preferred ceremony-based remote flow and the lower-level manual native workflows.
-- `patches/README.md`
-  - Describes every change in `tss-source.patch`, the reason for each, and how to regenerate the patch.
 
 ## How it fits together
 
-The upstream `tss` source is fetched via Git submodule and patched locally before build/use. The patch is applied automatically by `build-tss.sh`.
+The Liberdus forked `bnb-chain/tss` source is fetched via Git submodule and built directly by `build-tss.sh`.
 
 Default ceremony-based vault layout:
 

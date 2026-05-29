@@ -10,7 +10,6 @@ DEFAULT_PATCH_PEER_ADDRS_NAME="patch-peer-addrs"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIGNER_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TSS_ROOT="${BNB_TSS_ROOT:-${SIGNER_ROOT}/tss}"
-PATCH_PATH="${SIGNER_ROOT}/tss-tools/patches/tss-source.patch"
 BINARY_PATH="${TSS_ROOT}/.tooling/bin/${DEFAULT_BINARY_NAME}"
 DERIVE_BINARY_PATH="${TSS_ROOT}/.tooling/bin/${DEFAULT_DERIVE_BINARY_NAME}"
 TBNBCLI_SOURCE_PATH="${TSS_ROOT}/${DEFAULT_TBNBCLI_NAME}"
@@ -22,22 +21,7 @@ HELPER_DIR="${TSS_ROOT}/.tooling/derive-pubkey"
 HELPER_MAIN_PATH="${HELPER_DIR}/main.go"
 
 if [[ ! -f "${TSS_ROOT}/go.mod" || ! -d "${TSS_ROOT}/cmd" ]]; then
-  echo "Unable to locate tss repo at ${TSS_ROOT}. Run git submodule update --init --recursive first." >&2
-  exit 1
-fi
-
-if [[ ! -f "${PATCH_PATH}" ]]; then
-  echo "Missing TSS patch file at ${PATCH_PATH}" >&2
-  exit 1
-fi
-
-if git -C "${TSS_ROOT}" apply --check "${PATCH_PATH}" >/dev/null 2>&1; then
-  git -C "${TSS_ROOT}" apply "${PATCH_PATH}"
-elif git -C "${TSS_ROOT}" apply -R --check "${PATCH_PATH}" >/dev/null 2>&1; then
-  :
-else
-  echo "TSS patch could not be applied cleanly." >&2
-  git -C "${TSS_ROOT}" apply --check "${PATCH_PATH}" || true
+  echo "Unable to locate Liberdus forked bnb-chain/tss source at ${TSS_ROOT}. Run git submodule update --init --recursive first." >&2
   exit 1
 fi
 
