@@ -1,12 +1,5 @@
 import { ethers } from "ethers";
-import {
-  getProviderNameForUrl,
-  isEthGetLogsRangeLimitError,
-  markUrlFailed,
-  pickAvailableUrlFromList,
-  scrubUrls,
-  shouldBlacklistForError,
-} from "./rpcUrls";
+import { getProviderNameForUrl, markUrlFailed, pickAvailableUrlFromList, scrubUrls, shouldBlacklistForError } from "./rpcUrls";
 import { toNetworkChainId } from "../config";
 
 const { providers } = ethers;
@@ -71,11 +64,8 @@ export async function withHttpProviderRetry<T>(
   if (urls.length === 0) throw new Error("No HTTP RPC URLs available");
 
   let lastError: unknown;
-  const excludedUrls = new Set<string>();
-  const effectiveMaxRetries = Math.max(maxRetries, urls.length);
-
-  for (let attempt = 0; attempt < effectiveMaxRetries; attempt++) {
-    const url = pickAvailableUrlFromList(urls, excludedUrls);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const url = pickAvailableUrlFromList(urls);
     const provider = getHttpProviderForChain([url], {
       fallbackRpcUrl: fallback,
       chainId: options.chainId,
@@ -89,20 +79,11 @@ export async function withHttpProviderRetry<T>(
       return await withTimeout(fn(provider), options.timeoutMs);
     } catch (error) {
       lastError = error;
-      if (isEthGetLogsRangeLimitError(error)) {
-        excludedUrls.add(url);
-        const name = getProviderNameForUrl(url) ?? new URL(url).hostname;
-        console.warn(
-          `[httpProvider] Skipping provider (eth_getLogs block-range limit) provider=${name}`,
-        );
-        if (attempt < effectiveMaxRetries - 1 && excludedUrls.size < urls.length) continue;
-        throw error;
-      }
       if (shouldBlacklistForError(error)) {
         const reason = scrubUrls((error as Error)?.message?.slice(0, 120) ?? String(error).slice(0, 120));
         markUrlFailed(url, undefined, reason);
       }
-      if (attempt < effectiveMaxRetries - 1 && urls.length > 1) continue;
+      if (attempt < maxRetries - 1 && urls.length > 1) continue;
       throw error;
     }
   }
@@ -128,13 +109,10 @@ export async function withCachedHttpProvider<T>(
   if (urls.length === 0) throw new Error(`No HTTP RPC URLs available for chainId ${chainId}`);
 
   let lastError: unknown;
-  const excludedUrls = new Set<string>();
-  const effectiveMaxRetries = Math.max(maxRetries, urls.length);
-
-  for (let attempt = 0; attempt < effectiveMaxRetries; attempt++) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     let entry = providerCache.get(chainId);
-    if (!entry || excludedUrls.has(entry.url)) {
-      const url = pickAvailableUrlFromList(urls, excludedUrls);
+    if (!entry) {
+      const url = pickAvailableUrlFromList(urls);
       const provider = getHttpProviderForChain([url], { fallbackRpcUrl: fallback, chainId });
       entry = { provider, url };
       providerCache.set(chainId, entry);
@@ -154,16 +132,6 @@ export async function withCachedHttpProvider<T>(
     } catch (error) {
       lastError = error;
       const errorMessage = (error as Error)?.message ?? String(error);
-      if (isEthGetLogsRangeLimitError(error)) {
-        excludedUrls.add(entry.url);
-        providerCache.delete(chainId);
-        const name = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
-        console.warn(
-          `[httpProvider] Skipping provider (eth_getLogs block-range limit) chain=${chainId} provider=${name}`,
-        );
-        if (attempt < effectiveMaxRetries - 1 && excludedUrls.size < urls.length) continue;
-        throw error;
-      }
       if (shouldBlacklistForError(error)) {
         const reason = scrubUrls(errorMessage.slice(0, 120));
         markUrlFailed(entry.url, undefined, reason);
@@ -171,10 +139,10 @@ export async function withCachedHttpProvider<T>(
       const evictedName = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
       providerCache.delete(chainId);
       console.warn(`[httpProvider] Invalidated cached provider chain=${chainId} provider=${evictedName}:`, scrubUrls(errorMessage));
-      if (attempt < effectiveMaxRetries - 1) continue;
-      if (effectiveMaxRetries > 1) {
+      if (attempt < maxRetries - 1) continue;
+      if (maxRetries > 1) {
         console.warn(
-          `[httpProvider] Failed after ${attempt + 1}/${effectiveMaxRetries} attempts`,
+          `[httpProvider] Failed after ${attempt + 1}/${maxRetries} attempts`,
         );
       }
       throw error;

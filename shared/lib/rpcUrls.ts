@@ -169,83 +169,11 @@ export function markUrlFailed(url: string, ttlMs?: number, reason?: string): voi
   }
 }
 
-/** Pull RPC code/message from ethers SERVER_ERROR wrappers (body="{\"error\":...}"). */
-function collectRpcErrorContext(error: unknown): { code: number | undefined; text: string } {
-  const err = error as { message?: string; code?: unknown; error?: { code?: unknown; message?: string } };
-  const parts: string[] = [];
-  if (err?.message) parts.push(err.message);
-  if (err?.error?.message) parts.push(err.error.message);
-
-  let code: number | undefined;
-  const nestedCode = err?.error?.code ?? err?.code;
-  if (typeof nestedCode === "number") code = nestedCode;
-  else if (typeof nestedCode === "string" && /^-?\d+$/.test(nestedCode)) code = Number(nestedCode);
-
-  const bodyMatch = parts.join(" ").match(/body="((?:\\.|[^"\\])*)"/);
-  if (bodyMatch) {
-    try {
-      const bodyJson = JSON.parse(bodyMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\")) as {
-        error?: { code?: number; message?: string };
-      };
-      if (bodyJson.error?.message) parts.push(bodyJson.error.message);
-      if (typeof bodyJson.error?.code === "number") code = bodyJson.error.code;
-    } catch {
-      // ignore malformed body
-    }
-  }
-
-  return { code, text: parts.join(" ").toLowerCase() };
-}
-
-/**
- * Provider rejected eth_getLogs because the requested block range exceeds plan limits.
- * Not a bad endpoint — skip to the next provider for this call without blacklisting.
- *
- * Known providers:
- *   - QuickNode Discover: -32615, "eth_getLogs is limited to a N range"
- *   - Alchemy free tier:  -32600, "up to a 10 block range" / "Upgrade to PAYG"
- */
-export function isEthGetLogsRangeLimitError(error: unknown): boolean {
-  const { code, text } = collectRpcErrorContext(error);
-  if (!/eth_getlogs|eth_get_logs/.test(text) && !/block range/.test(text)) {
-    return false;
-  }
-
-  // QuickNode Discover / free trial
-  if (code === -32615) return true;
-  if (/eth_getlogs is limited to a \d+ range/.test(text)) return true;
-  if (/limited to a \d+ range.*upgrade.*plan|upgrade.*plan.*limited to a \d+ range/.test(text)) {
-    return true;
-  }
-
-  // Alchemy free tier (Polygon Amoy etc.: 10 blocks; varies by chain on paid tiers)
-  if (code === -32600 && /free tier|block range|upgrade to payg/.test(text)) return true;
-  if (/under the free tier plan.*eth_getlogs|eth_getlogs.*up to a \d+ block range/.test(text)) {
-    return true;
-  }
-  if (/upgrade to payg for expanded block range/.test(text)) return true;
-
-  // Other providers
-  if (/eth_getlogs.*block range|block range.*eth_getlogs/.test(text)) return true;
-  if (/query returned more than \d+ blocks|block range too (large|wide)/.test(text)) return true;
-
-  return false;
-}
-
-export function pickAvailableUrlFromList(
-  urls: string[],
-  exclude?: ReadonlySet<string>,
-): string {
-  const pool =
-    exclude && exclude.size > 0 ? urls.filter((u) => !exclude.has(u)) : urls;
-  if (pool.length === 0) {
-    throw new Error("[rpcUrls] No RPC URLs available after excluding providers for eth_getLogs range limit");
-  }
-
-  const maxAttempts = pool.length;
-  let fallback = pool[0];
+export function pickAvailableUrlFromList(urls: string[]): string {
+  const maxAttempts = urls.length;
+  let fallback = urls[0];
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const url = pool[Math.floor(Math.random() * pool.length)];
+    const url = urls[Math.floor(Math.random() * urls.length)];
     fallback = url;
     const expiry = urlBlacklistExpiry.get(url);
     if (expiry === undefined) return url;
@@ -258,8 +186,6 @@ export function pickAvailableUrlFromList(
 }
 
 export function shouldBlacklistForError(error: unknown): boolean {
-  if (isEthGetLogsRangeLimitError(error)) return false;
-
   const msg = String((error as any)?.message ?? (error as any)?.code ?? error).toLowerCase();
   const code = (error as any)?.code;
   if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ECONNRESET") return true;
