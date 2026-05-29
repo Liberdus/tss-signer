@@ -1,7 +1,7 @@
 import {ChainConfig} from './config'
 import {ethers} from 'ethers'
 import * as rpcUrls from './lib/rpcUrls'
-import {loadCustomProviderUrls} from './lib/customProviders'
+import {infuraHttpRpcUrl} from './lib/infura'
 import {
   getHttpProviderForChain,
   invalidateCachedProvider,
@@ -44,7 +44,8 @@ export function buildChainProviderMap<T>(
 export function initializeChainRpcConfig(
   chains: ChainConfig[],
   options: {
-    rpcProviderMode?: 'custom' | 'chainlist' | 'both'
+    useInfuraRpcProviders?: boolean
+    infuraApiKeys?: string[]
   } = {},
 ): InitializedRpcConfig {
   const chainIds = chains.map((config) => config.chainId)
@@ -58,29 +59,19 @@ export function initializeChainRpcConfig(
 
   rpcUrls.initFromConfig(rpcConfigByChainId)
 
-  const mode = options.rpcProviderMode ?? 'both'
-
-  if (mode === 'custom' || mode === 'both') {
+  // Optionally prefer Infura HTTP RPCs (when supported for the chainId).
+  if (options.useInfuraRpcProviders && (options.infuraApiKeys?.length ?? 0) > 0) {
     for (const config of chains) {
-      try {
-        const result = loadCustomProviderUrls(config.chainId)
-        const urls = result.resolved.map((r) => r.url)
-        if (urls.length > 0) {
-          rpcUrls.addHttpUrls(config.chainId, urls, {prepend: true})
-          console.log(`[chainRpc] Loaded ${urls.length} custom provider URL(s) for chainId ${config.chainId}`)
-        }
-      } catch (err) {
-        if (mode === 'custom') {
-          throw err
-        }
-        console.warn(`[chainRpc] Custom providers unavailable for chainId ${config.chainId} — falling back to Chainlist: ${(err as Error).message}`)
+      const infuraUrls = (options.infuraApiKeys ?? [])
+        .map((k) => infuraHttpRpcUrl(config.chainId, k))
+        .filter((u): u is string => !!u)
+      if (infuraUrls.length > 0) {
+        rpcUrls.addHttpUrls(config.chainId, infuraUrls, {prepend: true})
       }
     }
   }
 
-  if (mode === 'chainlist' || mode === 'both') {
-    rpcUrls.startHourlyChainlistFetch(chainIds)
-  }
+  rpcUrls.startHourlyChainlistFetch(chainIds)
 
   function getHttpRpcUrlsForChain(chainId: number): string[] {
     return rpcUrls.getHttpUrls(chainId)

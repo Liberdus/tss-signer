@@ -1,6 +1,5 @@
 {
   "chainId": 56,
-  "chainName": "BSC Mainnet",
   "_note": "Tenderly does not support BSC — do not add a tenderly entry here. quicknode requires a full URL — API key construction is not supported.",
   "providers": [
     { "name": "drpc",       "keys": ["https://lb.drpc.live/bsc/YOUR_DRPC_KEY"] },

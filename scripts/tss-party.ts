@@ -184,9 +184,7 @@ const dbPath = deriveTransactionsDbPath(process.cwd(), ourParty.idx)
 
 // In vault mode use [vaultChain, secondaryChainConfig]; in Liberdus mode use supportedChains
 const chainsToInit: ChainConfig[] = getConfiguredChains(chainConfigs)
-const chainRpcConfig = initializeChainRpcConfig(chainsToInit, {
-  rpcProviderMode: chainConfigsRaw.rpcProviderMode ?? 'both',
-})
+const chainRpcConfig = initializeChainRpcConfig(chainsToInit)
 // Give eth_sendRawTransaction a slightly longer budget than reads on public testnet RPCs.
 const TSS_PARTY_SEND_TX_TIMEOUT_MS = 15_000
 

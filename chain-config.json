@@ -1,5 +1,5 @@
 {
-  "rpcProviderMode": "both",
+  "useInfuraRpcProviders": false,
   "isRemote": true,
   "vaultChain": {
     "name": "Polygon Mainnet",
