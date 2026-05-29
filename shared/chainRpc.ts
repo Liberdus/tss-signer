@@ -51,21 +51,14 @@ export function initializeChainRpcConfig(
   const rpcConfigByChainId: Record<string, {rpcUrl: string}> = {}
   const fallbackRpcUrlByChainId = new Map<number, string>()
 
-  const mode = options.rpcProviderMode ?? 'both'
-  if (mode !== 'custom' && mode !== 'chainlist' && mode !== 'both') {
-    throw new Error(`[chainRpc] Invalid rpcProviderMode: "${mode}". Expected "custom", "chainlist", or "both"`)
-  }
-
   for (const config of chains) {
     rpcConfigByChainId[config.chainId.toString()] = {rpcUrl: config.rpcUrl}
-    if (mode !== 'custom') {
-      fallbackRpcUrlByChainId.set(config.chainId, config.rpcUrl)
-    }
+    fallbackRpcUrlByChainId.set(config.chainId, config.rpcUrl)
   }
 
-  if (mode !== 'custom') {
-    rpcUrls.initFromConfig(rpcConfigByChainId)
-  }
+  rpcUrls.initFromConfig(rpcConfigByChainId)
+
+  const mode = options.rpcProviderMode ?? 'both'
 
   if (mode === 'custom' || mode === 'both') {
     for (const config of chains) {
