@@ -116,10 +116,8 @@ export async function withCachedHttpProvider<T>(
       const provider = getHttpProviderForChain([url], { fallbackRpcUrl: fallback, chainId });
       entry = { provider, url };
       providerCache.set(chainId, entry);
-      if (options.logCache) {
-        const providerName = getProviderNameForUrl(url) ?? new URL(url).hostname;
-        console.log(`[httpProvider] Selected provider chain=${chainId} provider=${providerName}`);
-      }
+      const providerName = getProviderNameForUrl(url) ?? new URL(url).hostname;
+      console.log(`[httpProvider] Selected provider chain=${chainId} provider=${providerName}`);
     }
 
     if (options.logUrl && !options.logCache) {
