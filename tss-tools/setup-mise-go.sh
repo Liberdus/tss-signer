@@ -13,6 +13,12 @@ MISE_DATA_DIR="${MISE_ROOT}/data"
 MISE_CONFIG_DIR="${MISE_ROOT}/config"
 GO_BIN="${MISE_DATA_DIR}/installs/go/${DEFAULT_GO_VERSION}/bin/go"
 
+unsupported_platform_message() {
+  local uname_s="$1"
+  local uname_m="$2"
+  echo "Unsupported platform '${uname_s}/${uname_m}'. Supported mise platforms: macos-arm64, macos-x64, linux-x64, linux-arm64. Windows is not supported by this bootstrap flow." >&2
+}
+
 resolve_mise_platform() {
   local uname_s="${1:-$(uname -s)}"
   local uname_m="${2:-$(uname -m)}"
@@ -21,13 +27,13 @@ resolve_mise_platform() {
 
   case "${uname_s}" in
     Darwin)
-      os="darwin"
+      os="macos"
       ;;
     Linux)
       os="linux"
       ;;
     *)
-      echo "Unsupported platform '${uname_s}/${uname_m}'. Supported platforms: darwin/arm64, linux/x86_64, linux/aarch64. Windows is not supported by this bootstrap flow." >&2
+      unsupported_platform_message "${uname_s}" "${uname_m}"
       return 1
       ;;
   esac
@@ -40,17 +46,17 @@ resolve_mise_platform() {
       arch="x64"
       ;;
     *)
-      echo "Unsupported platform '${uname_s}/${uname_m}'. Supported platforms: darwin/arm64, linux/x86_64, linux/aarch64. Windows is not supported by this bootstrap flow." >&2
+      unsupported_platform_message "${uname_s}" "${uname_m}"
       return 1
       ;;
   esac
 
   case "${os}-${arch}" in
-    darwin-arm64|linux-x64|linux-arm64)
+    macos-arm64|macos-x64|linux-x64|linux-arm64)
       printf '%s\n' "${os}-${arch}"
       ;;
     *)
-      echo "Unsupported platform '${uname_s}/${uname_m}'. Supported platforms: darwin/arm64, linux/x86_64, linux/aarch64. Windows is not supported by this bootstrap flow." >&2
+      unsupported_platform_message "${uname_s}" "${uname_m}"
       return 1
       ;;
   esac

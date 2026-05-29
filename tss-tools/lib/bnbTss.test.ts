@@ -5,7 +5,11 @@ import * as path from 'node:path'
 import {getIpBasedMoniker, getMoniker, getPartyHome, readStoredListenAddr, resolveMisePlatform} from './bnbTss';
 
 function testResolveMisePlatformSupportsDarwinArm64(): void {
-  assert.equal(resolveMisePlatform('darwin', 'arm64'), 'darwin-arm64');
+  assert.equal(resolveMisePlatform('darwin', 'arm64'), 'macos-arm64');
+}
+
+function testResolveMisePlatformSupportsDarwinX64(): void {
+  assert.equal(resolveMisePlatform('darwin', 'x64'), 'macos-x64');
 }
 
 function testResolveMisePlatformSupportsLinuxX64(): void {
@@ -22,7 +26,7 @@ function testResolveMisePlatformRejectsUnsupportedPlatforms(): void {
     /Windows is not supported/,
   );
   assert.throws(
-    () => resolveMisePlatform('darwin', 'x64'),
+    () => resolveMisePlatform('freebsd', 'x64'),
     /Unsupported platform/,
   );
 }
@@ -100,6 +104,7 @@ function testReadStoredListenAddrReadsOuterConfigListen(): void {
 
 function main(): void {
   testResolveMisePlatformSupportsDarwinArm64();
+  testResolveMisePlatformSupportsDarwinX64();
   testResolveMisePlatformSupportsLinuxX64();
   testResolveMisePlatformSupportsLinuxArm64();
   testResolveMisePlatformRejectsUnsupportedPlatforms();

@@ -183,12 +183,12 @@ export function resolveMisePlatform(platform = process.platform, arch = process.
   const normalizedPlatform = (() => {
     switch (platform) {
       case 'darwin':
-        return 'darwin';
+        return 'macos';
       case 'linux':
         return 'linux';
       default:
         throw new Error(
-          `Unsupported platform '${platform}/${arch}'. Supported platforms: darwin/arm64, linux/x64, linux/arm64. Windows is not supported by this bootstrap flow.`,
+          `Unsupported platform '${platform}/${arch}'. Supported mise platforms: macos-arm64, macos-x64, linux-x64, linux-arm64. Windows is not supported by this bootstrap flow.`,
         );
     }
   })();
@@ -201,20 +201,21 @@ export function resolveMisePlatform(platform = process.platform, arch = process.
         return 'x64';
       default:
         throw new Error(
-          `Unsupported platform '${platform}/${arch}'. Supported platforms: darwin/arm64, linux/x64, linux/arm64. Windows is not supported by this bootstrap flow.`,
+          `Unsupported platform '${platform}/${arch}'. Supported mise platforms: macos-arm64, macos-x64, linux-x64, linux-arm64. Windows is not supported by this bootstrap flow.`,
         );
     }
   })();
 
   const misePlatform = `${normalizedPlatform}-${normalizedArch}`;
   switch (misePlatform) {
-    case 'darwin-arm64':
+    case 'macos-arm64':
+    case 'macos-x64':
     case 'linux-x64':
     case 'linux-arm64':
       return misePlatform;
     default:
       throw new Error(
-        `Unsupported platform '${platform}/${arch}'. Supported platforms: darwin/arm64, linux/x64, linux/arm64. Windows is not supported by this bootstrap flow.`,
+        `Unsupported platform '${platform}/${arch}'. Supported mise platforms: macos-arm64, macos-x64, linux-x64, linux-arm64. Windows is not supported by this bootstrap flow.`,
       );
   }
 }

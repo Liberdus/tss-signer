@@ -39,7 +39,8 @@ git submodule update --init --recursive
 ./tss-tools/setup-mise-go.sh
 
 # Supported bootstrap platforms:
-# - darwin-arm64
+# - macos-arm64
+# - macos-x64
 # - linux-x64
 # - linux-arm64
 # Windows is not supported by this bootstrap flow.
