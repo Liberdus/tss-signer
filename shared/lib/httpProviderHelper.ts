@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import { getProviderNameForUrl, markUrlFailed, pickAvailableUrlFromList, scrubUrls, shouldBlacklistForError } from "./rpcUrls";
+import { markUrlFailed, pickAvailableUrlFromList, shouldBlacklistForError } from "./rpcUrls";
 import { toNetworkChainId } from "../config";
 
 const { providers } = ethers;
@@ -70,17 +70,14 @@ export async function withHttpProviderRetry<T>(
       fallbackRpcUrl: fallback,
       chainId: options.chainId,
     });
-    if (options.logUrl) {
-      const name = getProviderNameForUrl(url) ?? new URL(url).hostname;
-      console.log(`[httpProvider] URL: provider=${name}`);
-    }
+    if (options.logUrl) console.log(`[httpProvider] URL: ${url}`);
 
     try {
       return await withTimeout(fn(provider), options.timeoutMs);
     } catch (error) {
       lastError = error;
       if (shouldBlacklistForError(error)) {
-        const reason = scrubUrls((error as Error)?.message?.slice(0, 120) ?? String(error).slice(0, 120));
+        const reason = (error as Error)?.message?.slice(0, 120) ?? String(error).slice(0, 120);
         markUrlFailed(url, undefined, reason);
       }
       if (attempt < maxRetries - 1 && urls.length > 1) continue;
@@ -116,13 +113,13 @@ export async function withCachedHttpProvider<T>(
       const provider = getHttpProviderForChain([url], { fallbackRpcUrl: fallback, chainId });
       entry = { provider, url };
       providerCache.set(chainId, entry);
-      const providerName = getProviderNameForUrl(url) ?? new URL(url).hostname;
-      console.log(`[httpProvider] Selected provider chain=${chainId} provider=${providerName}`);
+      if (options.logCache) {
+        console.log(`[httpProvider] New cached provider chain=${chainId} url=${url}`);
+      }
     }
 
     if (options.logUrl && !options.logCache) {
-      const name = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
-      console.log(`[httpProvider] URL: provider=${name}`);
+      console.log(`[httpProvider] URL: ${entry.url}`);
     }
 
     try {
@@ -131,12 +128,16 @@ export async function withCachedHttpProvider<T>(
       lastError = error;
       const errorMessage = (error as Error)?.message ?? String(error);
       if (shouldBlacklistForError(error)) {
-        const reason = scrubUrls(errorMessage.slice(0, 120));
+        const reason = errorMessage.slice(0, 120);
         markUrlFailed(entry.url, undefined, reason);
       }
-      const evictedName = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
       providerCache.delete(chainId);
-      console.warn(`[httpProvider] Invalidated cached provider chain=${chainId} provider=${evictedName}:`, (error as Error)?.message ?? error);
+      if (options.logCache) {
+        console.warn(
+          `[httpProvider] Invalidated cached provider chain=${chainId}:`,
+          (error as Error)?.message ?? error,
+        );
+      }
       if (attempt < maxRetries - 1) continue;
       if (maxRetries > 1) {
         console.warn(

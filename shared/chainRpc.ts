@@ -66,9 +66,8 @@ export function initializeChainRpcConfig(
         const result = loadCustomProviderUrls(config.chainId)
         const urls = result.resolved.map((r) => r.url)
         if (urls.length > 0) {
-          rpcUrls.addHttpUrls(config.chainId, urls, {prepend: true, providerNames: result.resolved.map((r) => r.name)})
-          const providerNames = [...new Set(result.resolved.map((r) => r.name))].join(', ')
-          console.log(`[chainRpc] Loaded ${urls.length} custom provider URL(s) for chainId ${config.chainId} (${providerNames})`)
+          rpcUrls.addHttpUrls(config.chainId, urls, {prepend: true})
+          console.log(`[chainRpc] Loaded ${urls.length} custom provider URL(s) for chainId ${config.chainId}`)
         }
       } catch (err) {
         if (mode === 'custom') {
