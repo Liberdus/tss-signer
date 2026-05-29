@@ -1,5 +1,5 @@
 [submodule "tss"]
 	path = tss
-	url = https://github.com/bnb-chain/tss.git
+	url = https://github.com/Liberdus/tss.git
 	branch = master
 	ignore = dirty

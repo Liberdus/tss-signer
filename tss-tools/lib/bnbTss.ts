@@ -175,12 +175,8 @@ export function resolveTssRoot(signerRoot = resolveProjectRoot()): string {
     }
   }
   throw new Error(
-    `Unable to locate tss repo. Clone submodules first with git submodule update --init --recursive`,
+    `Unable to locate Liberdus forked bnb-chain/tss repo. Initialize submodules first with git submodule update --init --recursive`,
   );
-}
-
-function resolvePatchPath(signerRoot = resolveProjectRoot()): string {
-  return path.join(resolveOverlayRoot(signerRoot), 'patches', 'tss-source.patch');
 }
 
 export function resolveMisePlatform(platform = process.platform, arch = process.arch): string {
@@ -441,33 +437,6 @@ function runWithLiveLogs(command: string, args: any[], options: ExecOptions = {}
   });
 }
 
-function checkCommand(command: string, args: any[], options: ExecOptions = {}) {
-  return spawnSync(command, args, {
-    cwd: options.cwd,
-    env: options.env ? {...process.env, ...options.env} : process.env,
-    encoding: 'utf8',
-  });
-}
-
-function ensurePatchApplied(signerRoot = resolveProjectRoot()): 'applied' | 'already_applied' {
-  const tssRoot = resolveTssRoot(signerRoot);
-  const patchPath = resolvePatchPath(signerRoot);
-  if (!fs.existsSync(patchPath)) {
-    throw new Error(`Missing TSS patch file at ${patchPath}`);
-  }
-  const forwardCheck = checkCommand('git', ['apply', '--check', patchPath], {cwd: tssRoot});
-  if (forwardCheck.status === 0) {
-    runOrThrow('git', ['apply', patchPath], {cwd: tssRoot});
-    return 'applied';
-  }
-  const reverseCheck = checkCommand('git', ['apply', '-R', '--check', patchPath], {cwd: tssRoot});
-  if (reverseCheck.status === 0) {
-    return 'already_applied';
-  }
-  const errorOutput = (forwardCheck.stderr || forwardCheck.stdout || reverseCheck.stderr || reverseCheck.stdout || '').trim();
-  throw new Error(`TSS patch could not be applied cleanly.\n${errorOutput}`);
-}
-
 export function buildTssBinary(options: any = {}): string {
   const signerRoot = options.signerRoot || resolveProjectRoot();
   const tssRoot = options.tssRoot || resolveTssRoot(signerRoot);
@@ -477,10 +446,8 @@ export function buildTssBinary(options: any = {}): string {
   const helperSourcePath = path.join(resolveOverlayRoot(signerRoot), 'derive-pubkey', 'main.go');
   const helperDir = path.join(resolveTssToolingRoot(tssRoot), 'derive-pubkey');
   const helperMainPath = path.join(helperDir, 'main.go');
-  const patchStatus = ensurePatchApplied(signerRoot);
   if (
     !options.force &&
-    patchStatus === 'already_applied' &&
     fs.existsSync(binaryPath) &&
     fs.existsSync(deriveBinaryPath)
   ) {
@@ -518,7 +485,6 @@ export function ensureTssPrepared(options: any = {}): string {
     options.binary ||
     process.env.BNB_TSS_BINARY ||
     path.join(resolveTssToolingRoot(tssRoot), 'bin', DEFAULT_BINARY_NAME);
-  ensurePatchApplied(signerRoot);
   if (!fs.existsSync(binaryPath) || options.forceBuild) {
     return buildTssBinary({...options, signerRoot, tssRoot});
   }

@@ -30,7 +30,7 @@ Each party index (1–5) runs a paired **observer** and **TSS party** process. B
 
 | Layer | Language | Purpose |
 |---|---|---|
-| `tss/` | Go | Native BNB TSS binary (patched upstream `bnb-chain/tss`) |
+| `tss/` | Go | Liberdus fork of `bnb-chain/tss` with the tss-lib v3 upgrade and signing/discovery fixes |
 | `tss-tools/` | TypeScript + Go | Native TSS build/init/keygen/verify/sign/regroup helpers |
 | `scripts/tss-party.ts` | TypeScript | Orchestration: transaction queue, signing flow, chain submission |
 | `observer/` | TypeScript (Node.js) | On-chain monitoring, SQLite transaction DB, local HTTP API |
@@ -54,7 +54,7 @@ npm run compile
 
 ### 2. Build native BNB TSS
 
-First fetch the submodule:
+First fetch the Liberdus fork of the BNB TSS submodule:
 
 ```bash
 git submodule update --init --recursive
@@ -125,7 +125,7 @@ npm run start-tss   # starts 10 PM2 processes (5 observers + 5 TSS parties)
 # Compile all TypeScript (scripts, observer, tss-tools → dist/)
 npm run compile
 
-# Build patched upstream BNB TSS
+# Build the Liberdus fork of BNB TSS
 npm run tss-build
 
 # Compile + run a single party (for testing)
@@ -178,21 +178,20 @@ These scripts live under [`tss-tools/`](tss-tools) and are the operator-facing h
 
 | Path | Purpose |
 |---|---|
-| `tss-tools/build-tss.sh` | Applies the local patch to the upstream `tss` checkout and builds `./tss/.tooling/bin/tss` plus `./tss/.tooling/bin/tss-derive-pubkey`. |
+| `tss-tools/build-tss.sh` | Builds the Liberdus forked `bnb-chain/tss` checkout to `./tss/.tooling/bin/tss` plus `./tss/.tooling/bin/tss-derive-pubkey`. |
 | `tss-tools/setup-mise-go.sh` | Bootstraps a local Go toolchain under `tss/.tooling/mise` when system `go` is unavailable. Supports `darwin-arm64`, `linux-x64`, and `linux-arm64`; Windows is not supported. |
 | `tss-tools/init.ts` | Initializes one native TSS party home and vault for a given party index and chain id. |
 | `tss-tools/keygen.ts` | Runs native TSS keygen for one party using the shared channel settings and `params.json` defaults unless overridden. By default it supplies deterministic local `--p2p.peer_addrs` for same-host committees. |
 | `tss-tools/verify.ts` | Derives and prints the compressed pubkey, Ethereum pubkey, or Ethereum address from an existing native vault. |
 | `tss-tools/sign-ethereum-tx.ts` | Signs an unsigned Ethereum transaction JSON through native TSS and prints the signed tx payload. |
 | `tss-tools/regroup.ts` | Runs native TSS regroup for a carry-over old member (`--is-old`) or a fresh new member (`--is-new-member`). In deterministic local mode it auto-generates regroup topology for contiguous new committees (`1..newParties`). |
-| `tss-tools/lib/bnbTss.ts` | Shared TypeScript runtime helper used by the tooling scripts for binary resolution, patch prep, vault paths, committee topology, and signing helpers. |
+| `tss-tools/lib/bnbTss.ts` | Shared TypeScript runtime helper used by the tooling scripts for binary resolution, vault paths, committee topology, and signing helpers. |
 | `tss-tools/lib/committeeTopology.ts` | Committee topology helper for deterministic local peer addresses and parsing `tss describe` topology output. |
 | `tss-tools/lib/channelId.ts` | Deterministic signing `channelId` and `channelPassword` derivation helpers. |
 | `scripts/inject-liberdus-tx.ts` | Signs a Liberdus tx payload through native BNB TSS, verifies the signature, and optionally injects it into the Liberdus network. |
-| `tss-tools/patches/tss-source.patch` | The local patch applied onto the upstream `tss` source before build/use. See [`tss-tools/patches/README.md`](tss-tools/patches/README.md) for a description of every change. |
 | `tss-tools/tss_workflow_smoke.sh` | Local end-to-end native TSS smoke workflow: init, keygen, sign, regroup to 5, sign, regroup down to 3, and final sign. Run after `npm run tss-build`. |
 | `tss-tools/test-sign-rounds.sh` | Multi-scenario signing test harness. Runs configurable rounds across varying party startup delays and reports PASS/FAIL. Logs to `tss-tools/test-result.log` and `tss-tools/test-party{1..N}.log`. |
-| `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the upstream `tss` module for `verify.ts` and post-keygen address derivation. |
+| `tss-tools/derive-pubkey/main.go` | Small Go helper source staged into `tss/.tooling` and run inside the Liberdus forked `bnb-chain/tss` module for `verify.ts` and post-keygen address derivation. |
 | `tss-tools/guide.md` | Step-by-step local operator guide for build, init, keygen, verify, sign, and regroup. |
 
 ## PM2 Process Management
@@ -255,7 +254,7 @@ Right now there are three TSS execution routes:
 
 **Keygen:** All 5 parties participate simultaneously. Output: shared public key + individual key shares written to `keystores/bnbtss/party-N/chain-CHAINID/default/`.
 
-**Signing:** Any `threshold + 1` (≥ 4 of 5) parties suffice. The TSS binary reads the party/threshold values from the keystore, so signing does not use `params.json`. The patched binary implements a configurable discovery window (`--sign_discovery_timeout`, default 5s) — once the first peer connects, signing proceeds with all parties that arrive within the window (minimum threshold).
+**Signing:** Any `threshold + 1` (≥ 4 of 5) parties suffice. The TSS binary reads the party/threshold values from the keystore, so signing does not use `params.json`. The Liberdus fork implements a configurable discovery window (`--sign_discovery_timeout`, default 5s) — once the first peer connects, signing proceeds with all parties that arrive within the window (minimum threshold).
 
 **Regroup:** Transfers key shares to a new committee without regenerating the shared key. Requires at least `threshold + 1` old participants.
 
