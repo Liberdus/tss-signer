@@ -27,10 +27,16 @@ else
 	BIN_ABS="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 fi
 TSS_CWD="${TSS_CWD:-$(dirname "$BIN_ABS")}"
+# To keep workflow logs inside this repo instead of /private/tmp, uncomment:
+# LOG_ROOT="${LOG_ROOT:-$SIGNER_ROOT/tss-workflow-logs}"
+# mkdir -p "$LOG_ROOT"
+# BASE="${BASE:-$(mktemp -d "$LOG_ROOT/tss-workflow-smoke.XXXXXX")}"
 BASE="${BASE:-$(mktemp -d /private/tmp/tss-workflow-smoke.XXXXXX)}"
 PASS="${PASS:-1234567890}"
 MESSAGE="${MESSAGE:-1234567890}"
 CHPASS="${CHPASS:-$(gen_channel_password)}"
+# Set OP_DELAY_SECONDS=0 to skip waits between workflow phases.
+OP_DELAY_SECONDS="${OP_DELAY_SECONDS:-5}"
 KEYGEN_CH="${KEYGEN_CH:-$(printf '515%08X' "$(($(date +%s)+2400))")}"
 SIGN1_CH="${SIGN1_CH:-$(printf '611%08X' "$(($(date +%s)+2400))")}"
 REGROUP1_CH="${REGROUP1_CH:-$(printf '761%08X' "$(($(date +%s)+2400))")}"
@@ -121,6 +127,13 @@ round1_committee_addr() {
 
 run_tss() {
 	(cd "$TSS_CWD" && "$BIN_ABS" "$@")
+}
+
+delay_after_operation() {
+	if [[ "$OP_DELAY_SECONDS" =~ ^[0-9]+$ ]] && [ "$OP_DELAY_SECONDS" -gt 0 ]; then
+		echo "waiting ${OP_DELAY_SECONDS}s before next operation"
+		sleep "$OP_DELAY_SECONDS"
+	fi
 }
 
 fail_phase() {
@@ -364,10 +377,12 @@ start_keygen 3 "$(base_addr 1),$(base_addr 2)"
 check_phase_result "keygen" 60
 assert_key_material 1 2 3
 echo "keygen completed"
+delay_after_operation
 
 echo "phase: sign on parties 1,2,3"
 run_sign_phase "sign-after-keygen" "$SIGN1_CH" 60 1 2 3
 echo "sign after keygen completed"
+delay_after_operation
 
 PIDS=()
 echo "phase: first regroup old 3 -> new 5"
@@ -379,10 +394,12 @@ start_regroup1 5 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3)
 check_phase_result "regroup1" 60
 assert_key_material 1 2 3 4 5
 echo "first regroup completed"
+delay_after_operation
 
 echo "phase: sign on parties 2,3,4,5"
 run_sign_phase "sign-after-regroup1" "$SIGN2_CH" 60 2 3 4 5
 echo "sign after first regroup completed"
+delay_after_operation
 
 PIDS=()
 echo "phase: second regroup old 4 -> new 3 using parties 2,3,4,5"
@@ -395,6 +412,7 @@ start_regroup2_old_new 5 "$(round2_tmp_addr 5)" "$(round1_committee_addr 2),$(ro
 check_phase_result "regroup2" 60
 assert_key_material 3 4 5
 echo "second regroup completed"
+delay_after_operation
 
 echo "phase: sign on parties 3,4"
 run_sign_phase "sign-after-regroup2" "$SIGN3_CH" 60 3 4

@@ -7,6 +7,7 @@ yarn-error.log
 package-lock.json
 *.log
 logs/
+tss-workflow-logs/
 tx.json
 collected-logs/
 admin-results/
