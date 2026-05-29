@@ -15,9 +15,11 @@ assert_eq() {
 }
 
 test_supported_platforms() {
-  assert_eq "$(resolve_mise_platform Darwin arm64)" "darwin-arm64"
+  assert_eq "$(resolve_mise_platform Darwin arm64)" "macos-arm64"
+  assert_eq "$(resolve_mise_platform Darwin x86_64)" "macos-x64"
   assert_eq "$(resolve_mise_platform Linux x86_64)" "linux-x64"
   assert_eq "$(resolve_mise_platform Linux aarch64)" "linux-arm64"
+  assert_eq "$(resolve_mise_archive_name macos-x64)" "mise-${DEFAULT_MISE_VERSION}-macos-x64.tar.gz"
   assert_eq "$(resolve_mise_archive_name linux-x64)" "mise-${DEFAULT_MISE_VERSION}-linux-x64.tar.gz"
 }
 
