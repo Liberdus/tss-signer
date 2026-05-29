@@ -11,14 +11,173 @@
  * Exit code: 0 if all URLs pass, 1 if any fail.
  */
 
-import { runProviderCheck } from './lib/checkCustomProviders'
+import { ethers } from 'ethers'
+import { loadCustomProviderUrls, ResolvedProviderUrl } from '../shared/lib/customProviders'
 
-const CHAINS = [
+const CHAINS: Array<{ chainId: number; name: string }> = [
   { chainId: 137, name: 'Polygon Mainnet' },
   { chainId: 56,  name: 'BSC Mainnet' },
 ]
 
-runProviderCheck(CHAINS, 'check-custom-providers').catch((err) => {
+const PROBE_TIMEOUT_MS = 15_000
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function maskUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    // Mask the last segment of the path (where API keys commonly live) and
+    // any query-string values, while keeping the host visible for debugging.
+    const pathParts = u.pathname.split('/')
+    if (pathParts.length > 1) {
+      const last = pathParts[pathParts.length - 1]
+      if (last.length > 6) {
+        pathParts[pathParts.length - 1] = last.slice(0, 4) + '****'
+      }
+    }
+    u.pathname = pathParts.join('/')
+    u.search = u.search ? '?****' : ''
+    return u.toString()
+  } catch {
+    return url.slice(0, 40) + '...'
+  }
+}
+
+function pad(s: string, len: number): string {
+  return s.length >= len ? s : s + ' '.repeat(len - s.length)
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let handle: NodeJS.Timeout
+  const timeout = new Promise<never>((_, reject) => {
+    handle = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(handle!)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Probe one URL
+// ---------------------------------------------------------------------------
+
+interface ProbeResult {
+  name: string
+  url: string
+  pass: boolean
+  latencyMs: number
+  error?: string
+}
+
+async function probeUrl(
+  entry: ResolvedProviderUrl,
+  chainId: number,
+): Promise<ProbeResult> {
+  // StaticJsonRpcProvider skips auto network-detection, avoiding false
+  // "underlying network changed" errors on providers that return a different
+  // chainId from eth_chainId than what ethers expects.
+  const provider = new ethers.providers.StaticJsonRpcProvider(entry.url, {
+    chainId,
+    name: 'unknown',
+  })
+
+  const start = Date.now()
+  try {
+    await withTimeout(provider.getBlockNumber(), PROBE_TIMEOUT_MS, entry.url)
+    return { name: entry.name, url: entry.url, pass: true, latencyMs: Date.now() - start }
+  } catch (err) {
+    return {
+      name: entry.name,
+      url: entry.url,
+      pass: false,
+      latencyMs: Date.now() - start,
+      error: (err as Error)?.message ?? String(err),
+    }
+  } finally {
+    // ethers v5 StaticJsonRpcProvider / JsonRpcProvider opens a polling
+    // interval — destroy it so the process can exit cleanly.
+    provider.removeAllListeners()
+    ;(provider as any)._websocket?.close?.()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+interface FailureSummary {
+  chain: string
+  name: string
+  url: string
+  error: string
+}
+
+async function main(): Promise<void> {
+  const failures: FailureSummary[] = []
+
+  for (const chain of CHAINS) {
+    console.log(`\n${'─'.repeat(60)}`)
+    console.log(`Chain: ${chain.name} (chainId ${chain.chainId})`)
+    console.log('─'.repeat(60))
+
+    let result: ReturnType<typeof loadCustomProviderUrls>
+    try {
+      result = loadCustomProviderUrls(chain.chainId)
+    } catch (err) {
+      const msg = (err as Error).message
+      console.error(`  ERROR loading providers: ${msg}`)
+      failures.push({ chain: chain.name, name: '(config)', url: '', error: msg })
+      continue
+    }
+
+    if (result.skipped.length > 0) {
+      console.log(`  Skipped entries (${result.skipped.length}):`)
+      for (const s of result.skipped) {
+        console.log(`    - ${pad(s.name, 12)}  reason: ${s.reason}`)
+      }
+    }
+
+    console.log(`\n  Probing ${result.resolved.length} URL(s) with eth_blockNumber...\n`)
+
+    const probes = await Promise.all(
+      result.resolved.map((entry) => probeUrl(entry, chain.chainId)),
+    )
+
+    for (const r of probes) {
+      const status = r.pass ? '✓ PASS' : '✗ FAIL'
+      const latency = `${r.latencyMs}ms`
+      const display = maskUrl(r.url)
+      console.log(`  ${pad(status, 7)}  ${pad(r.name, 12)}  ${pad(latency, 8)}  ${display}`)
+      if (!r.pass) {
+        failures.push({ chain: chain.name, name: r.name, url: maskUrl(r.url), error: r.error ?? '' })
+      }
+    }
+
+    const passed = probes.filter((r) => r.pass).length
+    console.log(`\n  Result: ${passed}/${probes.length} passed`)
+  }
+
+  console.log(`\n${'─'.repeat(60)}`)
+
+  if (failures.length === 0) {
+    console.log('\nAll providers passed.')
+    return
+  }
+
+  console.error(`\nFailed providers (${failures.length}):`)
+  for (const f of failures) {
+    console.error(`\n  [${f.chain}] ${f.name}${f.url ? `  ${f.url}` : ''}`)
+    console.error(`  error: ${f.error}`)
+  }
+  console.error('\nFix the entries above and re-run.')
+  process.exit(1)
+}
+
+main().catch((err) => {
   console.error('[check-custom-providers] Unexpected error:', err)
   process.exit(1)
 })
