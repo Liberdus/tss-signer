@@ -10,6 +10,18 @@ set -euo pipefail
 # - second regroup from old 4 -> new 3 with final threshold 1 using parties 2,3,4,5,
 #   where 3,4,5 remain in the new committee and party 2 is old-only
 # - sign on the final 3-party committee
+#
+# Usage:
+# - Full workflow:
+#   ./tss-tools/tss_workflow_smoke.sh
+# - Full workflow with repo-local logs:
+#   LOG_ROOT="$PWD/tss-workflow-logs" ./tss-tools/tss_workflow_smoke.sh
+# - Retry only the first regroup with an existing pre-regroup BASE:
+#   BASE="$PWD/tss-workflow-logs/tss-workflow-smoke.<id>" SMOKE_ONLY_PHASE=regroup1 OP_DELAY_SECONDS=0 ./tss-tools/tss_workflow_smoke.sh
+# - Retry only the second regroup with an existing post-regroup1 BASE:
+#   BASE="$PWD/tss-workflow-logs/tss-workflow-smoke.<id>" SMOKE_ONLY_PHASE=regroup2 OP_DELAY_SECONDS=0 ./tss-tools/tss_workflow_smoke.sh
+# - Set OP_DELAY_SECONDS=0 to skip waits between workflow phases.
+# - Set SMOKE_DEBUG_CLEANUP=1 to print cleanup kill commands.
 
 gen_channel_password() {
 	if command -v openssl >/dev/null 2>&1; then
@@ -27,6 +39,7 @@ else
 	BIN_ABS="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 fi
 TSS_CWD="${TSS_CWD:-$(dirname "$BIN_ABS")}"
+BASE_WAS_SET="${BASE:+1}"
 # To keep workflow logs inside this repo instead of /private/tmp, uncomment:
 # LOG_ROOT="${LOG_ROOT:-$SIGNER_ROOT/tss-workflow-logs}"
 # mkdir -p "$LOG_ROOT"
@@ -37,6 +50,8 @@ MESSAGE="${MESSAGE:-1234567890}"
 CHPASS="${CHPASS:-$(gen_channel_password)}"
 # Set OP_DELAY_SECONDS=0 to skip waits between workflow phases.
 OP_DELAY_SECONDS="${OP_DELAY_SECONDS:-5}"
+SMOKE_ONLY_PHASE="${SMOKE_ONLY_PHASE:-}"
+SMOKE_DEBUG_CLEANUP="${SMOKE_DEBUG_CLEANUP:-0}"
 KEYGEN_CH="${KEYGEN_CH:-$(printf '515%08X' "$(($(date +%s)+2400))")}"
 SIGN1_CH="${SIGN1_CH:-$(printf '611%08X' "$(($(date +%s)+2400))")}"
 REGROUP1_CH="${REGROUP1_CH:-$(printf '761%08X' "$(($(date +%s)+2400))")}"
@@ -47,17 +62,86 @@ SIGN3_CH="${SIGN3_CH:-$(printf '613%08X' "$(($(date +%s)+2400))")}"
 BASE_PORTS=(19131 19132 19133 19134 19135)
 ROUND1_TMP_PORTS=(19231 19232 19233)
 ROUND2_TMP_PORTS=(19333 19334 19335)
+TSS_PROFILE_PORTS=(6062)
 PIDS=()
+
+cleanup_debug() {
+	if [ "$SMOKE_DEBUG_CLEANUP" = "1" ]; then
+		echo "cleanup: $*" >&2
+	fi
+}
+
+track_pid() {
+	local pid="$1"
+	shift
+
+	PIDS+=("$pid")
+	cleanup_debug "started pid $pid: $*"
+}
+
+kill_pid_tree() {
+	local pid="${1:-}"
+	local child_pids
+
+	[ -n "$pid" ] || return 0
+
+	child_pids="$(pgrep -P "$pid" 2>/dev/null || true)"
+	if [ -n "$child_pids" ]; then
+		cleanup_debug "pkill -TERM -P $pid"
+	fi
+	pkill -TERM -P "$pid" 2>/dev/null || true
+	if kill -0 "$pid" 2>/dev/null; then
+		cleanup_debug "kill -TERM $pid"
+		kill -TERM "$pid" 2>/dev/null || true
+	else
+		cleanup_debug "pid $pid exited before kill -TERM"
+	fi
+	sleep 0.2
+	child_pids="$(pgrep -P "$pid" 2>/dev/null || true)"
+	if [ -n "$child_pids" ]; then
+		cleanup_debug "pkill -KILL -P $pid"
+	fi
+	pkill -KILL -P "$pid" 2>/dev/null || true
+	if kill -0 "$pid" 2>/dev/null; then
+		cleanup_debug "kill -KILL $pid"
+		kill -KILL "$pid" 2>/dev/null || true
+	fi
+	wait "$pid" 2>/dev/null || true
+}
+
+is_smoke_tss_pid() {
+	local pid="$1"
+	local comm
+
+	comm="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+	[ "$comm" = "$BIN_ABS" ] || [ "$(basename "$comm")" = "$(basename "$BIN_ABS")" ]
+}
+
+kill_smoke_port_listeners() {
+	local port
+	local pid
+
+	command -v lsof >/dev/null 2>&1 || return 0
+	for port in "${BASE_PORTS[@]}" "${ROUND1_TMP_PORTS[@]}" "${ROUND2_TMP_PORTS[@]}" "${TSS_PROFILE_PORTS[@]}"; do
+		while IFS= read -r pid; do
+			[ -n "$pid" ] || continue
+			if is_smoke_tss_pid "$pid"; then
+				cleanup_debug "port $port listener pid $pid"
+				kill_pid_tree "$pid"
+			fi
+		done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+	done
+}
 
 cleanup() {
 	local pid
-	local pids=("${PIDS[@]:-}")
+	local pids=("${PIDS[@]}")
 	PIDS=()
 	for pid in "${pids[@]}"; do
-		pkill -P "$pid" 2>/dev/null || true
-		kill "$pid" 2>/dev/null || true
-		wait "$pid" 2>/dev/null || true
+		[ -n "$pid" ] || continue
+		kill_pid_tree "$pid"
 	done
+	kill_smoke_port_listeners
 }
 trap cleanup EXIT
 
@@ -203,6 +287,16 @@ assert_key_material() {
 	done
 }
 
+assert_no_key_material() {
+	local idx
+	for idx in "$@"; do
+		if [ -e "$(party_home "$idx")/default/sk.json" ] || [ -e "$(party_home "$idx")/default/pk.json" ]; then
+			echo "party $idx already has key material in $BASE; regroup1-only requires a pre-regroup directory"
+			exit 1
+		fi
+	done
+}
+
 signature_from_log() {
 	local log_file="$1"
 	sed -n 's/.*received signature: \([0-9A-F]*\).*/\1/p' "$log_file" | tail -n1
@@ -222,8 +316,8 @@ start_keygen() {
 		--channel_id "$KEYGEN_CH" \
 		--p2p.peer_addrs "$peers" \
 		--log_level debug \
-		> "$BASE/keygen-$idx.log" 2>&1 &
-	PIDS+=("$!")
+		>> "$BASE/keygen-$idx.log" 2>&1 &
+	track_pid "$!" "keygen party $idx"
 }
 
 start_sign() {
@@ -239,8 +333,8 @@ start_sign() {
 		--channel_id "$channel_id" \
 		--message "$MESSAGE" \
 		--log_level debug \
-		> "$BASE/$phase-$idx.log" 2>&1 &
-	PIDS+=("$!")
+		>> "$BASE/$phase-$idx.log" 2>&1 &
+	track_pid "$!" "$phase party $idx"
 }
 
 run_sign_phase() {
@@ -291,15 +385,15 @@ start_regroup1() {
 		--new_parties 5 \
 		--p2p.new_peer_addrs "$new_peer_addrs" \
 		$extra_flags \
-		> "$BASE/regroup1-$idx.log" 2>&1 &
-	PIDS+=("$!")
+		>> "$BASE/regroup1-$idx.log" 2>&1 &
+	track_pid "$!" "regroup1 party $idx"
 }
 
 start_regroup2_old_only() {
 	local idx="$1"
 	local new_peer_addrs="$2"
 
-expect <<EOF > "$BASE/regroup2-$idx.log" 2>&1 &
+expect <<EOF >> "$BASE/regroup2-$idx.log" 2>&1 &
 set timeout -1
 cd "$TSS_CWD"
 spawn "$BIN_ABS" regroup \
@@ -318,7 +412,7 @@ expect "Participant as a old committee?*" { send "y\r" }
 expect "Participant as a new committee?*" { send "n\r" }
 expect eof
 EOF
-	PIDS+=("$!")
+	track_pid "$!" "regroup2 party $idx old-only expect"
 }
 
 start_regroup2_old_new() {
@@ -341,20 +435,75 @@ start_regroup2_old_new() {
 		--p2p.new_peer_addrs "$new_peer_addrs" \
 		--is_old \
 		--is_new_member \
-		> "$BASE/regroup2-$idx.log" 2>&1 &
-	PIDS+=("$!")
+		>> "$BASE/regroup2-$idx.log" 2>&1 &
+	track_pid "$!" "regroup2 party $idx old-new"
+}
+
+run_regroup1_phase() {
+	PIDS=()
+	echo "phase: first regroup old 3 -> new 5"
+	start_regroup1 1 "--p2p.new_listen /ip4/0.0.0.0/tcp/19231 --is_old --is_new_member" "$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
+	start_regroup1 2 "--p2p.new_listen /ip4/0.0.0.0/tcp/19232 --is_old --is_new_member" "$(base_addr 1),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
+	start_regroup1 3 "--p2p.new_listen /ip4/0.0.0.0/tcp/19233 --is_old --is_new_member" "$(base_addr 1),$(base_addr 2),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
+	start_regroup1 4 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 5)"
+	start_regroup1 5 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4)"
+	check_phase_result "regroup1" 60
+	assert_key_material 1 2 3 4 5
+	echo "first regroup completed"
+}
+
+run_regroup2_phase() {
+	PIDS=()
+	echo "phase: second regroup old 4 -> new 3 using parties 2,3,4,5"
+	# The second regroup uses new_threshold=1 intentionally for a minimal
+	# final 2-of-3 smoke-test committee.
+	start_regroup2_old_only 2 "$(round1_committee_addr 3),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+	start_regroup2_old_new 3 "$(round2_tmp_addr 3)" "$(round1_committee_addr 2),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+	start_regroup2_old_new 4 "$(round2_tmp_addr 4)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+	start_regroup2_old_new 5 "$(round2_tmp_addr 5)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 4),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
+	check_phase_result "regroup2" 60
+	assert_key_material 3 4 5
+	echo "second regroup completed"
 }
 
 echo "logs: $BASE"
 echo "binary: $BIN_ABS"
 echo "cwd: $TSS_CWD"
 echo "channels: keygen=$KEYGEN_CH sign1=$SIGN1_CH regroup1=$REGROUP1_CH sign2=$SIGN2_CH regroup2=$REGROUP2_CH sign3=$SIGN3_CH"
+if [ -n "$SMOKE_ONLY_PHASE" ]; then
+	if [ -z "$BASE_WAS_SET" ]; then
+		echo "BASE must point to an existing smoke directory when SMOKE_ONLY_PHASE is set"
+		exit 1
+	fi
+	case "$SMOKE_ONLY_PHASE" in
+		regroup1|regroup2) ;;
+		*)
+			echo "unsupported SMOKE_ONLY_PHASE: $SMOKE_ONLY_PHASE"
+			echo "supported values: regroup1, regroup2"
+			exit 1
+			;;
+	esac
+fi
 require_command expect
 if [ ! -x "$BIN_ABS" ]; then
 	echo "tss binary not found or not executable: $BIN_ABS"
 	exit 1
 fi
 check_required_ports
+
+if [ "$SMOKE_ONLY_PHASE" = "regroup1" ]; then
+	assert_key_material 1 2 3
+	assert_no_key_material 4 5
+	run_regroup1_phase
+	exit 0
+fi
+
+if [ "$SMOKE_ONLY_PHASE" = "regroup2" ]; then
+	assert_key_material 1 2 3 4 5
+	run_regroup2_phase
+	exit 0
+fi
+
 echo "phase: init 5 parties"
 
 for idx in 1 2 3 4 5; do
@@ -365,7 +514,7 @@ for idx in 1 2 3 4 5; do
 		--password "$PASS" \
 		--p2p.listen "$(base_addr "$idx")" \
 		--log_level debug \
-		> "$BASE/init-$idx.log" 2>&1
+		>> "$BASE/init-$idx.log" 2>&1
 done
 echo "init completed"
 
@@ -384,16 +533,7 @@ run_sign_phase "sign-after-keygen" "$SIGN1_CH" 60 1 2 3
 echo "sign after keygen completed"
 delay_after_operation
 
-PIDS=()
-echo "phase: first regroup old 3 -> new 5"
-start_regroup1 1 "--p2p.new_listen /ip4/0.0.0.0/tcp/19231 --is_old --is_new_member" "$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
-start_regroup1 2 "--p2p.new_listen /ip4/0.0.0.0/tcp/19232 --is_old --is_new_member" "$(base_addr 1),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
-start_regroup1 3 "--p2p.new_listen /ip4/0.0.0.0/tcp/19233 --is_old --is_new_member" "$(base_addr 1),$(base_addr 2),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4),$(base_addr 5)"
-start_regroup1 4 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 5)"
-start_regroup1 5 "--is_new_member" "$(base_addr 1),$(base_addr 2),$(base_addr 3),$(round1_tmp_addr 1),$(round1_tmp_addr 2),$(round1_tmp_addr 3),$(base_addr 4)"
-check_phase_result "regroup1" 60
-assert_key_material 1 2 3 4 5
-echo "first regroup completed"
+run_regroup1_phase
 delay_after_operation
 
 echo "phase: sign on parties 2,3,4,5"
@@ -401,17 +541,7 @@ run_sign_phase "sign-after-regroup1" "$SIGN2_CH" 60 2 3 4 5
 echo "sign after first regroup completed"
 delay_after_operation
 
-PIDS=()
-echo "phase: second regroup old 4 -> new 3 using parties 2,3,4,5"
-# The second regroup uses new_threshold=1 intentionally for a minimal
-# final 2-of-3 smoke-test committee.
-start_regroup2_old_only 2 "$(round1_committee_addr 3),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
-start_regroup2_old_new 3 "$(round2_tmp_addr 3)" "$(round1_committee_addr 2),$(round1_committee_addr 4),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
-start_regroup2_old_new 4 "$(round2_tmp_addr 4)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 5),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
-start_regroup2_old_new 5 "$(round2_tmp_addr 5)" "$(round1_committee_addr 2),$(round1_committee_addr 3),$(round1_committee_addr 4),$(round2_tmp_addr 3),$(round2_tmp_addr 4),$(round2_tmp_addr 5)"
-check_phase_result "regroup2" 60
-assert_key_material 3 4 5
-echo "second regroup completed"
+run_regroup2_phase
 delay_after_operation
 
 echo "phase: sign on parties 3,4"
