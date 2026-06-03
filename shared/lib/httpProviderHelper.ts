@@ -1,6 +1,36 @@
 import { ethers } from "ethers";
 import { redactRpcUrlForLog } from "./redactForLog";
+import {
+  getProviderNameForUrl,
+  isEthGetLogsRangeLimitError,
+  markUrlFailed,
+  pickAvailableUrlFromList,
+  scrubUrls,
+  shouldBlacklistForError,
+} from "./rpcUrls";
 import { toNetworkChainId } from "../config";
+
+function providerLabelForUrl(url: string): string {
+  try {
+    return getProviderNameForUrl(url) ?? new URL(url).hostname;
+  } catch {
+    return getProviderNameForUrl(url) ?? "unknown";
+  }
+}
+
+function logHttpProviderSelection(
+  message: string,
+  url: string,
+  chainId?: number,
+): void {
+  const provider = providerLabelForUrl(url);
+  const redactedUrl = redactRpcUrlForLog(url);
+  if (chainId != null) {
+    console.log(`[httpProvider] ${message} chain=${chainId} provider=${provider} url=${redactedUrl}`);
+    return;
+  }
+  console.log(`[httpProvider] ${message} provider=${provider} url=${redactedUrl}`);
+}
 
 const { providers } = ethers;
 export interface GetProviderOptions {
@@ -74,7 +104,7 @@ export async function withHttpProviderRetry<T>(
       fallbackRpcUrl: fallback,
       chainId: options.chainId,
     });
-    if (options.logUrl) console.log(`[httpProvider] URL: ${redactRpcUrlForLog(url)}`);
+    if (options.logUrl) logHttpProviderSelection("URL", url);
 
     try {
       return await withTimeout(fn(provider), options.timeoutMs);
@@ -131,12 +161,12 @@ export async function withCachedHttpProvider<T>(
       entry = { provider, url };
       providerCache.set(chainId, entry);
       if (options.logCache) {
-        console.log(`[httpProvider] New cached provider chain=${chainId} url=${redactRpcUrlForLog(url)}`);
+        logHttpProviderSelection("Selected provider", url, chainId);
       }
     }
 
     if (options.logUrl && !options.logCache) {
-      console.log(`[httpProvider] URL: ${redactRpcUrlForLog(entry.url)}`);
+      logHttpProviderSelection("URL", entry.url, chainId);
     }
 
     try {
