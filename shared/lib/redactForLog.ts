@@ -35,7 +35,7 @@ export function redactRpcUrlForLog(url: string): string {
     return parsed.toString();
   } catch {
     return url.replace(
-      /([?&](?:apikey|api_key|key|secret|token|password)=)[^&]+/gi,
+      /([?&](?:apikey|api_key|key|secret|token|password|auth|access_token)=)[^&]+/gi,
       "$1***",
     );
   }

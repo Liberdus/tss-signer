@@ -103,6 +103,9 @@ Native helper walkthroughs and command examples live in [`tss-tools/guide.md`](t
 - **Observer setup flag** (`chain-config.json`):
   - `isRemote: false` (default): if `observer-list.json` is empty, peers default to `http://127.0.0.1:8101..`.
   - `isRemote: true`: `observer-list.json` is required and startup fails when it is missing/empty.
+- **Observer HTTP hardening envs**:
+  - `OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN` (default `120`): per-IP rate limit for gossip ingest endpoints (`/bridgein/evm/submitted`, `/bridgein/liberdus/submitted`). Must be a positive integer. Values above `10000` are treated as invalid and the observer falls back to `120`.
+  - `OBSERVER_CORS_ORIGINS`: optional comma-separated allowlist of extra browser origins. Supports trailing `*` for prefix matching (for example `https://staging.bridge.*`).
 - Optional local dev shortcut: set `observerSkipOldData: true` in `chain-config.json`, run with
   `OBSERVER_SKIP_OLD_DATA=true`, or pass `--skip-old-data` to the observer to seed both EVM
   and Liberdus monitor cursors instead of scanning historical data;

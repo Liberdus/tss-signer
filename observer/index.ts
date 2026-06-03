@@ -20,6 +20,7 @@ import {
   normalizeLiberdusBridgeInGossipPayload,
   verifyLiberdusBridgeInGossipPayload,
 } from "../shared/utils/liberdusBridgeInGossip";
+import { resolveBridgeInRateLimitPerMin } from "./bridgeInRateLimit";
 import {
   monitorEthereumBridgeOutQueryFilter,
   monitorEthereumBridgeInQueryFilter,
@@ -89,11 +90,20 @@ function shouldSkipOldData(): boolean {
 const NOTIFY_COOLDOWN_MS = 15_000;
 const notifyLastPollAt = new Map<number, number>();
 const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
+const bridgeInRateLimitConfig = resolveBridgeInRateLimitPerMin(process.env.OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN);
+const BRIDGEIN_RATE_LIMIT_PER_MIN = bridgeInRateLimitConfig.limit;
+if (bridgeInRateLimitConfig.raw !== undefined && !bridgeInRateLimitConfig.isValid) {
+  console.warn(
+    "[observer] Invalid OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN=%s; defaulting to %s",
+    bridgeInRateLimitConfig.raw,
+    BRIDGEIN_RATE_LIMIT_PER_MIN,
+  );
+}
 
 /** Limits gossip POST volume per IP (crypto verify + DB writes). */
 const bridgeInGossipRateLimit = rateLimit({
   windowMs: 60_000,
-  limit: Number(process.env.OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN ?? "120"),
+  limit: BRIDGEIN_RATE_LIMIT_PER_MIN,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (_req, res) => {
@@ -111,7 +121,6 @@ let adminContext: AdminContext | null = null;
 app.use("/admin", createAdminRouter(() => adminContext));
 app.use(cors(createObserverCorsOptions()));
 app.use(express.json());
-app.use("/bridgein", bridgeInGossipRateLimit);
 
 app.get("/status", (_req, res) => {
   res.json({ syncReady });
@@ -381,7 +390,7 @@ app.post("/notify-bridgeout", (req, res) => {
   return res.json({ Ok: "cooldown" });
 });
 
-app.post("/bridgein/evm/submitted", (req, res) => {
+app.post("/bridgein/evm/submitted", bridgeInGossipRateLimit, (req, res) => {
   try {
     const raw = req.body as Partial<EVMBridgeInGossipPayload> | undefined;
     if (!raw || typeof raw !== "object") {
@@ -457,7 +466,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
   }
 });
 
-app.post("/bridgein/liberdus/submitted", (req, res) => {
+app.post("/bridgein/liberdus/submitted", bridgeInGossipRateLimit, (req, res) => {
   try {
     const raw = req.body as Partial<LiberdusBridgeInGossipPayload> | undefined;
     if (!raw || typeof raw !== "object") {
