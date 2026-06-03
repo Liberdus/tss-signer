@@ -105,7 +105,9 @@ export async function monitorEthereumBridgeOutQueryFilter(
 
       const toBlock = newestBlock;
       if (savedBlock >= toBlock) {
-        console.log(`[observer/bridgeOut] Already up to date for ${chainName}, skipping`);
+        console.log(
+          `[observer/bridgeOut] Already up to date for ${chainName}: savedBlock=${savedBlock} newestBlock=${newestBlock}, skipping`
+        );
         continue;
       }
 
@@ -309,7 +311,9 @@ export async function monitorEthereumBridgeInQueryFilter(
 
       const toBlock = newestBlock;
       if (savedBlock >= toBlock) {
-        console.log(`[observer/bridgeIn] Already up to date for ${chainName}, skipping`);
+        console.log(
+          `[observer/bridgeIn] Already up to date for ${chainName}: savedBlock=${savedBlock} newestBlock=${newestBlock}, skipping`
+        );
         continue;
       }
 
