@@ -22,6 +22,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare observer list for CI
+        run: cp observer-list.json.example observer-list.json
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
