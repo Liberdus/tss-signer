@@ -29,7 +29,10 @@ function matchesEnvEntry(origin: string, entry: string): boolean {
 
 /**
  * Returns whether a browser Origin header may receive CORS responses.
- * Configure extra origins via OBSERVER_CORS_ORIGINS (comma-separated; suffix * for prefix match).
+ * Configure extra origins via OBSERVER_CORS_ORIGINS
+ * (comma-separated; trailing * only for prefix match).
+ * Example: https://staging.bridge.* matches https://staging.bridge.example.
+ * Note: glob syntax like *.example.com is not supported.
  */
 export function isAllowedObserverCorsOrigin(
   origin: string,
