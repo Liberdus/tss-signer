@@ -28,6 +28,7 @@ import {
 import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "../shared/utils/scheduler";
 import { AdminContext, createAdminContext, createAdminRouter } from "./admin";
+import { createObserverCorsOptions } from "./cors";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -108,7 +109,7 @@ const app = express();
 let adminContext: AdminContext | null = null;
 // Mount admin routes before CORS; admin auth is source-IP based, not browser-origin based.
 app.use("/admin", createAdminRouter(() => adminContext));
-app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
+app.use(cors(createObserverCorsOptions()));
 app.use(express.json());
 app.use("/bridgein", bridgeInGossipRateLimit);
 
