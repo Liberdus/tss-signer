@@ -1,4 +1,4 @@
-# tss-signer has no Rust sources; keep CodeQL scoped to TS/JS and workflows.
+# Exclude vendored caches and languages not used in this repo.
 paths-ignore:
   - "**/*.rs"
   - "tss/.tooling/**"
