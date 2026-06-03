@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
@@ -87,6 +88,17 @@ function shouldSkipOldData(): boolean {
 const NOTIFY_COOLDOWN_MS = 15_000;
 const notifyLastPollAt = new Map<number, number>();
 const notifyPendingTimer = new Map<number, NodeJS.Timeout>();
+
+/** Limits gossip POST volume per IP (crypto verify + DB writes). */
+const bridgeInGossipRateLimit = rateLimit({
+  windowMs: 60_000,
+  limit: Number(process.env.OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN ?? "120"),
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => {
+    res.status(429).json({ Err: "Too many requests" });
+  },
+});
 
 // ---------------------------------------------------------------------------
 // HTTP server
@@ -366,7 +378,7 @@ app.post("/notify-bridgeout", (req, res) => {
   return res.json({ Ok: "cooldown" });
 });
 
-app.post("/bridgein/evm/submitted", (req, res) => {
+app.post("/bridgein/evm/submitted", bridgeInGossipRateLimit, (req, res) => {
   try {
     const raw = req.body as Partial<EVMBridgeInGossipPayload> | undefined;
     if (!raw || typeof raw !== "object") {
@@ -442,7 +454,7 @@ app.post("/bridgein/evm/submitted", (req, res) => {
   }
 });
 
-app.post("/bridgein/liberdus/submitted", (req, res) => {
+app.post("/bridgein/liberdus/submitted", bridgeInGossipRateLimit, (req, res) => {
   try {
     const raw = req.body as Partial<LiberdusBridgeInGossipPayload> | undefined;
     if (!raw || typeof raw !== "object") {
