@@ -1,12 +1,5 @@
 import { ethers } from "ethers";
-import {
-  getProviderNameForUrl,
-  isEthGetLogsRangeLimitError,
-  markUrlFailed,
-  pickAvailableUrlFromList,
-  scrubUrls,
-  shouldBlacklistForError,
-} from "./rpcUrls";
+import { redactRpcUrlForLog } from "./redactForLog";
 import { toNetworkChainId } from "../config";
 
 const { providers } = ethers;
@@ -81,10 +74,7 @@ export async function withHttpProviderRetry<T>(
       fallbackRpcUrl: fallback,
       chainId: options.chainId,
     });
-    if (options.logUrl) {
-      const name = getProviderNameForUrl(url) ?? new URL(url).hostname;
-      console.log(`[httpProvider] URL: provider=${name}`);
-    }
+    if (options.logUrl) console.log(`[httpProvider] URL: ${redactRpcUrlForLog(url)}`);
 
     try {
       return await withTimeout(fn(provider), options.timeoutMs);
@@ -141,14 +131,12 @@ export async function withCachedHttpProvider<T>(
       entry = { provider, url };
       providerCache.set(chainId, entry);
       if (options.logCache) {
-        const providerName = getProviderNameForUrl(url) ?? new URL(url).hostname;
-        console.log(`[httpProvider] Selected provider chain=${chainId} provider=${providerName}`);
+        console.log(`[httpProvider] New cached provider chain=${chainId} url=${redactRpcUrlForLog(url)}`);
       }
     }
 
     if (options.logUrl && !options.logCache) {
-      const name = getProviderNameForUrl(entry.url) ?? new URL(entry.url).hostname;
-      console.log(`[httpProvider] URL: provider=${name}`);
+      console.log(`[httpProvider] URL: ${redactRpcUrlForLog(entry.url)}`);
     }
 
     try {

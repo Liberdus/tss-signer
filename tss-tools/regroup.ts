@@ -3,6 +3,7 @@ import 'dotenv/config'
 import {spawnSync} from 'node:child_process'
 import * as bnbTss from './lib/bnbTss'
 import {resolveProjectRoot} from '../shared/utils/paths'
+import {redactCommandArgsForLog} from '../shared/lib/redactForLog'
 
 function usage(): never {
   console.error(
@@ -212,7 +213,7 @@ function main() {
   if (options.isNewMember) {
     autoInput = 'n\n';
   }
-  console.log(`Running ${binary} ${args.join(' ')}`);
+  console.log(`Running ${binary} ${redactCommandArgsForLog(args)}`);
   const result = spawnSync(binary, args, {
     cwd: regroupCwd,
     env: {...process.env, TSS_PASSWORD: password},
