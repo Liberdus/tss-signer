@@ -1,4 +1,5 @@
 import axios from "axios";
+import { redactRpcUrlForLog } from "./redactForLog";
 
 const CHAINLIST_RPCS_URL = "https://chainlist.org/rpcs.json";
 const HOURLY_MS = 60 * 60 * 1000;
@@ -156,7 +157,7 @@ export function markUrlFailed(url: string, ttlMs?: number, reason?: string): voi
   const safeReason = reason ? scrubUrls(reason) : undefined;
   const reasonText = safeReason ? ` reason=${safeReason}` : "";
   console.warn(
-    `[rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${maskUrl(url)}`
+    `[rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${redactRpcUrlForLog(url)}`
   );
   // Prune expired entries to prevent unbounded growth. URLs removed from the
   // active chainlist are never accessed again via pickAvailableUrlFromList, so
