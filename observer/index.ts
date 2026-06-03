@@ -346,9 +346,10 @@ app.post("/notify-bridgeout", (req, res) => {
   const elapsed = now - lastPoll;
 
   console.log(
-    `[notify-bridgeout] chainId=${chainId} elapsed=${(elapsed / 1000).toFixed(1)}s ${
-      elapsed >= NOTIFY_COOLDOWN_MS ? "immediate" : "deferred"
-    }`
+    `[notify-bridgeout] chainId=%s elapsed=%ss %s`,
+    chainId,
+    (elapsed / 1000).toFixed(1),
+    elapsed >= NOTIFY_COOLDOWN_MS ? "immediate" : "deferred",
   );
 
   if (elapsed >= NOTIFY_COOLDOWN_MS) {
@@ -359,7 +360,7 @@ app.post("/notify-bridgeout", (req, res) => {
     }
     notifyLastPollAt.set(chainId, now);
     monitorEthereumBridgeOutQueryFilter(chainId).catch((err) => {
-      console.error(`[notify-bridgeout] Poll error for chain ${chainId}:`, err);
+      console.error(`[notify-bridgeout] Poll error for chain %s:`, chainId, err);
     });
     return res.json({ Ok: "triggered" });
   }
@@ -369,7 +370,7 @@ app.post("/notify-bridgeout", (req, res) => {
       notifyPendingTimer.delete(chainId);
       notifyLastPollAt.set(chainId, Date.now());
       monitorEthereumBridgeOutQueryFilter(chainId).catch((err) => {
-        console.error(`[notify-bridgeout] Deferred poll error for chain ${chainId}:`, err);
+        console.error(`[notify-bridgeout] Deferred poll error for chain %s:`, chainId, err);
       });
     }, NOTIFY_COOLDOWN_MS);
     notifyPendingTimer.set(chainId, t);
