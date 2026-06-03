@@ -1,0 +1,16 @@
+name: Liberdus TSS Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v5.0.0

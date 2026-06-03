@@ -1,4 +1,4 @@
-name: Eigen Lint Commit Messages
+name: Liberdus TSS Commit Lint
 on:
   push:
     branches: [ main ]
