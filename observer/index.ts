@@ -110,6 +110,7 @@ let adminContext: AdminContext | null = null;
 app.use("/admin", createAdminRouter(() => adminContext));
 app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
 app.use(express.json());
+app.use("/bridgein", bridgeInGossipRateLimit);
 
 app.get("/status", (_req, res) => {
   res.json({ syncReady });
@@ -378,7 +379,7 @@ app.post("/notify-bridgeout", (req, res) => {
   return res.json({ Ok: "cooldown" });
 });
 
-app.post("/bridgein/evm/submitted", bridgeInGossipRateLimit, (req, res) => {
+app.post("/bridgein/evm/submitted", (req, res) => {
   try {
     const raw = req.body as Partial<EVMBridgeInGossipPayload> | undefined;
     if (!raw || typeof raw !== "object") {
@@ -454,7 +455,7 @@ app.post("/bridgein/evm/submitted", bridgeInGossipRateLimit, (req, res) => {
   }
 });
 
-app.post("/bridgein/liberdus/submitted", bridgeInGossipRateLimit, (req, res) => {
+app.post("/bridgein/liberdus/submitted", (req, res) => {
   try {
     const raw = req.body as Partial<LiberdusBridgeInGossipPayload> | undefined;
     if (!raw || typeof raw !== "object") {
