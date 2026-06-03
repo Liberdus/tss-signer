@@ -303,14 +303,26 @@ function scheduleResolvedPm2Restart(requestedName: string, resolvedName: string)
       .then((result) => {
         const ok = result.code === 0;
         console.log(
-          `${ADMIN_LOG_PREFIX} restart ${ok ? "completed" : "failed"} requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)} code=${result.code}`,
+          `${ADMIN_LOG_PREFIX} restart ${ok ? "completed" : "failed"} requested=%s resolved=%s code=%s`,
+          sanitizeLogValue(requestedName),
+          sanitizeLogValue(resolvedName),
+          result.code,
         );
         if (!ok) {
-          console.error(`${ADMIN_LOG_PREFIX} restart stderr resolved=${sanitizeLogValue(resolvedName)}: ${sanitizeLogValue(result.stderr || result.stdout)}`);
+          console.error(
+            `${ADMIN_LOG_PREFIX} restart stderr resolved=%s: %s`,
+            sanitizeLogValue(resolvedName),
+            sanitizeLogValue(result.stderr || result.stdout),
+          );
         }
       })
       .catch((error) => {
-        console.error(`${ADMIN_LOG_PREFIX} restart failed requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)}:`, error);
+        console.error(
+          `${ADMIN_LOG_PREFIX} restart failed requested=%s resolved=%s:`,
+          sanitizeLogValue(requestedName),
+          sanitizeLogValue(resolvedName),
+          error,
+        );
       });
   }, RESTART_DELAY_MS);
 }
