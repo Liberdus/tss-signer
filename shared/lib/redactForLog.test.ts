@@ -7,9 +7,18 @@ function testRedactRpcUrlCredentialsAndQuery(): void {
   const parsed = new URL(redacted);
   assert.equal(parsed.username, "***");
   assert.equal(parsed.password, "***");
-  assert.equal(parsed.searchParams.get("Access_Token"), "***");
-  assert.equal(parsed.searchParams.get("foo"), "1");
+  assert.equal(parsed.search, "?***");
   assert.equal(parsed.pathname, "/v3/***");
+}
+
+function testRedactRpcUrlPathBasedKeys(): void {
+  const ankr = "https://rpc.ankr.com/bsc_testnet_chapel/SECRET_KEY";
+  const ankrRedacted = redactRpcUrlForLog(ankr);
+  assert.equal(new URL(ankrRedacted).pathname, "/bsc_testnet_chapel/***");
+
+  const quicknode = "https://slug.quiknode.pro/SECRET_KEY";
+  const quicknodeRedacted = redactRpcUrlForLog(quicknode);
+  assert.equal(new URL(quicknodeRedacted).pathname, "/***");
 }
 
 function testRedactRpcUrlFallbackRegexParity(): void {
@@ -38,6 +47,7 @@ function testRedactCommandArgsEdgeCases(): void {
 
 function main(): void {
   testRedactRpcUrlCredentialsAndQuery();
+  testRedactRpcUrlPathBasedKeys();
   testRedactRpcUrlFallbackRegexParity();
   testRedactCommandArgsEqualsForm();
   testRedactCommandArgsSeparateValueForm();

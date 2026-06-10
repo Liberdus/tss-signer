@@ -16,21 +16,27 @@ Older commits or forks deployed without tracking `main` may not receive patches.
 
 ## Reporting a Vulnerability or Security Concern
 
-If you discover a security issue or have a security concern about **Liberdus Bridge TSS Server** / **tss-signer** (observer, TSS party tooling, bridge gossip endpoints, admin API, etc.), **please open a new GitHub issue** so the team can track and triage it.
+If you discover a security vulnerability in **Liberdus Bridge TSS Server** / **tss-signer** (observer, TSS party tooling, bridge gossip endpoints, admin API, etc.), please report it privately so we can investigate before details are public.
 
-**Preferred:** [Create an issue](https://github.com/Liberdus/tss-signer/issues/new) with a clear title, e.g. `Security: <short summary>`.
+**Do not** create a public GitHub issue for exploitable vulnerabilities, and do not paste production credentials, private keys, channel passwords, or full RPC URLs with API keys into public channels.
+
+### Preferred: private disclosure
+
+Use GitHub **Private vulnerability reporting** on the [Security tab](https://github.com/Liberdus/tss-signer/security) (**Report a vulnerability**). This is the preferred path for sensitive reports.
 
 Include as much of the following as you can:
 
-- Description of the concern and potential impact
+- Description of the vulnerability and potential impact
 - Steps to reproduce (or proof-of-concept), if applicable
 - Affected component (e.g. `observer/`, `tss-tools/`, `shared/lib/`)
 - Version or commit SHA (or branch) you tested against
 - Any logs or screenshots (redact secrets, API keys, passwords, and private URLs)
 
-**Do not** paste production credentials, private keys, channel passwords, or full RPC URLs with API keys into public issues.
+If private reporting is unavailable, email maintainers through the contact listed on the repository or organization profile and ask for a secure channel.
 
-If the report is sensitive and you prefer not to discuss details in public, use GitHub’s **Report a vulnerability** option on the [Security tab](https://github.com/Liberdus/tss-signer/security) (Private vulnerability reporting), if enabled for this repository. Otherwise, open a minimal public issue and ask maintainers to contact you for details.
+### Public issues (non-sensitive only)
+
+For **non-sensitive hardening suggestions** or general security improvements that are not exploitable vulnerabilities, you may [open a GitHub issue](https://github.com/Liberdus/tss-signer/issues/new) with a clear title, e.g. `Security: <short summary>`.
 
 ## What to Expect
 

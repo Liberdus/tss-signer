@@ -1,14 +1,3 @@
-const SENSITIVE_QUERY_KEYS = new Set([
-  "apikey",
-  "api_key",
-  "key",
-  "secret",
-  "token",
-  "password",
-  "auth",
-  "access_token",
-]);
-
 const SENSITIVE_ARG_FLAGS = new Set([
   "--channel_password",
   "--channel-password",
@@ -21,17 +10,15 @@ export function redactRpcUrlForLog(url: string): string {
     const parsed = new URL(url);
     if (parsed.password) parsed.password = "***";
     if (parsed.username) parsed.username = "***";
-    for (const key of [...parsed.searchParams.keys()]) {
-      if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
-        parsed.searchParams.set(key, "***");
-      }
+    if (parsed.search) {
+      parsed.search = "?***";
     }
-    const pathParts = parsed.pathname.split("/");
-    const v3Index = pathParts.indexOf("v3");
-    if (v3Index >= 0 && v3Index < pathParts.length - 1) {
-      pathParts[v3Index + 1] = "***";
-      parsed.pathname = pathParts.join("/");
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (segments.length > 0) {
+      segments[segments.length - 1] = "***";
+      parsed.pathname = `/${segments.join("/")}`;
     }
+    parsed.hash = "";
     return parsed.toString();
   } catch {
     return url.replace(
