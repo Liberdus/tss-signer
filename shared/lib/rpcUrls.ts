@@ -13,36 +13,9 @@ function normalizeRpcUrl(url: string): string {
   return (url || "").trim();
 }
 
-/**
- * Returns a safe representation of an RPC URL with the API key redacted.
- * Keeps the hostname visible (useful for identifying the provider) but
- * replaces the last path segment (where keys are typically embedded) and
- * any query string with "***".
- *
- * Examples:
- *   https://rpc.ankr.com/bsc_testnet_chapel/SECRET  →  https://rpc.ankr.com/bsc_testnet_chapel/***
- *   https://polygon-mainnet.rpcfast.com?api_key=KEY  →  https://polygon-mainnet.rpcfast.com?***
- *   https://slug.quiknode.pro/SECRET                 →  https://slug.quiknode.pro/***
- */
-function maskUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const segments = parsed.pathname.split('/').filter(Boolean);
-    if (segments.length > 0) {
-      segments[segments.length - 1] = '***';
-      parsed.pathname = '/' + segments.join('/');
-    }
-    parsed.search = parsed.search ? '?***' : '';
-    parsed.hash = '';
-    return parsed.toString();
-  } catch {
-    return '[invalid url]';
-  }
-}
-
 /** Replaces every http(s) URL embedded in a string with its masked form. */
 export function scrubUrls(text: string): string {
-  return text.replace(/https?:\/\/\S+/g, (match) => maskUrl(match));
+  return text.replace(/https?:\/\/\S+/g, (match) => redactRpcUrlForLog(match));
 }
 
 export interface ChainConfigForUrls {

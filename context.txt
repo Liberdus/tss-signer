@@ -1,0 +1,1275 @@
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Missing rate limiting #32
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+
+Code snippet
+observer/index.ts:445 
+  }
+});
+
+app.post("/bridgein/liberdus/submitted", (req, res) => {
+  try {
+    const raw = req.body as Partial<LiberdusBridgeInGossipPayload> | undefined;
+    if (!raw || typeof raw !== "object") {
+      console.warn("[observer/gossip/liberdus] rejected payload: body missing or not an object");
+      return res.status(400).json({ Err: "Invalid payload" });
+    }
+
+    let payload: LiberdusBridgeInGossipPayload;
+    try {
+      payload = normalizeLiberdusBridgeInGossipPayload({
+        txId: `${raw.txId ?? ""}`,
+        sourceChainId: Number(raw.sourceChainId),
+        receiptId: `${raw.receiptId ?? ""}`,
+        liberdusSignedTx: `${raw.liberdusSignedTx ?? ""}`,
+        txTimestamp: Number(raw.txTimestamp),
+      });
+    } catch (_error) {
+      console.warn("[observer/gossip/liberdus] rejected payload: invalid encoding");
+      return res.status(400).json({ Err: "Invalid payload encoding" });
+    }
+
+    const sourceChain = getChainConfigById(chainConfigsRaw, payload.sourceChainId);
+    if (!sourceChain || !isSigningChainConfig(sourceChain)) {
+      logLiberdusGossip("rejected", {
+        txId: payload.txId,
+        reason: `unknown sourceChainId=${payload.sourceChainId}`,
+      });
+      return res.status(400).json({ Err: "Unknown sourceChainId" });
+    }
+
+    const verified = verifyLiberdusBridgeInGossipPayload(payload, sourceChain.tssSenderAddress);
+    if (!verified.ok) {
+      logLiberdusGossip("rejected", {
+        txId: payload.txId,
+        reason: `verification failed (${verified.reason})`,
+      });
+      return res.status(400).json({ Err: `Invalid liberdus bridgeIn gossip payload: ${verified.reason}` });
+    }
+
+    const existing = TransactionDB.getTransactionById(payload.txId);
+    if (existing) {
+      if (
+        existing.status === TransactionDB.TransactionStatus.COMPLETED ||
+        existing.status === TransactionDB.TransactionStatus.REVERTED
+      ) {
+        logLiberdusGossip("ignored_finalized", { txId: payload.txId, status: existing.status });
+        return res.json({ Ok: "ignored_finalized" });
+      }
+      const updateResult = TransactionDB.updateTransactionStatus(
+        payload.txId,
+        TransactionDB.TransactionStatus.SUBMITTED,
+        payload.receiptId,
+        toEthereumAddress(sourceChain.tssSenderAddress),
+        { type: "receiptTimestamp", value: payload.txTimestamp },
+        null,
+      );
+      logLiberdusGossip("updated", {
+        txId: payload.txId,
+        result: updateResult,
+        sourceChainId: payload.sourceChainId,
+      });
+      return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
+    }
+
+    logLiberdusGossip("ignored_unknown", {
+      txId: payload.txId,
+      sourceChainId: payload.sourceChainId,
+    });
+    return res.json({ Ok: "ignored_missing_local_tx" });
+  } catch (error) {
+    console.error("[observer] /bridgein/liberdus/submitted failed:", error);
+    return res.status(500).json({ Err: "Failed to ingest liberdus bridgeIn submitted gossip" });
+  }
+});
+ Warning
+Missing rate limiting
+This route handler performs authorization
+, but is not rate-limited.
+CodeQL
+
+// ---------------------------------------------------------------------------
+// Startup
+Rule
+Tool
+CodeQL
+Rule ID
+js/missing-rate-limiting
+Query
+View source
+Description
+HTTP request handlers should not perform expensive operations such as accessing the file system, executing an operating system command or interacting with a database without limiting the rate at which requests are accepted. Otherwise, the application becomes vulnerable to denial-of-service attacks where an attacker can cause the application to crash or become unresponsive by issuing a large number of requests at the same time.
+
+Activity
+First detected in commit 3 weeks ago
+@jairajdev
+bump version to 1.0.4
+64936d1
+observer/ index.ts:442 on branch main
+Appeared in branch main 3 weeks ago
+ CodeQL Advanced #119: Commit 64936d16
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Missing rate limiting #31
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+
+Code snippet
+observer/index.ts:369 
+  return res.json({ Ok: "cooldown" });
+});
+
+app.post("/bridgein/evm/submitted", (req, res) => {
+  try {
+    const raw = req.body as Partial<EVMBridgeInGossipPayload> | undefined;
+    if (!raw || typeof raw !== "object") {
+      console.warn("[observer/gossip/evm] rejected payload: body missing or not an object");
+      return res.status(400).json({ Err: "Invalid payload" });
+    }
+
+    let payload: EVMBridgeInGossipPayload;
+    try {
+      payload = normalizeEVMBridgeInGossipPayload({
+        txId: `${raw.txId ?? ""}`,
+        destinationChainId: Number(raw.destinationChainId),
+        receiptId: `${raw.receiptId ?? ""}`,
+        signedTx: `${raw.signedTx ?? ""}`,
+        nonce: Number(raw.nonce),
+      });
+    } catch (error) {
+      console.warn("[observer/gossip/evm] rejected payload: invalid encoding");
+      return res.status(400).json({ Err: "Invalid payload encoding" });
+    }
+
+    const destinationChain = getChainConfigById(chainConfigsRaw, payload.destinationChainId);
+    if (!destinationChain || !isSigningChainConfig(destinationChain)) {
+      logEvmGossip("rejected", {
+        txId: payload.txId,
+        reason: `unknown destinationChainId=${payload.destinationChainId}`,
+      });
+      return res.status(400).json({ Err: "Unknown destinationChainId" });
+    }
+
+    const verified = verifyEVMBridgeInGossipPayload(payload, destinationChain.tssSenderAddress);
+    if (!verified.ok) {
+      logEvmGossip("rejected", {
+        txId: payload.txId,
+        reason: `verification failed (${verified.reason})`,
+      });
+      return res.status(400).json({ Err: `Invalid bridgeIn gossip payload: ${verified.reason}` });
+    }
+
+    const existing = TransactionDB.getTransactionById(payload.txId);
+    if (existing) {
+      if (
+        existing.status === TransactionDB.TransactionStatus.COMPLETED ||
+        existing.status === TransactionDB.TransactionStatus.REVERTED
+      ) {
+        logEvmGossip("ignored_finalized", { txId: payload.txId, status: existing.status });
+        return res.json({ Ok: "ignored_finalized" });
+      }
+      const updateResult = TransactionDB.updateTransactionStatus(
+        payload.txId,
+        TransactionDB.TransactionStatus.SUBMITTED,
+        payload.receiptId,
+        toEthereumAddress(destinationChain.tssSenderAddress),
+        { type: "nonce", value: payload.nonce },
+        null,
+      );
+      logEvmGossip("updated", {
+        txId: payload.txId,
+        result: updateResult,
+        destinationChainId: payload.destinationChainId,
+      });
+      return res.json({ Ok: updateResult === "ok" ? "updated_submitted" : updateResult });
+    }
+
+    logEvmGossip("ignored_unknown", {
+      txId: payload.txId,
+      destinationChainId: payload.destinationChainId,
+    });
+    return res.json({ Ok: "ignored_missing_local_tx" });
+  } catch (error) {
+    console.error("[observer] /bridgein/evm/submitted failed:", error);
+    return res.status(500).json({ Err: "Failed to ingest bridgeIn submitted gossip" });
+  }
+});
+ Warning
+Missing rate limiting
+This route handler performs authorization
+, but is not rate-limited.
+CodeQL
+
+app.post("/bridgein/liberdus/submitted", (req, res) => {
+  try {
+Rule
+Tool
+CodeQL
+Rule ID
+js/missing-rate-limiting
+Query
+View source
+Description
+HTTP request handlers should not perform expensive operations such as accessing the file system, executing an operating system command or interacting with a database without limiting the rate at which requests are accepted. Otherwise, the application becomes vulnerable to denial-of-service attacks where an attacker can cause the application to crash or become unresponsive by issuing a large number of requests at the same time.
+
+Activity
+First detected in commit 3 weeks ago
+@jairajdev
+bump version to 1.0.4
+64936d1
+observer/ index.ts:366 on branch main
+Appeared in branch main 3 weeks ago
+ CodeQL Advanced #119: Commit 64936d16
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+#84
+Summary
+Hardens Liberdus Bridge TSS Server (tss-signer) against DevSecOps / CodeQL findings: abuse of public observer HTTP endpoints, unsafe logging of secrets and user-controlled values, overly permissive CORS, and GitHub Actions workflows without least-privilege GITHUB_TOKEN scopes. Also adds SECURITY.md for coordinated vulnerability reporting.
+
+This repo is TypeScript/Node (observer, TSS tooling) plus Go under tss/; there is no application Rust. CodeQL is scoped so analysis focuses on maintained code, not vendored caches.
+
+Background
+The observer exposes HTTP APIs used by:
+
+Bridge UI (often via liberdus-proxy at /observer/*, but optionally direct to observers when notifyObserverDirectly is enabled)
+Party-to-party gossip (POST /bridgein/evm/submitted, POST /bridgein/liberdus/submitted) — crypto-verified but still CPU/DB heavy
+Admin API (/admin/*) — mounted before CORS; authenticated by source IP against configured observer URLs, not browser origin
+CodeQL flagged patterns that increase risk if endpoints are exposed on the public internet: missing rate limits, origin: true CORS, format strings built from request/config data, and RPC URLs or CLI passwords in logs.
+
+Code scanning alerts addressed
+Alert	Severity	Rule	Location / fix
+#21	High	js/tainted-format-string	observer/index.ts — notify-bridgeout status log → %s + separate args
+#22	High	js/tainted-format-string	observer/index.ts — deferred poll error log → %s + separate args
+#33	High	js/tainted-format-string	observer/admin.ts — PM2 restart logs → %s / sanitizeLogValue
+#23	High	js/clear-text-logging	tss-tools/regroup.ts — regroup CLI args via redactCommandArgsForLog
+#25	High	js/clear-text-logging	shared/lib/httpProviderHelper.ts — cached provider URL
+#28	High	js/clear-text-logging	shared/lib/httpProviderHelper.ts — provider URL on create
+#27	High	js/clear-text-logging	shared/lib/rpcUrls.ts — blacklisted RPC URL
+#31	High	js/missing-rate-limiting	POST /bridgein/evm/submitted
+#32	High	js/missing-rate-limiting	POST /bridgein/liberdus/submitted
+#24	Medium	js/cors-permissive-configuration	observer/index.ts — replaced origin: true with whitelist (observer/cors.ts)
+#29	Medium	actions/missing-workflow-permissions	.github/workflows/commitlint.yml
+#30	Medium	actions/missing-workflow-permissions	.github/workflows/test.yml
+Changes (by area)
+Observer HTTP hardening (observer/)
+Rate limiting — express-rate-limit on app.use("/bridgein", …) so both gossip routes share one limiter (same behavior as per-route limits; clearer for CodeQL).
+Default: 120 requests / minute / IP
+Override: OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN
+Response: 429 + { "Err": "Too many requests" }
+CORS — new observer/cors.ts:
+Replaces cors({ origin: true }) (reflects any origin → CSRF-style risk for credentialed browser calls)
+Allows: local dev (http://localhost:*, http://127.0.0.1:*), https://dev.liberdus.com, https://liberdus.com
+Extra origins: OBSERVER_CORS_ORIGINS (comma-separated; * suffix = prefix match)
+No Origin header → no CORS headers (proxy/curl/gossip unchanged)
+/admin still mounted before CORS
+Safe logging — chainId and similar values logged with %s and passed as separate arguments where CodeQL flagged tainted format strings
+Shared logging (shared/lib/redactForLog.ts)
+redactRpcUrlForLog — masks query params (apikey, token, …), userinfo, and Infura-style /v3/{key} path segments
+redactCommandArgsForLog — masks --channel_password / --password style flags in regroup CLI logs
+Used from httpProviderHelper.ts, rpcUrls.ts, tss-tools/regroup.ts
+CI / CodeQL (.github/)
+codeql-config.yml — paths-ignore: **/*.rs, tss/.tooling/**
+codeql.yml — matrix includes actions, javascript-typescript, go (autobuild); explicit job permissions already present
+commitlint.yml — permissions: contents: read, pull-requests: read
+test.yml — permissions: contents: read
+Documentation
+SECURITY.md — supported versions (1.0.8 / 1.0.x), how to report (public issue vs Security tab), out-of-scope notes
+Tests
+observer/cors.test.ts — whitelist behavior; added to test:tss-tools in package.json
+Configuration reference
+Variable	Default	Purpose
+OBSERVER_BRIDGEIN_RATE_LIMIT_PER_MIN	120	Gossip POST rate limit per IP
+OBSERVER_CORS_ORIGINS	(built-in list)	Extra allowed browser origins
+OBSERVER_SKIP_OLD_DATA	off	Unrelated to security; existing observer behavior
+Test plan
+ npm install && npm run compile
+ npm test (includes observer/cors.test.js and observer/admin.test.js)
+ PR CodeQL Advanced check passes (actions + javascript-typescript + go)
+ After merge: confirm alerts #21–#33, #24, #29, #30 show Closed under Security → Code scanning
+ Optional smoke: bridge notify via proxy; if testing direct observer + browser UI, confirm UI origin is in default list or set OBSERVER_CORS_ORIGINS
+ Can you please review the changes being made here
+
+Here is some more context 
+
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Use of externally-controlled format string #21
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+observer/index.ts:349 
+    }
+    notifyLastPollAt.set(chainId, now);
+    monitorEthereumBridgeOutQueryFilter(chainId).catch((err) => {
+      console.error([notify-bridgeout] Poll error for chain ${chainId}:, err);
+ Warning
+Use of externally-controlled format string
+Format string depends on a user-provided value
+.
+CodeQL 
+    });
+    return res.json({ Ok: "triggered" });
+  }
+Rule
+Tool
+CodeQL
+Rule ID
+js/tainted-format-string
+Query
+View source
+Description
+Functions like the Node.js standard library function util.format accept a format string that is used to format the remaining arguments by providing inline format specifiers. If the format string contains unsanitized input from an untrusted source, then that string may contain unexpected format specifiers that cause garbled output.
+Activity
+First detected in commit on Mar 25
+@jairajdev
+Fix regroup bootstrap and local tooling paths …
+778e236
+observer/ index.ts:132 on branch main
+Appeared in branch main on Mar 25
+ CodeQL Advanced #19: Commit 778e2367
+( build-mode: none language: javascript-typescript )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Use of externally-controlled format string #22
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+observer/index.ts:359 
+      notifyPendingTimer.delete(chainId);
+      notifyLastPollAt.set(chainId, Date.now());
+      monitorEthereumBridgeOutQueryFilter(chainId).catch((err) => {
+        console.error([notify-bridgeout] Deferred poll error for chain ${chainId}:, err);
+ Warning
+Use of externally-controlled format string
+Format string depends on a user-provided value
+.
+CodeQL 
+      });
+    }, NOTIFY_COOLDOWN_MS);
+    notifyPendingTimer.set(chainId, t);
+Rule
+Tool
+CodeQL
+Rule ID
+js/tainted-format-string
+Query
+View source
+Description
+Functions like the Node.js standard library function util.format accept a format string that is used to format the remaining arguments by providing inline format specifiers. If the format string contains unsanitized input from an untrusted source, then that string may contain unexpected format specifiers that cause garbled output.
+Activity
+First detected in commit on Mar 25
+@jairajdev
+Fix regroup bootstrap and local tooling paths …
+778e236
+observer/ index.ts:142 on branch main
+Appeared in branch main on Mar 25
+ CodeQL Advanced #19: Commit 778e2367
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Link a branch, pull request, or 
+ to start working on this alert.
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Use of externally-controlled format string #33
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+observer/admin.ts:313 
+        }
+      })
+      .catch((error) => {
+        console.error(${ADMIN_LOG_PREFIX} restart failed requested=${sanitizeLogValue(requestedName)} resolved=${sanitizeLogValue(resolvedName)}:, error);
+ Warning
+Use of externally-controlled format string
+Format string depends on a user-provided value
+.
+CodeQL 
+      });
+  }, RESTART_DELAY_MS);
+}
+Rule
+Tool
+CodeQL
+Rule ID
+js/tainted-format-string
+Query
+View source
+Description
+Functions like the Node.js standard library function util.format accept a format string that is used to format the remaining arguments by providing inline format specifiers. If the format string contains unsanitized input from an untrusted source, then that string may contain unexpected format specifiers that cause garbled output.
+Activity
+First detected in commit 2 weeks ago
+@jairajdev
+bump version to 1.0.5
+23ce587
+observer/ admin.ts:323 on branch main
+Appeared in branch main 2 weeks ago
+ CodeQL Advanced #120: Commit 23ce587f
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Clear-text logging of sensitive information #23
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+tss-tools/regroup.ts:215 
+  if (options.isNewMember) {
+    autoInput = 'n\n';
+  }
+  console.log(Running ${binary} ${args.join(' ')});
+ Error
+Clear-text logging of sensitive information
+This logs sensitive data returned by an access to password
+ as clear text.
+This logs sensitive data returned by an access to channelPassword
+ as clear text.
+CodeQL 
+  const result = spawnSync(binary, args, {
+    cwd: regroupCwd,
+    env: {...process.env, TSS_PASSWORD: password},
+Rule
+Tool
+CodeQL
+Rule ID
+js/clear-text-logging
+Query
+View source
+Description
+If sensitive data is written to a log entry it could be exposed to an attacker who gains access to the logs.
+Activity
+First detected in commit on Mar 25
+@jairajdev
+Fix regroup bootstrap and local tooling paths …
+778e236
+tss-tools/ regroup.ts:197 on branch main
+Appeared in branch main on Mar 25
+ CodeQL Advanced #19: Commit 778e2367
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Clear-text logging of sensitive information #25
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+shared/lib/httpProviderHelper.ts:117 
+      entry = { provider, url };
+      providerCache.set(chainId, entry);
+      if (options.logCache) {
+        console.log([httpProvider] New cached provider chain=${chainId} url=${url});
+ Error
+Clear-text logging of sensitive information
+This logs sensitive data returned by an access to apiKey
+ as clear text.
+CodeQL 
+      }
+    }
+Rule
+Tool
+CodeQL
+Rule ID
+js/clear-text-logging
+Query
+View source
+Description
+If sensitive data is written to a log entry it could be exposed to an attacker who gains access to the logs.
+Activity
+First detected in commit on Mar 26
+@abdulazeem-tk4vr
+feat(observer): Implement /transactions API endpoint for Observer
+fd2d55a
+shared/lib/ httpProviderHelper.ts:98 on branch main
+Appeared in branch main on Mar 26
+ CodeQL Advanced #26: Commit fd2d55af
+( build-mode: none language: javascript-typescript )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Loading
+Loading CWE…Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Clear-text logging of sensitive information #28
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+shared/lib/httpProviderHelper.ts:122 
+    }
+    if (options.logUrl && !options.logCache) {
+      console.log([httpProvider] URL: ${entry.url});
+ Error
+Clear-text logging of sensitive information
+This logs sensitive data returned by an access to apiKey
+ as clear text.
+CodeQL 
+    }
+    try {
+Rule
+Tool
+CodeQL
+Rule ID
+js/clear-text-logging
+Query
+View source
+Description
+If sensitive data is written to a log entry it could be exposed to an attacker who gains access to the logs.
+Activity
+First detected in commit on Mar 27
+@abdulazeem-tk4vr
+feat(observer): normalize txid and sender query parameters …
+b548083
+shared/lib/ httpProviderHelper.ts:122 on branch main
+Appeared in branch main on Mar 27
+ CodeQL Advanced #30: Commit b548083e
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Link a branch, pull request, or 
+ to start working on this alert.
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+LoadingSkip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Clear-text logging of sensitive information #27
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+shared/lib/rpcUrls.ts:123 
+  urlBlacklistExpiry.set(url, Date.now() + (ttlMs ?? DEFAULT_TTL_MS));
+  const reasonText = reason ?  reason=${reason} : "";
+  console.warn(
+    [rpcUrls] Blacklisted RPC URL for ${((ttlMs ?? DEFAULT_TTL_MS) / 60000).toFixed(1)}m:${reasonText} ${url}
+ Error
+Clear-text logging of sensitive information
+This logs sensitive data returned by an access to apiKey
+ as clear text.
+CodeQL 
+  );
+  // Prune expired entries to prevent unbounded growth. URLs removed from the
+  // active chainlist are never accessed again via pickAvailableUrlFromList, so
+Rule
+Tool
+CodeQL
+Rule ID
+js/clear-text-logging
+Query
+View source
+Description
+If sensitive data is written to a log entry it could be exposed to an attacker who gains access to the logs.
+Activity
+First detected in commit on Mar 26
+@abdulazeem-tk4vr
+feat(observer): Implement /transactions API endpoint for Observer
+fd2d55a
+shared/lib/ rpcUrls.ts:123 on branch main
+Appeared in branch main on Mar 26
+ CodeQL Advanced #26: Commit fd2d55af
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+High
+Assignees
+Affected branches
+Tracking
+Development
+Link a branch, pull request, or 
+ to start working on this alert.
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.Skip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Permissive CORS configuration #24
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+observer/index.ts:99 
+let adminContext: AdminContext | null = null;
+// Mount admin routes before CORS; admin auth is source-IP based, not browser-origin based.
+app.use("/admin", createAdminRouter(() => adminContext));
+app.use(cors({ origin: true, methods: ["GET", "POST"], credentials: true }));
+ Warning
+Permissive CORS configuration
+CORS Origin allows broad access due to permissive or user controlled value
+.
+CodeQL
+app.use(express.json());
+app.get("/status", (_req, res) => {
+Rule
+Tool
+CodeQL
+Rule ID
+js/cors-permissive-configuration
+Query
+View source
+Description
+A server can use CORS (Cross-Origin Resource Sharing) to relax the restrictions imposed by the Same-Origin Policy, allowing controlled, secure cross-origin requests when necessary.
+Activity
+First detected in commit on Mar 25
+@jairajdev
+Fix regroup bootstrap and local tooling paths …
+778e236
+observer/ index.ts:73 on branch main
+Appeared in branch main on Mar 25
+ CodeQL Advanced #19: Commit 778e2367
+( language: javascript-typescript build-mode: none )
+Alert metadata
+Severity
+Medium
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+security
+Weaknesses
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+TermsSkip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Workflow does not contain permissions #29
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+.github/workflows/commitlint.yml:10 
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@v4
+        with:
+          firstParent: true
+ Warning
+Workflow does not contain permissions
+Actions job or workflow does not limit the permissions of the GITHUB_TOKEN. Consider setting an explicit permissions block, using the following as a minimal starting point: {contents: read}
+CodeQL
+Rule
+Tool
+CodeQL
+Rule ID
+actions/missing-workflow-permissions
+Query
+View source
+Description
+If a GitHub Actions job or workflow has no explicit permissions set, then the repository permissions are used. Repositories created under organizations inherit the organization permissions. The organizations or repositories created before February 2023 have the default permissions set to read-write. Often these permissions do not adhere to the principle of least privilege and can be reduced to read-only, leaving the write permission only to a specific types as issues: write or pull-requests: write.
+Activity
+First detected in commit on Apr 2
+@chrypnotoad
+@jairajdev
+chore: clean up stale ci workflows
+d7a395d
+.github/workflows/ commitlint.yml:10 on branch main
+Appeared in branch main on Apr 2
+ CodeQL Advanced #65: Commit d7a395dc
+( build-mode: none language: actions )
+Alert metadata
+Severity
+Medium
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+actions
+maintainability
+security
+Weaknesses
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+TermsSkip to content
+Liberdus
+tss-signer
+Repository navigation
+Code
+Issues
+5
+ (5)
+Pull requests
+2
+ (2)
+Agents
+Discussions
+Actions
+Projects
+Security and quality
+12
+ (12)
+Insights
+Settings
+← Code scanning alerts
+Workflow does not contain permissions #30
+Open
+#84
+On branch main • 4 hours ago
+Speed up the remediation of this alert with Copilot Autofix for CodeQL
+Code snippet
+.github/workflows/test.yml:14  Test
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps
+      - name: Run tests
+        run: npm test
+ Warning
+Workflow does not contain permissions
+Actions job or workflow does not limit the permissions of the GITHUB_TOKEN. Consider setting an explicit permissions block, using the following as a minimal starting point: {contents: read}
+CodeQL
+Rule
+Tool
+CodeQL
+Rule ID
+actions/missing-workflow-permissions
+Query
+View source
+Description
+If a GitHub Actions job or workflow has no explicit permissions set, then the repository permissions are used. Repositories created under organizations inherit the organization permissions. The organizations or repositories created before February 2023 have the default permissions set to read-write. Often these permissions do not adhere to the principle of least privilege and can be reduced to read-only, leaving the write permission only to a specific types as issues: write or pull-requests: write.
+Activity
+First detected in commit on Apr 2
+@chrypnotoad
+@jairajdev
+chore: clean up stale ci workflows
+d7a395d
+.github/workflows/ test.yml:14 on branch main
+Appeared in branch main on Apr 2
+ CodeQL Advanced #65: Commit d7a395dc
+( language: actions build-mode: none )
+Alert metadata
+Severity
+Medium
+Assignees
+Affected branches
+Tracking
+Development
+Security campaigns
+No campaign is currently tracking this alert.
+Tags
+actions
+maintainability
+security
+Weaknesses
+Loading
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+Loading CWE…
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
