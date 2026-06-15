@@ -2,7 +2,7 @@
  * check-custom-providers
  *
  * Loads providers-polygon.json and providers-bsc.json, builds the final URL
- * list for each chain, then fires a live eth_blockNumber call against every
+ * list for each chain, then fires a live eth_getBlockByNumber call against every
  * URL to confirm it is reachable and functional.
  *
  * Usage:
@@ -18,7 +18,7 @@ const CHAINS = [
   { chainId: 56,  name: 'BSC Mainnet' },
 ]
 
-runProviderCheck(CHAINS, 'check-custom-providers').catch((err) => {
+runProviderCheck(CHAINS).catch((err) => {
   console.error('[check-custom-providers] Unexpected error:', err)
   process.exit(1)
 })

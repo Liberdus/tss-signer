@@ -3,6 +3,11 @@ import {ethers} from 'ethers'
 import * as rpcUrls from './lib/rpcUrls'
 import {loadCustomProviderUrls} from './lib/customProviders'
 import {
+  DEFAULT_CUSTOM_PROVIDER_KEEPALIVE_MS,
+  KeepaliveChain,
+  startCustomProviderKeepalive,
+} from './lib/customProviderProbe'
+import {
   getHttpProviderForChain,
   invalidateCachedProvider,
   withCachedHttpProvider,
@@ -45,6 +50,7 @@ export function initializeChainRpcConfig(
   chains: ChainConfig[],
   options: {
     rpcProviderMode?: 'custom' | 'chainlist' | 'both'
+    customProviderKeepaliveIntervalMs?: number
   } = {},
 ): InitializedRpcConfig {
   const chainIds = chains.map((config) => config.chainId)
@@ -67,6 +73,8 @@ export function initializeChainRpcConfig(
     rpcUrls.initFromConfig(rpcConfigByChainId)
   }
 
+  const keepaliveChains: KeepaliveChain[] = []
+
   if (mode === 'custom' || mode === 'both') {
     for (const config of chains) {
       try {
@@ -76,6 +84,11 @@ export function initializeChainRpcConfig(
           rpcUrls.addHttpUrls(config.chainId, urls, {prepend: true, providerNames: result.resolved.map((r) => r.name)})
           const providerNames = [...new Set(result.resolved.map((r) => r.name))].join(', ')
           console.log(`[chainRpc] Loaded ${urls.length} custom provider URL(s) for chainId ${config.chainId} (${providerNames})`)
+          keepaliveChains.push({
+            chainId: config.chainId,
+            name: config.name,
+            urls: result.resolved,
+          })
         }
       } catch (err) {
         if (mode === 'custom') {
@@ -84,6 +97,12 @@ export function initializeChainRpcConfig(
         console.warn(`[chainRpc] Custom providers unavailable for chainId ${config.chainId} — falling back to Chainlist: ${(err as Error).message}`)
       }
     }
+  }
+
+  const keepaliveIntervalMs =
+    options.customProviderKeepaliveIntervalMs ?? DEFAULT_CUSTOM_PROVIDER_KEEPALIVE_MS
+  if (keepaliveChains.length > 0 && keepaliveIntervalMs > 0) {
+    startCustomProviderKeepalive(keepaliveChains, keepaliveIntervalMs)
   }
 
   if (mode === 'chainlist' || mode === 'both') {

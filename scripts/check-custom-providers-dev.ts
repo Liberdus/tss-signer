@@ -18,7 +18,7 @@ const CHAINS = [
   { chainId: 97,    name: 'BSC Testnet' },
 ]
 
-runProviderCheck(CHAINS, 'check-custom-providers-dev').catch((err) => {
+runProviderCheck(CHAINS).catch((err) => {
   console.error('[check-custom-providers-dev] Unexpected error:', err)
   process.exit(1)
 })

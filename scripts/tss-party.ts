@@ -186,6 +186,7 @@ const dbPath = deriveTransactionsDbPath(process.cwd(), ourParty.idx)
 const chainsToInit: ChainConfig[] = getConfiguredChains(chainConfigs)
 const chainRpcConfig = initializeChainRpcConfig(chainsToInit, {
   rpcProviderMode: chainConfigsRaw.rpcProviderMode ?? 'both',
+  customProviderKeepaliveIntervalMs: chainConfigsRaw.customProviderKeepaliveIntervalMs,
 })
 // Give eth_sendRawTransaction a slightly longer budget than reads on public testnet RPCs.
 const TSS_PARTY_SEND_TX_TIMEOUT_MS = 15_000

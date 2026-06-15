@@ -50,6 +50,11 @@ export interface ChainConfigs {
    *   "both"      — custom URLs prepended, Chainlist fetched hourly (default)
    */
   rpcProviderMode?: 'custom' | 'chainlist' | 'both'
+  /**
+   * How often to ping every custom provider URL to keep API keys active.
+   * Default: 86400000 (24 hours). Set to 0 to disable keepalive.
+   */
+  customProviderKeepaliveIntervalMs?: number
   liberdusNetworkId: string
   collectorHost?: string
   proxyServerHost?: string
