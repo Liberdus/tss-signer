@@ -1,96 +1,13 @@
-import { ethers } from 'ethers'
-import { loadCustomProviderUrls, ResolvedProviderUrl } from '../../shared/lib/customProviders'
-import { scrubUrls } from '../../shared/lib/rpcUrls'
-
-const PROBE_TIMEOUT_MS = 15_000
+import { loadCustomProviderUrls } from '../../shared/lib/customProviders'
+import { probeProviderUrl } from '../../shared/lib/providerHealthCheck'
+import { redactRpcUrlForLog } from '../../shared/lib/redactForLog'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function maskUrl(url: string): string {
-  try {
-    const u = new URL(url)
-    const pathParts = u.pathname.split('/')
-    if (pathParts.length > 1) {
-      const last = pathParts[pathParts.length - 1]
-      if (last.length > 6) {
-        pathParts[pathParts.length - 1] = last.slice(0, 4) + '****'
-      }
-    }
-    u.pathname = pathParts.join('/')
-    u.search = u.search ? '?****' : ''
-    return u.toString()
-  } catch {
-    return url.slice(0, 40) + '...'
-  }
-}
-
 function pad(s: string, len: number): string {
   return s.length >= len ? s : s + ' '.repeat(len - s.length)
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let handle: NodeJS.Timeout
-  const timeout = new Promise<never>((_, reject) => {
-    handle = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
-  })
-  try {
-    return await Promise.race([promise, timeout])
-  } finally {
-    clearTimeout(handle!)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Probe one URL
-// ---------------------------------------------------------------------------
-
-interface ProbeResult {
-  name: string
-  url: string
-  pass: boolean
-  latencyMs: number
-  error?: string
-}
-
-async function probeUrl(entry: ResolvedProviderUrl, chainId: number): Promise<ProbeResult> {
-  if (/YOUR_[A-Z_]+/.test(entry.url)) {
-    return {
-      name: entry.name,
-      url: maskUrl(entry.url),
-      pass: false,
-      latencyMs: 0,
-      error: 'placeholder value not replaced (YOUR_* detected) — add a real API key',
-    }
-  }
-
-  // StaticJsonRpcProvider skips auto network-detection, avoiding false
-  // "underlying network changed" errors on providers that return a different
-  // chainId from eth_chainId than what ethers expects.
-  const provider = new ethers.providers.StaticJsonRpcProvider(entry.url, {
-    chainId,
-    name: 'unknown',
-  })
-
-  const start = Date.now()
-  try {
-    await withTimeout(provider.getBlockNumber(), PROBE_TIMEOUT_MS)
-    return { name: entry.name, url: entry.url, pass: true, latencyMs: Date.now() - start }
-  } catch (err) {
-    return {
-      name: entry.name,
-      url: entry.url,
-      pass: false,
-      latencyMs: Date.now() - start,
-      error: scrubUrls((err as Error)?.message ?? String(err)),
-    }
-  } finally {
-    // ethers v5 StaticJsonRpcProvider / JsonRpcProvider opens a polling
-    // interval — destroy it so the process can exit cleanly.
-    provider.removeAllListeners()
-    ;(provider as any)._websocket?.close?.()
-  }
 }
 
 // ---------------------------------------------------------------------------
