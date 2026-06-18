@@ -65,6 +65,7 @@ export function initializeChainRpcConfig(
   chains: ChainConfig[],
   options: {
     rpcProviderMode?: 'custom' | 'chainlist' | 'both'
+    providerHealthCheckIntervalHours?: number
   } = {},
 ): InitializedRpcConfig {
   const chainIds = chains.map((config) => config.chainId)
