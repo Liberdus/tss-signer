@@ -30,6 +30,7 @@ import { monitorLiberdusTransactions } from "./monitor/liberdus";
 import { startDriftResistantScheduler } from "../shared/utils/scheduler";
 import { AdminContext, createAdminContext, createAdminRouter } from "./admin";
 import { createObserverCorsOptions } from "./cors";
+import { observerChainRpc } from "./chainRpc";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -548,6 +549,8 @@ app.post("/bridgein/liberdus/submitted", bridgeInGossipRateLimit, (req, res) => 
 
 (async () => {
   try {
+    await observerChainRpc.startupReady
+
     TransactionDB.initializeTransactionsDatabase(DB_PATH);
     console.log("[observer] Database initialized");
     // Loads observer-list.json once and validates this observer's self URL.

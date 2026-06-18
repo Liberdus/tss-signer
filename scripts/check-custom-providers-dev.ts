@@ -1,7 +1,7 @@
 /**
  * check-custom-providers-dev
  *
- * Same as check-custom-providers but targets testnet chains:
+ * Same HTTP JSON-RPC probe as check-custom-providers, but targets testnet chains:
  *   - Polygon Amoy Testnet (chainId 80002) — keystores/bnbtss/providers-polygon-amoy.json
  *   - BSC Testnet / Chapel (chainId 97) — keystores/bnbtss/providers-bsc-testnet.json
  *

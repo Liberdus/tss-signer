@@ -31,6 +31,7 @@ export function assertCustomProviderCoverage(
 
 export interface InitializedRpcConfig {
   chainIds: number[]
+  startupReady: Promise<void>
   getHttpRpcUrlsForChain: (chainId: number) => string[]
   getFallbackRpcUrl: (chainId: number) => string | undefined
   hasChainHttpProviderConfig: (chainId: number) => boolean
@@ -69,6 +70,7 @@ export function initializeChainRpcConfig(
   } = {},
 ): InitializedRpcConfig {
   const chainIds = chains.map((config) => config.chainId)
+  let startupReady: Promise<void> = Promise.resolve()
   const rpcConfigByChainId: Record<string, {rpcUrl: string}> = {}
   const fallbackRpcUrlByChainId = new Map<number, string>()
 
@@ -115,7 +117,7 @@ export function initializeChainRpcConfig(
     }
 
     if (loadedCustomProviders) {
-      startCustomProviderHealthCheck(
+      const healthCheck = startCustomProviderHealthCheck(
         chains,
         (chainId) => customProvidersByChainId.get(chainId) ?? [],
         {
@@ -123,6 +125,7 @@ export function initializeChainRpcConfig(
           rpcProviderMode: mode,
         },
       )
+      startupReady = healthCheck.startupReady
     } else if (mode === 'both') {
       console.warn(
         `[providerHealthCheck] Skipped: no custom provider URLs loaded for any chain (rpcProviderMode=${mode})`,
@@ -165,6 +168,7 @@ export function initializeChainRpcConfig(
 
   return {
     chainIds,
+    startupReady,
     getHttpRpcUrlsForChain,
     getFallbackRpcUrl,
     hasChainHttpProviderConfig,
