@@ -1,9 +1,9 @@
 /**
  * check-custom-providers
  *
- * Loads providers-polygon.json and providers-bsc.json, builds the final URL
- * list for each chain, then fires a live eth_blockNumber call against every
- * URL to confirm it is reachable and functional.
+ * Loads keystores/bnbtss/providers-polygon.json and providers-bsc.json,
+ * builds the final URL list for each chain, then fires a live eth_blockNumber
+ * call against every URL to confirm it is reachable and functional.
  *
  * Usage:
  *   npm run check-custom-providers:mainnet
