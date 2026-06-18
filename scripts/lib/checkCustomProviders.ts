@@ -1,6 +1,21 @@
-import { loadCustomProviderUrls } from '../../shared/lib/customProviders'
-import { probeProviderUrl } from '../../shared/lib/providerHealthCheck'
+import {
+  loadCustomProviderUrls,
+  ProviderLoadResult,
+} from '../../shared/lib/customProviders'
+import {
+  probeProviderUrl,
+  ProbeProviderUrlFn,
+} from '../../shared/lib/providerHealthCheck'
 import { redactRpcUrlForLog } from '../../shared/lib/redactForLog'
+
+export const DEFAULT_PROVIDER_PROBE_FN: ProbeProviderUrlFn = probeProviderUrl
+
+export type LoadCustomProviderUrlsFn = typeof loadCustomProviderUrls
+
+export interface RunProviderCheckOptions {
+  probeFn?: ProbeProviderUrlFn
+  loadUrls?: LoadCustomProviderUrlsFn
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,17 +39,24 @@ interface FailureSummary {
 export async function runProviderCheck(
   chains: Array<{ chainId: number; name: string }>,
   scriptName: string,
+  options: RunProviderCheckOptions = {},
 ): Promise<void> {
+  const probeFn = options.probeFn ?? DEFAULT_PROVIDER_PROBE_FN
+  const loadUrls = options.loadUrls ?? loadCustomProviderUrls
   const failures: FailureSummary[] = []
+
+  console.log(
+    `[${scriptName}] Probing via HTTP JSON-RPC eth_blockNumber (axios POST; not ethers JsonRpcProvider)`,
+  )
 
   for (const chain of chains) {
     console.log(`\n${'─'.repeat(60)}`)
     console.log(`Chain: ${chain.name} (chainId ${chain.chainId})`)
     console.log(`${'─'.repeat(60)}`)
 
-    let result: ReturnType<typeof loadCustomProviderUrls>
+    let result: ProviderLoadResult
     try {
-      result = loadCustomProviderUrls(chain.chainId)
+      result = loadUrls(chain.chainId)
     } catch (err) {
       const msg = (err as Error).message
       console.error(`  ERROR loading providers: ${msg}`)
@@ -49,10 +71,12 @@ export async function runProviderCheck(
       }
     }
 
-    console.log(`\n  Probing ${result.resolved.length} URL(s) with eth_blockNumber...\n`)
+    console.log(
+      `\n  Probing ${result.resolved.length} URL(s) via HTTP JSON-RPC eth_blockNumber...\n`,
+    )
 
     const probes = await Promise.all(
-      result.resolved.map((entry) => probeProviderUrl(entry, chain.chainId)),
+      result.resolved.map((entry) => probeFn(entry, chain.chainId)),
     )
 
     for (const r of probes) {

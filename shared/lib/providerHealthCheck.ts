@@ -2,7 +2,7 @@ import axios from 'axios'
 import { ChainConfig } from '../config'
 import { ResolvedProviderUrl } from './customProviders'
 import { redactRpcUrlForLog } from './redactForLog'
-import { scrubUrls } from './rpcUrls'
+import { removeHttpUrls, scrubUrls } from './rpcUrls'
 
 export const DEFAULT_HEALTH_CHECK_INTERVAL_HOURS = 24
 const PROBE_TIMEOUT_MS = 15_000
@@ -13,6 +13,15 @@ const ETH_BLOCK_NUMBER_REQUEST = {
   params: [] as [],
   id: 1,
 }
+
+const ETH_CHAIN_ID_REQUEST = {
+  jsonrpc: '2.0',
+  method: 'eth_chainId',
+  params: [] as [],
+  id: 2,
+}
+
+const STARTUP_PROBE_REQUESTS = [ETH_BLOCK_NUMBER_REQUEST, ETH_CHAIN_ID_REQUEST]
 
 export type ProviderHealthCheckSource = (chainId: number) => readonly ResolvedProviderUrl[]
 export type RpcProviderMode = 'custom' | 'chainlist' | 'both'
@@ -36,6 +45,10 @@ export interface ChainHealthCheckOutcome {
   healthyCount: number
 }
 
+export interface ChainHealthCheckRunResult extends ChainHealthCheckOutcome {
+  probes: ProviderProbeResult[]
+}
+
 export interface CustomProviderHealthCheckOptions {
   intervalHours?: number
   rpcProviderMode: RpcProviderMode
@@ -46,7 +59,13 @@ export interface RunCustomProviderHealthCheckOptions {
   probeFn?: ProbeProviderUrlFn
 }
 
+export interface CustomProviderHealthCheckHandle {
+  startupReady: Promise<void>
+  stop: () => void
+}
+
 interface JsonRpcResponse {
+  id?: number
   result?: unknown
   error?: { message?: string; code?: number }
 }
@@ -60,6 +79,23 @@ export function parseEthBlockNumberResult(result: unknown): number {
     throw new Error('eth_blockNumber returned an invalid result')
   }
   return blockNumber
+}
+
+export function parseEthChainIdResult(result: unknown, expectedChainId: number): number {
+  let chainId: number | undefined
+  if (typeof result === 'string' && /^0x[0-9a-f]+$/i.test(result)) {
+    chainId = parseInt(result, 16)
+  } else if (typeof result === 'number' && Number.isFinite(result)) {
+    chainId = result
+  }
+
+  if (chainId == null || !Number.isFinite(chainId) || chainId < 0) {
+    throw new Error('eth_chainId returned an invalid result')
+  }
+  if (chainId !== expectedChainId) {
+    throw new Error(`eth_chainId mismatch: expected ${expectedChainId}, got ${chainId}`)
+  }
+  return chainId
 }
 
 export function getFatalCustomProviderFailures(
@@ -113,25 +149,55 @@ function formatProbeError(err: unknown): string {
   return scrubUrls((err as Error)?.message ?? String(err))
 }
 
-async function fetchBlockNumberViaHttp(url: string, timeoutMs: number): Promise<number> {
-  const response = await axios.post<JsonRpcResponse>(url, ETH_BLOCK_NUMBER_REQUEST, {
-    timeout: timeoutMs,
-    headers: { 'Content-Type': 'application/json' },
-    validateStatus: (status) => status >= 200 && status < 300,
-  })
-
-  const data = response.data
-  if (data?.error) {
-    const message = data.error.message ?? JSON.stringify(data.error)
-    throw new Error(scrubUrls(message))
+function parseJsonRpcBatchResult(data: unknown, id: number): unknown {
+  if (Array.isArray(data)) {
+    const item = data.find((entry) => (entry as JsonRpcResponse)?.id === id) as JsonRpcResponse | undefined
+    if (!item) {
+      throw new Error(`JSON-RPC batch response missing id=${id}`)
+    }
+    if (item.error) {
+      const message = item.error.message ?? JSON.stringify(item.error)
+      throw new Error(scrubUrls(message))
+    }
+    return item.result
   }
 
-  return parseEthBlockNumberResult(data?.result)
+  const single = data as JsonRpcResponse
+  if (single?.error) {
+    const message = single.error.message ?? JSON.stringify(single.error)
+    throw new Error(scrubUrls(message))
+  }
+  return single?.result
+}
+
+async function fetchProbeResultsViaHttp(
+  url: string,
+  expectedChainId: number,
+  timeoutMs: number,
+): Promise<number> {
+  const response = await axios.post<JsonRpcResponse | JsonRpcResponse[]>(
+    url,
+    STARTUP_PROBE_REQUESTS,
+    {
+      timeout: timeoutMs,
+      headers: { 'Content-Type': 'application/json' },
+      validateStatus: (status) => status >= 200 && status < 300,
+    },
+  )
+
+  const blockNumber = parseEthBlockNumberResult(
+    parseJsonRpcBatchResult(response.data, ETH_BLOCK_NUMBER_REQUEST.id),
+  )
+  parseEthChainIdResult(
+    parseJsonRpcBatchResult(response.data, ETH_CHAIN_ID_REQUEST.id),
+    expectedChainId,
+  )
+  return blockNumber
 }
 
 export async function probeProviderUrl(
   entry: ResolvedProviderUrl,
-  _chainId: number,
+  chainId: number,
 ): Promise<ProviderProbeResult> {
   if (/YOUR_[A-Z_]+/.test(entry.url)) {
     return {
@@ -145,7 +211,7 @@ export async function probeProviderUrl(
 
   const start = Date.now()
   try {
-    const blockNumber = await fetchBlockNumberViaHttp(entry.url, PROBE_TIMEOUT_MS)
+    const blockNumber = await fetchProbeResultsViaHttp(entry.url, chainId, PROBE_TIMEOUT_MS)
     return {
       name: entry.name,
       url: entry.url,
@@ -205,13 +271,38 @@ function logChainProbeSummary(chainId: number, probes: ProviderProbeResult[]): v
   )
 }
 
+export function pruneFailedProbeUrls(results: ChainHealthCheckRunResult[]): number {
+  let totalRemoved = 0
+  for (const result of results) {
+    const failedProbes = result.probes.filter((probe) => !probe.pass)
+    if (failedProbes.length === 0) continue
+
+    const failedUrls = failedProbes.map((probe) => probe.url)
+    const removed = removeHttpUrls(result.chainId, failedUrls)
+    totalRemoved += removed
+    if (removed === 0) continue
+
+    for (const probe of failedProbes) {
+      const url = redactRpcUrlForLog(probe.url)
+      const reason = probe.error ? ` reason=${probe.error}` : ''
+      console.warn(
+        `[providerHealthCheck] Removed provider from chainId=${result.chainId} RPC pool after startup probe: provider=${probe.name}${reason} url=${url}`,
+      )
+    }
+    console.warn(
+      `[providerHealthCheck] Removed ${removed} failed provider URL(s) from chainId=${result.chainId} RPC pool after startup probe`,
+    )
+  }
+  return totalRemoved
+}
+
 export async function runCustomProviderHealthCheck(
   chains: Array<Pick<ChainConfig, 'chainId' | 'name'>>,
   getResolvedProviders: ProviderHealthCheckSource,
   options: RunCustomProviderHealthCheckOptions = {},
-): Promise<ChainHealthCheckOutcome[]> {
+): Promise<ChainHealthCheckRunResult[]> {
   const probeFn = options.probeFn ?? probeProviderUrl
-  const outcomes: ChainHealthCheckOutcome[] = []
+  const results: ChainHealthCheckRunResult[] = []
 
   for (const chain of chains) {
     const entries = getResolvedProviders(chain.chainId)
@@ -219,10 +310,11 @@ export async function runCustomProviderHealthCheck(
       console.warn(
         `[providerHealthCheck] chainId=${chain.chainId} skipped: no custom providers configured`,
       )
-      outcomes.push({
+      results.push({
         chainId: chain.chainId,
         configuredCount: 0,
         healthyCount: 0,
+        probes: [],
       })
       continue
     }
@@ -235,14 +327,31 @@ export async function runCustomProviderHealthCheck(
     }
     logChainProbeSummary(chain.chainId, probes)
 
-    outcomes.push({
+    results.push({
       chainId: chain.chainId,
       configuredCount: entries.length,
       healthyCount: probes.filter((probe) => probe.pass).length,
+      probes,
     })
   }
 
-  return outcomes
+  return results
+}
+
+export async function runStartupProviderHealthCheck(
+  chains: Array<Pick<ChainConfig, 'chainId' | 'name'>>,
+  getResolvedProviders: ProviderHealthCheckSource,
+  options: CustomProviderHealthCheckOptions & RunCustomProviderHealthCheckOptions,
+): Promise<ChainHealthCheckRunResult[]> {
+  const results = await runCustomProviderHealthCheck(chains, getResolvedProviders, {
+    probeFn: options.probeFn,
+  })
+  pruneFailedProbeUrls(results)
+  handleFatalCustomProviderFailures(
+    getFatalCustomProviderFailures(results, options.rpcProviderMode),
+    options.exit ?? process.exit,
+  )
+  return results
 }
 
 export function resolveHealthCheckIntervalMs(intervalHours?: number): number {
@@ -254,35 +363,46 @@ export function startCustomProviderHealthCheck(
   chains: Array<Pick<ChainConfig, 'chainId' | 'name'>>,
   getResolvedProviders: ProviderHealthCheckSource,
   options: CustomProviderHealthCheckOptions,
-): () => void {
+): CustomProviderHealthCheckHandle {
   if (process.env.NODE_ENV === 'test') {
-    return () => undefined
+    return {
+      startupReady: Promise.resolve(),
+      stop: () => undefined,
+    }
   }
 
   const intervalMs = resolveHealthCheckIntervalMs(options.intervalHours)
   const hours = intervalMs / (60 * 60 * 1000)
   const exit = options.exit ?? process.exit
+  let interval: ReturnType<typeof setInterval> | undefined
 
-  const run = async () => {
-    try {
-      const outcomes = await runCustomProviderHealthCheck(chains, getResolvedProviders)
-      handleFatalCustomProviderFailures(
-        getFatalCustomProviderFailures(outcomes, options.rpcProviderMode),
-        exit,
+  const startupReady = runStartupProviderHealthCheck(chains, getResolvedProviders, options)
+    .then(() => {
+      interval = setInterval(() => {
+        void runCustomProviderHealthCheck(chains, getResolvedProviders)
+          .then((results) => {
+            handleFatalCustomProviderFailures(
+              getFatalCustomProviderFailures(results, options.rpcProviderMode),
+              exit,
+            )
+          })
+          .catch((err) => {
+            console.warn(`[providerHealthCheck] Health check failed: ${(err as Error).message}`)
+          })
+      }, intervalMs)
+      console.log(
+        `[providerHealthCheck] Scheduled custom provider health checks every ${hours}h`,
       )
-    } catch (err) {
-      console.warn(`[providerHealthCheck] Health check failed: ${(err as Error).message}`)
-    }
+    })
+    .catch((err) => {
+      console.warn(`[providerHealthCheck] Startup health check failed: ${(err as Error).message}`)
+      throw err
+    })
+
+  return {
+    startupReady,
+    stop: () => {
+      if (interval) clearInterval(interval)
+    },
   }
-
-  void run()
-
-  const interval = setInterval(() => {
-    void run()
-  }, intervalMs)
-  console.log(
-    `[providerHealthCheck] Scheduled custom provider health checks every ${hours}h`,
-  )
-
-  return () => clearInterval(interval)
 }

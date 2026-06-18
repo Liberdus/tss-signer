@@ -2264,6 +2264,8 @@ function calculateChatId(from: string, to: string): string {
 }
 
 async function main(): Promise<void> {
+  await chainRpcConfig.startupReady
+
   console.log('Signing backend: BNB TSS')
   if (useDefaultSlotPath) {
     console.warn('No party index provided. Defaulting to slot-1 runtime semantics for observer/db and default-slot vault lookup.')

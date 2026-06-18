@@ -64,6 +64,19 @@ export function addHttpUrls(
   httpRpcUrlsByChain.set(chainId, dedup);
 }
 
+export function removeHttpUrls(chainId: number, urls: string[]): number {
+  const list = httpRpcUrlsByChain.get(chainId)
+  if (!list || list.length === 0 || urls.length === 0) return 0
+
+  const removeSet = new Set(urls.map((url) => normalizeRpcUrl(url)).filter(Boolean))
+  const next = list.filter((url) => !removeSet.has(url))
+  const removed = list.length - next.length
+  if (removed > 0) {
+    httpRpcUrlsByChain.set(chainId, next)
+  }
+  return removed
+}
+
 export function mergeChainlistResponse(
   data: unknown,
   supportedChainIds: Set<number>
