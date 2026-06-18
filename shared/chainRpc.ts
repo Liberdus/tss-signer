@@ -89,11 +89,15 @@ export function initializeChainRpcConfig(
   }
 
   if (mode === 'custom' || mode === 'both') {
+    let loadedCustomProviders = false
+    const customProvidersByChainId = new Map<number, ResolvedProviderUrl[]>()
     for (const config of chains) {
       try {
         const result = loadCustomProviderUrls(config.chainId)
         const urls = result.resolved.map((r) => r.url)
         if (urls.length > 0) {
+          loadedCustomProviders = true
+          customProvidersByChainId.set(config.chainId, result.resolved)
           rpcUrls.addHttpUrls(config.chainId, urls, {prepend: true, providerNames: result.resolved.map((r) => r.name)})
           const providerNames = [...new Set(result.resolved.map((r) => r.name))].join(', ')
           console.log(`[chainRpc] Loaded ${urls.length} custom provider URL(s) for chainId ${config.chainId} (${providerNames})`)
@@ -104,6 +108,25 @@ export function initializeChainRpcConfig(
         }
         console.warn(`[chainRpc] Custom providers unavailable for chainId ${config.chainId} — falling back to Chainlist: ${(err as Error).message}`)
       }
+    }
+
+    if (mode === 'custom') {
+      assertCustomProviderCoverage(chains, customProvidersByChainId)
+    }
+
+    if (loadedCustomProviders) {
+      startCustomProviderHealthCheck(
+        chains,
+        (chainId) => customProvidersByChainId.get(chainId) ?? [],
+        {
+          intervalHours: options.providerHealthCheckIntervalHours,
+          rpcProviderMode: mode,
+        },
+      )
+    } else if (mode === 'both') {
+      console.warn(
+        `[providerHealthCheck] Skipped: no custom provider URLs loaded for any chain (rpcProviderMode=${mode})`,
+      )
     }
   }
 
