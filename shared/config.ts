@@ -139,6 +139,13 @@ function validateLiberdusBridgeGuards(chainConfigs: ChainConfigs): void {
 export function validateChainConfigs(chainConfigs: ChainConfigs): ChainConfigs {
   validateLiberdusBridgeGuards(chainConfigs)
 
+  if (chainConfigs.providerHealthCheckIntervalHours != null) {
+    const hours = chainConfigs.providerHealthCheckIntervalHours
+    if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) {
+      throw new Error('[config] providerHealthCheckIntervalHours must be a positive number')
+    }
+  }
+
   if (chainConfigs.enableLiberdusNetwork) {
     for (const [chainId, config] of Object.entries(chainConfigs.supportedChains)) {
       requireFullChainConfig(config, `supportedChains[${chainId}]`)
