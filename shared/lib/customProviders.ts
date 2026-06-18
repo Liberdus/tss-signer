@@ -114,6 +114,32 @@ function buildUrlFromTemplate(name: string, chainId: number, apiKey: string): st
 }
 
 /**
+ * Directory for per-chain provider JSON files (providers-*.json).
+ * Respects BNB_TSS_HOME_ROOT when set, matching the TSS vault layout.
+ */
+export function resolveCustomProviderConfigDir(fromDir?: string): string {
+  if (process.env.BNB_TSS_HOME_ROOT) {
+    return path.resolve(process.env.BNB_TSS_HOME_ROOT)
+  }
+  return path.join(resolveProjectRoot(fromDir ?? __dirname), 'keystores', 'bnbtss')
+}
+
+const PROVIDER_FILE_BY_CHAIN: Record<number, string> = {
+  137:   'providers-polygon.json',
+  56:    'providers-bsc.json',
+  80002: 'providers-polygon-amoy.json',
+  97:    'providers-bsc-testnet.json',
+}
+
+export function resolveCustomProviderConfigPath(chainId: number, fromDir?: string): string {
+  const fileName = PROVIDER_FILE_BY_CHAIN[chainId]
+  if (!fileName) {
+    throw new Error(`[customProviders] No provider config file defined for chainId ${chainId}`)
+  }
+  return path.join(resolveCustomProviderConfigDir(fromDir), fileName)
+}
+
+/**
  * Reads and parses a provider config JSON file.
  */
 export function loadCustomProviderFile(filePath: string): CustomProviderConfig {
