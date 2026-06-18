@@ -21,12 +21,6 @@ observer-list.json
 # Local Infura API keys (never commit)
 infura-keys.json
 
-# RPC provider configs with real API keys (never commit — use dev-providers-*.json as templates)
-providers-polygon.json
-providers-bsc.json
-providers-polygon-amoy.json
-providers-bsc-testnet.json
-
 # Runtime database files
 db/
 *.sqlite
