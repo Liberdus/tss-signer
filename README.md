@@ -250,7 +250,7 @@ Right now there are three TSS execution routes:
 | `tss-tools/lib/bnbTss.ts` | Native BNB TSS runtime helper |
 | `chain-config.json` | Multi-chain RPC and contract configuration |
 | `params.json` | TSS keygen/regroup parameters (parties, threshold) |
-| `keystores/` | Native TSS vault files (created during keygen) |
+| `keystores/` | Native TSS vault files (created during keygen) and `bnbtss/providers-*.json` RPC configs |
 | `ecosystem.config.js` | PM2 process configuration for all 10 processes |
 
 ## TSS Protocol Details
