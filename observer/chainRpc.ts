@@ -5,4 +5,5 @@ const rpcProviderMode = chainConfigsRaw.rpcProviderMode ?? 'both'
 
 export const observerChainRpc = initializeChainRpcConfig(getConfiguredChains(chainConfigsRaw), {
   rpcProviderMode,
+  providerHealthCheckIntervalHours: chainConfigsRaw.providerHealthCheckIntervalHours,
 })
