@@ -45,11 +45,15 @@ export interface ChainConfigs {
   enableLiberdusNetwork: boolean
   /**
    * Controls which RPC sources are used for each chain.
-   *   "custom"    — only URLs from providers-<chain>.json (no Chainlist fetch)
+   *   "custom"    — only URLs from keystores/bnbtss/providers-*.json (no Chainlist fetch)
    *   "chainlist" — only Chainlist (hourly fetch); custom provider files ignored
    *   "both"      — custom URLs prepended, Chainlist fetched hourly (default)
    */
   rpcProviderMode?: 'custom' | 'chainlist' | 'both'
+  /**
+   * Hours between custom provider health checks (eth_blockNumber). Default 24 when omitted.
+   */
+  providerHealthCheckIntervalHours?: number
   liberdusNetworkId: string
   collectorHost?: string
   proxyServerHost?: string
