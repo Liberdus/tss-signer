@@ -235,7 +235,7 @@ export function buildUrlsFromProviderConfig(config: CustomProviderConfig): Provi
 /**
  * Loads and resolves provider URLs for a given chainId.
  *
- * Looks for:
+ * Looks under keystores/bnbtss/ (or BNB_TSS_HOME_ROOT):
  *   - chainId   137 → providers-polygon.json        (Polygon Mainnet)
  *   - chainId    56 → providers-bsc.json             (BSC Mainnet)
  *   - chainId 80002 → providers-polygon-amoy.json    (Polygon Amoy Testnet)
@@ -247,20 +247,8 @@ export function loadCustomProviderUrls(
   chainId: number,
   fromDir?: string,
 ): ProviderLoadResult {
-  const fileNameByChain: Record<number, string> = {
-    137:   'providers-polygon.json',
-    56:    'providers-bsc.json',
-    80002: 'providers-polygon-amoy.json',
-    97:    'providers-bsc-testnet.json',
-  }
-
-  const fileName = fileNameByChain[chainId]
-  if (!fileName) {
-    throw new Error(`[customProviders] No provider config file defined for chainId ${chainId}`)
-  }
-
-  const root = resolveProjectRoot(fromDir ?? __dirname)
-  const filePath = path.join(root, fileName)
+  const filePath = resolveCustomProviderConfigPath(chainId, fromDir)
+  const fileName = path.basename(filePath)
   const config = loadCustomProviderFile(filePath)
 
   if (config.chainId !== chainId) {
