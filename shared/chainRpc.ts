@@ -1,13 +1,33 @@
 import {ChainConfig} from './config'
 import {ethers} from 'ethers'
 import * as rpcUrls from './lib/rpcUrls'
-import {loadCustomProviderUrls} from './lib/customProviders'
+import {loadCustomProviderUrls, ResolvedProviderUrl} from './lib/customProviders'
 import {
   getHttpProviderForChain,
   invalidateCachedProvider,
   withCachedHttpProvider,
   WithCachedRetryOptions,
 } from './lib/httpProviderHelper'
+import {startCustomProviderHealthCheck} from './lib/providerHealthCheck'
+
+export function assertCustomProviderCoverage(
+  chains: Array<{chainId: number}>,
+  customProvidersByChainId: ReadonlyMap<number, unknown>,
+): void {
+  if (chains.length === 0) {
+    throw new Error(
+      '[chainRpc] rpcProviderMode=custom requires custom provider URLs for at least one configured chain',
+    )
+  }
+
+  for (const config of chains) {
+    if (!customProvidersByChainId.has(config.chainId)) {
+      throw new Error(
+        `[chainRpc] rpcProviderMode=custom requires custom providers for chainId ${config.chainId}`,
+      )
+    }
+  }
+}
 
 export interface InitializedRpcConfig {
   chainIds: number[]
