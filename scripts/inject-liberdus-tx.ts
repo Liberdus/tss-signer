@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import axios from 'axios'
 import * as bnbTss from '../tss-tools/lib/bnbTss'
 import {chainConfigsRaw} from '../shared/config'
+import {initializeNetworkTimeOrExit, networkNowMs, networkNowSec} from '../shared/utils/networkTime'
 import {
   DEFAULT_SHARDUS_CRYPTO_HASH_KEY,
   deriveDeterministicChannelId,
@@ -153,7 +154,7 @@ function deriveLocalFutureTimestamp(currentCycleRecord: {start: number; duration
   console.log(`  Cycle end timestamp: ${new Date(cycleEndTimestamp).toISOString()} (${cycleEndTimestamp}) (cycle start: ${currentCycleRecord.start}, duration: ${currentCycleRecord.duration})`)
   let futureTimestamp = cycleEndTimestamp + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   console.log(`  Derived future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp})`)
-  const currentTimestamp = Date.now()
+  const currentTimestamp = networkNowMs()
   console.log(`  Current timestamp: ${new Date(currentTimestamp).toISOString()} (${currentTimestamp})`)
   while (futureTimestamp < currentTimestamp) {
     futureTimestamp += LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
@@ -178,7 +179,7 @@ function verifySignedTx(tx: SignedLiberdusTx): boolean {
 async function injectLiberdusTx(txId: string, signedTx: SignedLiberdusTx): Promise<void> {
   const body = {tx: stringify(signedTx)}
   const injectUrl = `${proxyServerHost}/inject`
-  const waitTime = (signedTx.timestamp || 0) - Date.now()
+  const waitTime = (signedTx.timestamp || 0) - networkNowMs()
 
   if (waitTime > 0) {
     console.log(`Waiting ${Math.round(waitTime / 1000)}s for timestamp window...`)
@@ -283,6 +284,7 @@ function asUnsignedLiberdusTx(value: unknown): UnsignedLiberdusTx {
 }
 
 async function main(): Promise<void> {
+  await initializeNetworkTimeOrExit()
   const {flags} = parseArgs(process.argv.slice(2))
   const chainIdArg = requireStringFlag(flags, 'chain-id')
   const txFileArg = requireStringFlag(flags, 'tx-file')
@@ -404,7 +406,7 @@ async function main(): Promise<void> {
   const channelId =
     requireStringFlag(flags, 'channel-id') ||
     process.env.BNB_TSS_CHANNEL_ID ||
-    deriveDeterministicChannelId(unsignedTxId, tx.timestamp)
+    deriveDeterministicChannelId(unsignedTxId, tx.timestamp, networkNowSec())
   const channelPassword =
     requireStringFlag(flags, 'channel-password') ||
     process.env.BNB_TSS_CHANNEL_PASSWORD ||

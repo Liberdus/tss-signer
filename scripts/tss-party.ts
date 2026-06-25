@@ -18,6 +18,7 @@ import {
 } from '../shared/config'
 import {resolveProjectRoot} from '../shared/utils/paths'
 import {startDriftResistantScheduler} from '../shared/utils/scheduler'
+import {initializeNetworkTimeOrExit, networkNowMs, networkNowSec} from '../shared/utils/networkTime'
 import {toEthereumAddress, toShardusAddress} from '../shared/utils/transformAddress'
 import {isNormalizedTxId, normalizeTxId} from '../shared/utils/transformTxId'
 import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
@@ -1124,6 +1125,10 @@ async function injectLiberdusTx(
   }
 }
 
+function isLiberdusTimestampOutOfRangeReason(reason: string | undefined): boolean {
+  return `${reason ?? ''}`.toLowerCase().includes('transaction timestamp out of range')
+}
+
 async function processCoinToToken(
   to: string,
   value: ethers.BigNumber,
@@ -1315,7 +1320,7 @@ async function processCoinToToken(
   console.log(`eth tx to sign on ${targetChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
-  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
+  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs, networkNowSec())
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
@@ -1656,7 +1661,7 @@ async function processVaultBridge(
   console.log(`EVM-to-EVM tx to sign on ${destChainName}`, tx)
   const unsignedTx = ethersUtils.serializeTransaction(tx)
   let digest = ethersUtils.keccak256(unsignedTx)
-  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
+  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs, networkNowSec())
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
@@ -1889,12 +1894,12 @@ async function processTokenToCoin(
   }
   tx.timestamp = deriveLocalFutureTimestamp(currentCycleRecord)
   console.log(
-    `Current timestamp: ${new Date(Date.now())}, Future timestamp: ${new Date(tx.timestamp)}, Wait time: ${tx.timestamp - Date.now()}`,
+    `Current timestamp: ${new Date(networkNowMs())}, Future timestamp: ${new Date(tx.timestamp)}, Wait time: ${tx.timestamp - networkNowMs()}`,
   )
   console.log('Transaction:', tx)
   const hashMessage = crypto.hashObj(tx)
   let digest = ethersUtils.hashMessage(hashMessage)
-  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs)
+  const channelId = deriveDeterministicChannelId(normalizeTxId(txId), txTimestampMs, networkNowSec())
   const channelPassword = deriveDeterministicChannelPassword(channelId, cryptoInitKey)
 
   const preSign = reconcileTxStatusWithLocalDB(txId, 'pre-sign')
@@ -1915,7 +1920,7 @@ async function processTokenToCoin(
   const signedTxId = crypto.hashObj(signedTx as SignedTx, true)
   console.log('Transaction Id:', signedTxId)
 
-  const now = Date.now()
+  const now = networkNowMs()
   if (tx.timestamp < now) {
     console.warn(`[processTokenToCoin] Signed tx timestamp already expired for ${txId} (ts=${tx.timestamp}, now=${now}), aborting submission`)
     return 'incompleted'
@@ -1936,6 +1941,7 @@ async function processTokenToCoin(
     res = await retryOperation(() => injectLiberdusTx(signedTxId, signedTx as SignedTx), {
       txId: signedTxId,
       maxRetries: 3,
+      shouldRetry: (error: Error) => !isLiberdusTimestampOutOfRangeReason(error.message),
     })
     console.log(`Liberdus transaction injected from ${sourceChainName}`, signedTxId, res)
   } catch (error) {
@@ -1946,6 +1952,11 @@ async function processTokenToCoin(
     )
 
     res = {success: false, reason}
+  }
+
+  if (!res.success && isLiberdusTimestampOutOfRangeReason(res.reason)) {
+    console.warn(`[processTokenToCoin] Liberdus rejected ${signedTxId} with timestamp out of range; retrying ${txId} later with a fresh timestamp and signature`)
+    return 'incompleted'
   }
 
   const liberdusTssSender = sourceChainState.config.tssSenderAddress
@@ -2164,7 +2175,7 @@ function deriveLocalFutureTimestamp(currentCycleRecord: {start: number; duration
   console.log(`  Cycle end timestamp: ${new Date(cycleEndTimestamp).toISOString()} (${cycleEndTimestamp}) (cycle start: ${currentCycleRecord.start}, duration: ${currentCycleRecord.duration})`)
   let futureTimestamp = cycleEndTimestamp + LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
   console.log(`  Derived future timestamp: ${new Date(futureTimestamp).toISOString()} (${futureTimestamp})`)
-  const currentTimestamp = Date.now()
+  const currentTimestamp = networkNowMs()
   console.log(`  Current timestamp: ${new Date(currentTimestamp).toISOString()} (${currentTimestamp})`)
   while (futureTimestamp < currentTimestamp) {
     futureTimestamp += LIBERDUS_TIMESTAMP_MIN_FUTURE_MS
@@ -2264,6 +2275,7 @@ function calculateChatId(from: string, to: string): string {
 }
 
 async function main(): Promise<void> {
+  await initializeNetworkTimeOrExit()
   await chainRpcConfig.startupReady
 
   console.log('Signing backend: BNB TSS')

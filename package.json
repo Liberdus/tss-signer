@@ -29,7 +29,7 @@
     "tss-describe": "npm run compile && node dist/tss-tools/describe.js",
     "tss-verify": "npm run compile && node dist/tss-tools/verify.js",
     "tss-sign-ethereum-tx": "npm run compile && node dist/tss-tools/sign-ethereum-tx.js",
-    "test:tss-tools": "node dist/tss-tools/lib/committeeTopology.test.js && node dist/tss-tools/lib/channelId.test.js && node dist/tss-tools/lib/keygenCeremony.test.js && node dist/scripts/tss-connectivity-check.test.js && node dist/scripts/tss-regroup-connectivity-check.test.js && node dist/scripts/operator-admin.test.js && node dist/shared/utils/observerPeers.test.js && node dist/shared/lib/redactForLog.test.js && node dist/tss-tools/lib/regroupCeremony.test.js && node dist/tss-tools/lib/tssPartyDefaults.test.js && node dist/tss-tools/lib/bnbTss.test.js && node dist/observer/admin.test.js && node dist/observer/cors.test.js && node dist/observer/bridgeInRateLimit.test.js && node dist/shared/lib/providerHealthCheck.test.js && node dist/shared/chainRpc.test.js && node dist/scripts/lib/checkCustomProviders.test.js && bash ./tss-tools/setup-mise-go.test.sh",
+    "test:tss-tools": "node dist/tss-tools/lib/committeeTopology.test.js && node dist/tss-tools/lib/channelId.test.js && node dist/tss-tools/lib/keygenCeremony.test.js && node dist/scripts/tss-connectivity-check.test.js && node dist/scripts/tss-regroup-connectivity-check.test.js && node dist/scripts/operator-admin.test.js && node dist/shared/utils/observerPeers.test.js && node dist/shared/utils/networkTime.test.js && node dist/shared/lib/redactForLog.test.js && node dist/tss-tools/lib/regroupCeremony.test.js && node dist/tss-tools/lib/tssPartyDefaults.test.js && node dist/tss-tools/lib/bnbTss.test.js && node dist/observer/admin.test.js && node dist/observer/cors.test.js && node dist/observer/bridgeInRateLimit.test.js && node dist/shared/lib/providerHealthCheck.test.js && node dist/shared/chainRpc.test.js && node dist/scripts/lib/checkCustomProviders.test.js && bash ./tss-tools/setup-mise-go.test.sh",
     "start-tss": "npm run compile && pm2 start ecosystem.config.js",
     "stop-tss": "pm2 stop ecosystem.config.js",
     "restart-tss": "npm run compile && pm2 restart ecosystem.config.js",
@@ -56,6 +56,7 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "@hapi/sntp": "3.1.1",
     "@shardus/crypto-utils": "^4.1.6",
     "axios": "^1.8.4",
     "better-sqlite3": "^9.4.3",
