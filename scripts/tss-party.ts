@@ -19,6 +19,7 @@ import {
 import {resolveProjectRoot} from '../shared/utils/paths'
 import {startDriftResistantScheduler} from '../shared/utils/scheduler'
 import {initializeNetworkTimeOrExit, networkNowMs, networkNowSec} from '../shared/utils/networkTime'
+import {retryStartupRpcOperation} from '../shared/utils/startupRetry'
 import {toEthereumAddress, toShardusAddress} from '../shared/utils/transformAddress'
 import {isNormalizedTxId, normalizeTxId} from '../shared/utils/transformTxId'
 import {deriveDeterministicChannelId, deriveDeterministicChannelPassword, DEFAULT_SHARDUS_CRYPTO_HASH_KEY} from '../tss-tools/lib/channelId'
@@ -373,7 +374,10 @@ async function fetchStartupBridgeState(): Promise<void> {
   for (const [chainId] of chainStateByChainId.entries()) {
     if (!chainConfigs.enableLiberdusNetwork && chainId === chainConfigs.vaultChain!.chainId) continue
     console.log(`Fetching bridge state for chain ${chainId}`)
-    await fetchBridgeState(chainId)
+    await retryStartupRpcOperation(
+      `fetch bridge state for chain ${chainId}`,
+      () => fetchBridgeState(chainId),
+    )
   }
 }
 
@@ -709,7 +713,10 @@ function nonceManagerKey(chainId: number, tssSender: string): string {
 }
 
 async function initNonceManager(chainId: number, tssSender: string): Promise<void> {
-  const chainNonce = await getLatestChainNonce(chainId, tssSender)
+  const chainNonce = await retryStartupRpcOperation(
+    `initialize nonce manager for chain ${chainId} sender ${tssSender}`,
+    () => getLatestChainNonce(chainId, tssSender),
+  )
   const key = nonceManagerKey(chainId, tssSender)
   nonceManager.set(key, chainNonce)
   console.log(`[nonce-manager] Initialized ${key} -> nonce ${chainNonce}`)
@@ -2276,7 +2283,12 @@ function calculateChatId(from: string, to: string): string {
 
 async function main(): Promise<void> {
   await initializeNetworkTimeOrExit()
-  await chainRpcConfig.startupReady
+  try {
+    await chainRpcConfig.startupReady
+  } catch (error) {
+    console.error('[startup-rpc] RPC provider startup health check failed:', error)
+    process.exit(1)
+  }
 
   console.log('Signing backend: BNB TSS')
   if (useDefaultSlotPath) {
