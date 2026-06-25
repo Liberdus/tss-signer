@@ -26,9 +26,10 @@ function testResolveCustomProviderConfigDirDefault(): void {
 
 function testResolveCustomProviderConfigDirEnvOverride(): void {
   const previous = process.env.BNB_TSS_HOME_ROOT
-  process.env.BNB_TSS_HOME_ROOT = '/tmp/custom-bnbtss-home'
+  const customHomeRoot = '/tmp/custom-bnbtss-home'
+  process.env.BNB_TSS_HOME_ROOT = customHomeRoot
   try {
-    assert.equal(resolveCustomProviderConfigDir(), '/tmp/custom-bnbtss-home')
+    assert.equal(resolveCustomProviderConfigDir(), path.resolve(customHomeRoot))
   } finally {
     if (previous === undefined) {
       delete process.env.BNB_TSS_HOME_ROOT
