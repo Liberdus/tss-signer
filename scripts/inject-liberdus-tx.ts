@@ -284,7 +284,6 @@ function asUnsignedLiberdusTx(value: unknown): UnsignedLiberdusTx {
 }
 
 async function main(): Promise<void> {
-  await initializeNetworkTimeOrExit()
   const {flags} = parseArgs(process.argv.slice(2))
   const chainIdArg = requireStringFlag(flags, 'chain-id')
   const txFileArg = requireStringFlag(flags, 'tx-file')
@@ -310,6 +309,8 @@ async function main(): Promise<void> {
   if (partyFlag != null && (!Number.isInteger(partyIdx) || partyIdx < 1)) {
     throw new Error(`Invalid --party value: "${partyFlag}"`)
   }
+
+  await initializeNetworkTimeOrExit()
 
   const bigintFields = (requireStringFlag(flags, 'bigint-fields') || 'amount')
     .split(',')
