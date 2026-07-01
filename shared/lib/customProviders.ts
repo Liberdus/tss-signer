@@ -136,7 +136,18 @@ export function resolveCustomProviderConfigPath(chainId: number, fromDir?: strin
   if (!fileName) {
     throw new Error(`[customProviders] No provider config file defined for chainId ${chainId}`)
   }
-  return path.join(resolveCustomProviderConfigDir(fromDir), fileName)
+  const preferredPath = path.join(resolveCustomProviderConfigDir(fromDir), fileName)
+  if (fs.existsSync(preferredPath) || process.env.BNB_TSS_HOME_ROOT) {
+    return preferredPath
+  }
+
+  const legacyPath = path.join(resolveProjectRoot(fromDir ?? __dirname), fileName)
+  if (fs.existsSync(legacyPath)) {
+    console.warn(`[customProviders] Using legacy provider config path: ${legacyPath}`)
+    return legacyPath
+  }
+
+  return preferredPath
 }
 
 /**

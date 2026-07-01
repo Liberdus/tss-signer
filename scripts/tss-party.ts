@@ -1948,7 +1948,6 @@ async function processTokenToCoin(
     res = await retryOperation(() => injectLiberdusTx(signedTxId, signedTx as SignedTx), {
       txId: signedTxId,
       maxRetries: 3,
-      shouldRetry: (error: Error) => !isLiberdusTimestampOutOfRangeReason(error.message),
     })
     console.log(`Liberdus transaction injected from ${sourceChainName}`, signedTxId, res)
   } catch (error) {
@@ -2034,25 +2033,27 @@ async function retryOperation<T>(
     txId,
     maxRetries = 3,
     shouldRetry = (error: Error) => {
-      const msg = error.message
+      const msg = error.message.toLowerCase()
       // Never retry these errors — they will fail again with the same result
       const nonRetryablePatterns = [
         // Signature / auth errors
         'invalid signature',
         // Nonce errors (nonce already consumed by this or another server)
-        'Nonce too low',
+        'nonce too low',
         'nonce has already been used',
-        'NONCE_EXPIRED',
+        'nonce_expired',
         // Contract execution failures (retrying won't help)
         'reverted with reason string',
         'execution reverted',
-        'CALL_EXCEPTION',
-        'Transaction Failed',
+        'call_exception',
+        'transaction failed',
         // Insufficient funds for gas
         'insufficient funds',
-        'INSUFFICIENT_FUNDS',
+        'insufficient_funds',
         // Liberdus: tx already accepted by the network, no need to retry
-        'Transaction is already in queue',
+        'transaction is already in queue',
+        // Liberdus: tx timestamp must be regenerated before submitting again
+        'transaction timestamp out of range',
         // EVM tx already accepted by the mempool
         'already known',
       ]

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import axios from 'axios'
 import {
@@ -42,6 +44,27 @@ function testResolveCustomProviderConfigDirEnvOverride(): void {
 function testResolveCustomProviderConfigPath(): void {
   const filePath = resolveCustomProviderConfigPath(97, path.join(__dirname))
   assert.match(filePath, /providers-bsc-testnet\.json$/)
+}
+
+function testResolveCustomProviderConfigPathLegacyFallback(): void {
+  const previous = process.env.BNB_TSS_HOME_ROOT
+  delete process.env.BNB_TSS_HOME_ROOT
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-provider-path-'))
+  const legacyPath = path.join(root, 'providers-bsc-testnet.json')
+
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), '{}\n')
+    fs.writeFileSync(path.join(root, 'chain-config.json'), '{}\n')
+    fs.writeFileSync(legacyPath, '{"chainId":97,"providers":[]}\n')
+    assert.equal(resolveCustomProviderConfigPath(97, root), legacyPath)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    if (previous === undefined) {
+      delete process.env.BNB_TSS_HOME_ROOT
+    } else {
+      process.env.BNB_TSS_HOME_ROOT = previous
+    }
+  }
 }
 
 function testResolveHealthCheckIntervalMsDefault(): void {
@@ -315,6 +338,7 @@ async function run(): Promise<void> {
   testResolveCustomProviderConfigDirDefault()
   testResolveCustomProviderConfigDirEnvOverride()
   testResolveCustomProviderConfigPath()
+  testResolveCustomProviderConfigPathLegacyFallback()
   testResolveHealthCheckIntervalMsDefault()
   testResolveHealthCheckIntervalMsCustom()
   testParseEthBlockNumberResultValidHex()
