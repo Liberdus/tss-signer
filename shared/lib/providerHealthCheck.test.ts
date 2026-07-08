@@ -19,6 +19,11 @@ import {
   runCustomProviderHealthCheck,
   runStartupProviderHealthCheck,
 } from './providerHealthCheck'
+import {
+  buildTssProviderAlertPayload,
+  classifyTssProviderHealth,
+  sendTssProviderAlert,
+} from './tssProviderAlert'
 import { addHttpUrls, getHttpUrls, removeHttpUrls } from './rpcUrls'
 
 function testResolveCustomProviderConfigDirDefault(): void {
@@ -209,6 +214,7 @@ async function testRunCustomProviderHealthCheckOutcomes(): Promise<void> {
   )
   assert.deepEqual(allFail, [{
     chainId: 97,
+    chainName: 'BSC Testnet',
     configuredCount: 1,
     healthyCount: 0,
     probes: [{
@@ -235,6 +241,7 @@ async function testRunCustomProviderHealthCheckOutcomes(): Promise<void> {
   )
   assert.deepEqual(onePass, [{
     chainId: 97,
+    chainName: 'BSC Testnet',
     configuredCount: 1,
     healthyCount: 1,
     probes: [{
@@ -249,10 +256,87 @@ async function testRunCustomProviderHealthCheckOutcomes(): Promise<void> {
   const emptySnapshot = await runCustomProviderHealthCheck(chains, () => [])
   assert.deepEqual(emptySnapshot, [{
     chainId: 97,
+    chainName: 'BSC Testnet',
     configuredCount: 0,
     healthyCount: 0,
     probes: [],
   }])
+}
+
+function testTssProviderAlertClassification(): void {
+  assert.equal(classifyTssProviderHealth(4, 10), 'warning')
+  assert.equal(classifyTssProviderHealth(2, 10), 'emergency')
+  assert.equal(classifyTssProviderHealth(5, 10), null)
+  assert.equal(classifyTssProviderHealth(0, 0), null)
+}
+
+function testTssProviderAlertSanitization(): void {
+  const payload = buildTssProviderAlertPayload(
+    [{
+      chainId: 97,
+      chainName: 'BSC Testnet',
+      configuredCount: 5,
+      healthyCount: 2,
+      probes: [
+        { name: 'alchemy', url: 'https://alchemy.example/key', pass: false, latencyMs: 1, error: 'down' },
+        { name: 'https://leak.example/key', url: 'https://leak.example/key', pass: false, latencyMs: 1, error: 'down' },
+        { name: 'verylongapikeyvalue12345678901234567890', url: 'https://key.example/rpc', pass: false, latencyMs: 1, error: 'down' },
+        { name: 'healthy', url: 'https://healthy.example/rpc', pass: true, latencyMs: 1, blockNumber: 1 },
+      ],
+    }],
+    { instanceId: 'tss-1', hostname: 'host-1', generatedAt: '2026-07-08T20:00:00.000Z' },
+  )
+
+  assert.ok(payload)
+  assert.deepEqual(payload.chains[0].failedProviders, ['alchemy'])
+  assert.equal(JSON.stringify(payload).includes('https://'), false)
+  assert.equal(JSON.stringify(payload).includes('verylongapikeyvalue'), false)
+  assert.equal(JSON.stringify(payload).includes('healthy'), false)
+}
+
+async function testSendTssProviderAlert(): Promise<void> {
+  const warningPayload = buildTssProviderAlertPayload(
+    [{
+      chainId: 97,
+      chainName: 'BSC Testnet',
+      configuredCount: 10,
+      healthyCount: 4,
+      probes: [
+        { name: 'alchemy', url: 'https://alchemy.example/rpc', pass: false, latencyMs: 1, error: 'down' },
+      ],
+    }],
+    { instanceId: 'tss-1', hostname: 'host-1', generatedAt: '2026-07-08T20:00:00.000Z' },
+  )
+  let postedUrl = ''
+  let postedHeaders: Record<string, string> = {}
+  const sent = await sendTssProviderAlert(warningPayload, {
+    statusServerBaseUrl: 'http://status-server:6969/',
+    token: 'shared-secret',
+    post: (async (url: string, _body: unknown, options: { headers: Record<string, string> }) => {
+      postedUrl = url
+      postedHeaders = options.headers
+      return { data: { ok: true } }
+    }) as typeof axios.post,
+  })
+  assert.equal(sent, true)
+  assert.equal(postedUrl, 'http://status-server:6969/api/tss-provider-health/alert')
+  assert.equal(postedHeaders.Authorization, 'Bearer shared-secret')
+
+  const healthyPayload = buildTssProviderAlertPayload([{
+    chainId: 97,
+    chainName: 'BSC Testnet',
+    configuredCount: 10,
+    healthyCount: 5,
+    probes: [],
+  }])
+  assert.equal(healthyPayload, null)
+  assert.equal(await sendTssProviderAlert(healthyPayload, {
+    statusServerBaseUrl: 'http://status-server:6969',
+    token: 'shared-secret',
+    post: (async () => {
+      throw new Error('should not post')
+    }) as typeof axios.post,
+  }), false)
 }
 
 async function testRunStartupProviderHealthCheckPrunesFailedUrls(): Promise<void> {
@@ -351,10 +435,13 @@ async function run(): Promise<void> {
   testGetFatalCustomProviderFailuresNonCustomModes()
   testHandleFatalCustomProviderFailures()
   testPruneFailedProbeUrls()
+  testTssProviderAlertClassification()
+  testTssProviderAlertSanitization()
   await testRunCustomProviderHealthCheckOutcomes()
   await testRunStartupProviderHealthCheckPrunesFailedUrls()
   await testProbeProviderUrlPostsBatchJsonRpc()
   await testProbeProviderUrlFailsOnChainIdMismatch()
+  await testSendTssProviderAlert()
   console.log('providerHealthCheck tests passed')
 }
 

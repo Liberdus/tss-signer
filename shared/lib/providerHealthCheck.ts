@@ -3,6 +3,7 @@ import { ChainConfig } from '../config'
 import { ResolvedProviderUrl } from './customProviders'
 import { redactRpcUrlForLog } from './redactForLog'
 import { removeHttpUrls, scrubUrls } from './rpcUrls'
+import { buildTssProviderAlertPayload, sendTssProviderAlert } from './tssProviderAlert'
 
 export const DEFAULT_HEALTH_CHECK_INTERVAL_HOURS = 24
 const PROBE_TIMEOUT_MS = 15_000
@@ -41,6 +42,7 @@ export interface ProviderProbeResult {
 
 export interface ChainHealthCheckOutcome {
   chainId: number
+  chainName?: string
   configuredCount: number
   healthyCount: number
 }
@@ -312,6 +314,7 @@ export async function runCustomProviderHealthCheck(
       )
       results.push({
         chainId: chain.chainId,
+        chainName: chain.name,
         configuredCount: 0,
         healthyCount: 0,
         probes: [],
@@ -329,6 +332,7 @@ export async function runCustomProviderHealthCheck(
 
     results.push({
       chainId: chain.chainId,
+      chainName: chain.name,
       configuredCount: entries.length,
       healthyCount: probes.filter((probe) => probe.pass).length,
       probes,
@@ -385,6 +389,12 @@ export function startCustomProviderHealthCheck(
               getFatalCustomProviderFailures(results, options.rpcProviderMode),
               exit,
             )
+            return sendTssProviderAlert(buildTssProviderAlertPayload(results))
+          })
+          .then((sent) => {
+            if (sent) {
+              console.log('[providerHealthCheck] Sent TSS provider health alert to status-server')
+            }
           })
           .catch((err) => {
             console.warn(`[providerHealthCheck] Health check failed: ${(err as Error).message}`)
