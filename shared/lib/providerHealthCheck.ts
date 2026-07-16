@@ -55,6 +55,7 @@ export interface CustomProviderHealthCheckOptions {
   intervalHours?: number
   rpcProviderMode: RpcProviderMode
   exit?: (code: number) => void
+  sendAlert?: typeof sendTssProviderAlert
 }
 
 export interface RunCustomProviderHealthCheckOptions {
@@ -351,11 +352,28 @@ export async function runStartupProviderHealthCheck(
     probeFn: options.probeFn,
   })
   pruneFailedProbeUrls(results)
-  handleFatalCustomProviderFailures(
-    getFatalCustomProviderFailures(results, options.rpcProviderMode),
-    options.exit ?? process.exit,
-  )
+  await sendProviderHealthAlertAndHandleFatal(results, options)
   return results
+}
+
+async function sendProviderHealthAlertAndHandleFatal(
+  results: ChainHealthCheckRunResult[],
+  options: CustomProviderHealthCheckOptions,
+): Promise<void> {
+  const failures = getFatalCustomProviderFailures(results, options.rpcProviderMode)
+  try {
+    const sendAlert = options.sendAlert ?? sendTssProviderAlert
+    const sent = await sendAlert(buildTssProviderAlertPayload(results))
+    if (sent) {
+      console.log('[providerHealthCheck] Sent TSS provider health alert to status-server')
+    }
+  } catch (err) {
+    console.warn(
+      `[providerHealthCheck] TSS provider health alert delivery failed: ${(err as Error).message}`,
+    )
+  } finally {
+    handleFatalCustomProviderFailures(failures, options.exit ?? process.exit)
+  }
 }
 
 export function resolveHealthCheckIntervalMs(intervalHours?: number): number {
@@ -384,18 +402,10 @@ export function startCustomProviderHealthCheck(
     .then(() => {
       interval = setInterval(() => {
         void runCustomProviderHealthCheck(chains, getResolvedProviders)
-          .then((results) => {
-            handleFatalCustomProviderFailures(
-              getFatalCustomProviderFailures(results, options.rpcProviderMode),
-              exit,
-            )
-            return sendTssProviderAlert(buildTssProviderAlertPayload(results))
-          })
-          .then((sent) => {
-            if (sent) {
-              console.log('[providerHealthCheck] Sent TSS provider health alert to status-server')
-            }
-          })
+          .then((results) => sendProviderHealthAlertAndHandleFatal(results, {
+            ...options,
+            exit,
+          }))
           .catch((err) => {
             console.warn(`[providerHealthCheck] Health check failed: ${(err as Error).message}`)
           })

@@ -114,12 +114,37 @@ export async function sendTssProviderAlert(
 ): Promise<boolean> {
   if (!payload || payload.chains.length === 0) return false
 
+  const maxSeverity = payload.chains.some((chain) => chain.severity === 'emergency')
+    ? 'emergency'
+    : 'warning'
+  const chainSummary = payload.chains.map((chain) => {
+    const failedProviders = chain.failedProviders.length > 0
+      ? chain.failedProviders.join(', ')
+      : '(none reported)'
+    return `${chain.chainName} (${chain.chainId}): ${chain.activeProviderCount}/${chain.totalProviderCount} active (${chain.activeProviderPercentage}%) severity=${chain.severity} failedProviders=${failedProviders}`
+  }).join('; ')
+  console.log(
+    `[tssProviderAlert] Discord alert preview: severity=${maxSeverity}; ${chainSummary}`,
+  )
+
   const statusServerBaseUrl = options.statusServerBaseUrl || process.env.STATUS_SERVER_BASE_URL
   const token = options.token || process.env.TSS_PROVIDER_ALERT_TOKEN
-  if (!statusServerBaseUrl || !token) return false
+  if (!statusServerBaseUrl || !token) {
+    const missing = [
+      !statusServerBaseUrl ? 'STATUS_SERVER_BASE_URL' : null,
+      !token ? 'TSS_PROVIDER_ALERT_TOKEN' : null,
+    ].filter((name): name is string => name != null)
+    console.warn(
+      `[tssProviderAlert] Skipped Discord alert delivery: missing ${missing.join(', ')}`,
+    )
+    return false
+  }
 
   const base = statusServerBaseUrl.replace(/\/+$/, '')
   const post = options.post || axios.post
+  console.log(
+    `[tssProviderAlert] Attempting Discord alert delivery via status-server for ${payload.chains.length} chain(s)`,
+  )
   await post(`${base}/api/tss-provider-health/alert`, payload, {
     headers: {
       Authorization: `Bearer ${token}`,

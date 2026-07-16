@@ -309,16 +309,28 @@ async function testSendTssProviderAlert(): Promise<void> {
   )
   let postedUrl = ''
   let postedHeaders: Record<string, string> = {}
-  const sent = await sendTssProviderAlert(warningPayload, {
-    statusServerBaseUrl: 'http://status-server:6969/',
-    token: 'shared-secret',
-    post: (async (url: string, _body: unknown, options: { headers: Record<string, string> }) => {
-      postedUrl = url
-      postedHeaders = options.headers
-      return { data: { ok: true } }
-    }) as typeof axios.post,
-  })
+  const originalLog = console.log
+  const logs: string[] = []
+  console.log = (message?: unknown) => logs.push(String(message))
+  let sent: boolean
+  try {
+    sent = await sendTssProviderAlert(warningPayload, {
+      statusServerBaseUrl: 'http://status-server:6969/',
+      token: 'shared-secret',
+      post: (async (url: string, _body: unknown, options: { headers: Record<string, string> }) => {
+        postedUrl = url
+        postedHeaders = options.headers
+        return { data: { ok: true } }
+      }) as typeof axios.post,
+    })
+  } finally {
+    console.log = originalLog
+  }
   assert.equal(sent, true)
+  assert.deepEqual(logs, [
+    '[tssProviderAlert] Discord alert preview: severity=warning; BSC Testnet (97): 4/10 active (40%) severity=warning failedProviders=alchemy',
+    '[tssProviderAlert] Attempting Discord alert delivery via status-server for 1 chain(s)',
+  ])
   assert.equal(postedUrl, 'http://status-server:6969/api/tss-provider-health/alert')
   assert.equal(postedHeaders.Authorization, 'Bearer shared-secret')
 
@@ -337,6 +349,46 @@ async function testSendTssProviderAlert(): Promise<void> {
       throw new Error('should not post')
     }) as typeof axios.post,
   }), false)
+}
+
+async function testSendTssProviderAlertLogsMissingConfiguration(): Promise<void> {
+  const payload = buildTssProviderAlertPayload(
+    [{
+      chainId: 97,
+      chainName: 'BSC Testnet',
+      configuredCount: 4,
+      healthyCount: 1,
+      probes: [],
+    }],
+    { instanceId: 'tss-1', hostname: 'host-1' },
+  )
+  const previousBaseUrl = process.env.STATUS_SERVER_BASE_URL
+  const previousToken = process.env.TSS_PROVIDER_ALERT_TOKEN
+  const originalWarn = console.warn
+  const originalLog = console.log
+  const warnings: string[] = []
+  const logs: string[] = []
+  delete process.env.STATUS_SERVER_BASE_URL
+  delete process.env.TSS_PROVIDER_ALERT_TOKEN
+  console.warn = (message?: unknown) => warnings.push(String(message))
+  console.log = (message?: unknown) => logs.push(String(message))
+
+  try {
+    assert.equal(await sendTssProviderAlert(payload), false)
+    assert.deepEqual(logs, [
+      '[tssProviderAlert] Discord alert preview: severity=warning; BSC Testnet (97): 1/4 active (25%) severity=warning failedProviders=(none reported)',
+    ])
+    assert.deepEqual(warnings, [
+      '[tssProviderAlert] Skipped Discord alert delivery: missing STATUS_SERVER_BASE_URL, TSS_PROVIDER_ALERT_TOKEN',
+    ])
+  } finally {
+    console.warn = originalWarn
+    console.log = originalLog
+    if (previousBaseUrl === undefined) delete process.env.STATUS_SERVER_BASE_URL
+    else process.env.STATUS_SERVER_BASE_URL = previousBaseUrl
+    if (previousToken === undefined) delete process.env.TSS_PROVIDER_ALERT_TOKEN
+    else process.env.TSS_PROVIDER_ALERT_TOKEN = previousToken
+  }
 }
 
 async function testRunStartupProviderHealthCheckPrunesFailedUrls(): Promise<void> {
@@ -364,6 +416,113 @@ async function testRunStartupProviderHealthCheckPrunesFailedUrls(): Promise<void
   )
 
   assert.deepEqual(getHttpUrls(137), ['https://keep.example/rpc'])
+}
+
+async function testRunStartupProviderHealthCheckSendsInitialAlert(): Promise<void> {
+  const entries = Array.from({ length: 5 }, (_, index) => ({
+    name: `provider-${index}`,
+    url: `https://provider-${index}.example/rpc`,
+  }))
+  const sentPayloads: unknown[] = []
+
+  await runStartupProviderHealthCheck(
+    [{ chainId: 97, name: 'BSC Testnet' }],
+    () => entries,
+    {
+      rpcProviderMode: 'both',
+      probeFn: async (entry) => ({
+        name: entry.name,
+        url: entry.url,
+        pass: entry.name.endsWith('-0') || entry.name.endsWith('-1'),
+        latencyMs: 1,
+      }),
+      sendAlert: async (payload) => {
+        sentPayloads.push(payload)
+        return true
+      },
+    },
+  )
+
+  assert.equal(sentPayloads.length, 1)
+  const payload = sentPayloads[0] as { chains: Array<{ severity: string }> }
+  assert.equal(payload.chains[0].severity, 'warning')
+}
+
+async function testFatalProviderHealthAlertIsAttemptedBeforeExit(): Promise<void> {
+  const events: string[] = []
+
+  await runStartupProviderHealthCheck(
+    [{ chainId: 97, name: 'BSC Testnet' }],
+    () => [{ name: 'provider-0', url: 'https://provider-0.example/rpc' }],
+    {
+      rpcProviderMode: 'custom',
+      probeFn: async (entry) => ({
+        name: entry.name,
+        url: entry.url,
+        pass: false,
+        latencyMs: 1,
+        error: 'down',
+      }),
+      sendAlert: async (payload) => {
+        assert.equal(payload?.chains[0].severity, 'emergency')
+        events.push('alert')
+        return true
+      },
+      exit: (code) => {
+        assert.equal(code, 1)
+        events.push('exit')
+      },
+    },
+  )
+
+  assert.deepEqual(events, ['alert', 'exit'])
+}
+
+async function testFatalProviderHealthExitRunsWhenAlertFails(): Promise<void> {
+  const events: string[] = []
+
+  await runStartupProviderHealthCheck(
+    [{ chainId: 97, name: 'BSC Testnet' }],
+    () => [{ name: 'provider-0', url: 'https://provider-0.example/rpc' }],
+    {
+      rpcProviderMode: 'custom',
+      probeFn: async (entry) => ({
+        name: entry.name,
+        url: entry.url,
+        pass: false,
+        latencyMs: 1,
+        error: 'down',
+      }),
+      sendAlert: async () => {
+        events.push('alert')
+        throw new Error('status server unavailable')
+      },
+      exit: () => events.push('exit'),
+    },
+  )
+
+  assert.deepEqual(events, ['alert', 'exit'])
+}
+
+async function testNonFatalStartupAlertFailureDoesNotReject(): Promise<void> {
+  await runStartupProviderHealthCheck(
+    [{ chainId: 97, name: 'BSC Testnet' }],
+    () => [{ name: 'provider-0', url: 'https://provider-0.example/rpc' }],
+    {
+      rpcProviderMode: 'both',
+      probeFn: async (entry) => ({
+        name: entry.name,
+        url: entry.url,
+        pass: false,
+        latencyMs: 1,
+        error: 'down',
+      }),
+      sendAlert: async () => {
+        throw new Error('status server unavailable')
+      },
+      exit: () => assert.fail('non-custom mode must not exit'),
+    },
+  )
 }
 
 async function testProbeProviderUrlPostsBatchJsonRpc(): Promise<void> {
@@ -439,9 +598,14 @@ async function run(): Promise<void> {
   testTssProviderAlertSanitization()
   await testRunCustomProviderHealthCheckOutcomes()
   await testRunStartupProviderHealthCheckPrunesFailedUrls()
+  await testRunStartupProviderHealthCheckSendsInitialAlert()
+  await testFatalProviderHealthAlertIsAttemptedBeforeExit()
+  await testFatalProviderHealthExitRunsWhenAlertFails()
+  await testNonFatalStartupAlertFailureDoesNotReject()
   await testProbeProviderUrlPostsBatchJsonRpc()
   await testProbeProviderUrlFailsOnChainIdMismatch()
   await testSendTssProviderAlert()
+  await testSendTssProviderAlertLogsMissingConfiguration()
   console.log('providerHealthCheck tests passed')
 }
 
