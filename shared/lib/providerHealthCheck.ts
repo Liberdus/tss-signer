@@ -3,6 +3,7 @@ import { ChainConfig } from '../config'
 import { ResolvedProviderUrl } from './customProviders'
 import { redactRpcUrlForLog } from './redactForLog'
 import { removeHttpUrls, scrubUrls } from './rpcUrls'
+import { writeJsonAtomically } from './atomicJson'
 
 export const DEFAULT_HEALTH_CHECK_INTERVAL_HOURS = 24
 const PROBE_TIMEOUT_MS = 15_000
@@ -53,6 +54,19 @@ export interface CustomProviderHealthCheckOptions {
   intervalHours?: number
   rpcProviderMode: RpcProviderMode
   exit?: (code: number) => void
+  reportPath?: string
+}
+
+export interface FailedProviderReportEntry {
+  chainId: number
+  chainName: string
+  providerName: string
+}
+
+export interface ProviderHealthReport {
+  checkedAt: string
+  failedProviderCount: number
+  failedProviders: FailedProviderReportEntry[]
 }
 
 export interface RunCustomProviderHealthCheckOptions {
@@ -359,6 +373,59 @@ export function resolveHealthCheckIntervalMs(intervalHours?: number): number {
   return hours * 60 * 60 * 1000
 }
 
+export function buildProviderHealthReport(
+  chains: Array<Pick<ChainConfig, 'chainId' | 'name'>>,
+  results: ChainHealthCheckRunResult[],
+  checkedAt = new Date(),
+): ProviderHealthReport {
+  const chainNames = new Map(chains.map((chain) => [chain.chainId, chain.name]))
+  const failedProviders = results.flatMap((result) =>
+    result.probes
+      .filter((probe) => !probe.pass)
+      .map((probe) => ({
+        chainId: result.chainId,
+        chainName: chainNames.get(result.chainId) ?? `Chain ${result.chainId}`,
+        providerName: probe.name,
+      })),
+  )
+  return {
+    checkedAt: checkedAt.toISOString(),
+    failedProviderCount: failedProviders.length,
+    failedProviders,
+  }
+}
+
+export function writeProviderHealthReport(
+  filePath: string,
+  chains: Array<Pick<ChainConfig, 'chainId' | 'name'>>,
+  results: ChainHealthCheckRunResult[],
+  checkedAt = new Date(),
+): ProviderHealthReport {
+  const report = buildProviderHealthReport(chains, results, checkedAt)
+  writeJsonAtomically(filePath, report)
+  return report
+}
+
+export function parseProviderHealthReport(value: unknown): ProviderHealthReport {
+  if (!value || typeof value !== 'object') throw new Error('invalid provider health report')
+  const raw = value as Partial<ProviderHealthReport>
+  if (typeof raw.checkedAt !== 'string' || !Number.isFinite(Date.parse(raw.checkedAt))) {
+    throw new Error('invalid provider health checkedAt')
+  }
+  if (!Array.isArray(raw.failedProviders)) throw new Error('invalid failedProviders')
+  const failedProviders = raw.failedProviders.map((entry) => {
+    if (!entry || typeof entry.chainId !== 'number' || !Number.isFinite(entry.chainId) ||
+        typeof entry.chainName !== 'string' || typeof entry.providerName !== 'string') {
+      throw new Error('invalid failed provider entry')
+    }
+    return {chainId: entry.chainId, chainName: entry.chainName, providerName: entry.providerName}
+  })
+  if (raw.failedProviderCount !== failedProviders.length) {
+    throw new Error('failedProviderCount does not match failedProviders')
+  }
+  return {checkedAt: raw.checkedAt, failedProviderCount: failedProviders.length, failedProviders}
+}
+
 export function startCustomProviderHealthCheck(
   chains: Array<Pick<ChainConfig, 'chainId' | 'name'>>,
   getResolvedProviders: ProviderHealthCheckSource,
@@ -377,10 +444,16 @@ export function startCustomProviderHealthCheck(
   let interval: ReturnType<typeof setInterval> | undefined
 
   const startupReady = runStartupProviderHealthCheck(chains, getResolvedProviders, options)
-    .then(() => {
+    .then((results) => {
+      if (options.reportPath) {
+        writeProviderHealthReport(options.reportPath, chains, results)
+      }
       interval = setInterval(() => {
         void runCustomProviderHealthCheck(chains, getResolvedProviders)
           .then((results) => {
+            if (options.reportPath) {
+              writeProviderHealthReport(options.reportPath, chains, results)
+            }
             handleFatalCustomProviderFailures(
               getFatalCustomProviderFailures(results, options.rpcProviderMode),
               exit,

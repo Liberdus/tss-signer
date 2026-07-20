@@ -30,6 +30,7 @@ import {deriveObserverUrl, deriveTransactionsDbPath, resolveRuntimePartyIdx} fro
 import {gossipBridgeIn} from './gossip'
 import * as TransactionDB from '../shared/storage/transactiondb'
 import {Transaction, TransactionStatus, TransactionType, ExecutionHistoryEntry} from '../shared/storage/transactiondb'
+import {resolveHeartbeatPath, startTssPartyHeartbeat} from '../shared/lib/tssHealth'
 
 const {utils: ethersUtils} = ethers
 
@@ -2283,6 +2284,7 @@ function calculateChatId(from: string, to: string): string {
 }
 
 async function main(): Promise<void> {
+  startTssPartyHeartbeat(resolveHeartbeatPath(ourParty.idx), ourParty.idx)
   await initializeNetworkTimeOrExit()
   try {
     await chainRpcConfig.startupReady

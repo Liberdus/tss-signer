@@ -9,6 +9,7 @@ import {
 } from './customProviders'
 import {
   DEFAULT_HEALTH_CHECK_INTERVAL_HOURS,
+  buildProviderHealthReport,
   getFatalCustomProviderFailures,
   handleFatalCustomProviderFailures,
   parseEthBlockNumberResult,
@@ -76,6 +77,29 @@ function testResolveHealthCheckIntervalMsDefault(): void {
 
 function testResolveHealthCheckIntervalMsCustom(): void {
   assert.equal(resolveHealthCheckIntervalMs(12), 12 * 60 * 60 * 1000)
+}
+
+function testProviderHealthReportIsMinimalAndCounted(): void {
+  const canary = 'https://rpc.example/SECRET_API_KEY'
+  const report = buildProviderHealthReport(
+    [{chainId: 97, name: 'BSC Testnet'}],
+    [{
+      chainId: 97,
+      configuredCount: 2,
+      healthyCount: 1,
+      probes: [
+        {name: 'alchemy', url: canary, pass: false, latencyMs: 1, error: canary},
+        {name: 'drpc', url: 'https://healthy.example', pass: true, latencyMs: 1},
+      ],
+    }],
+    new Date('2026-07-20T12:00:00.000Z'),
+  )
+  assert.deepEqual(report, {
+    checkedAt: '2026-07-20T12:00:00.000Z',
+    failedProviderCount: 1,
+    failedProviders: [{chainId: 97, chainName: 'BSC Testnet', providerName: 'alchemy'}],
+  })
+  assert.equal(JSON.stringify(report).includes('SECRET_API_KEY'), false)
 }
 
 function testParseEthBlockNumberResultValidHex(): void {
@@ -341,6 +365,7 @@ async function run(): Promise<void> {
   testResolveCustomProviderConfigPathLegacyFallback()
   testResolveHealthCheckIntervalMsDefault()
   testResolveHealthCheckIntervalMsCustom()
+  testProviderHealthReportIsMinimalAndCounted()
   testParseEthBlockNumberResultValidHex()
   testParseEthBlockNumberResultInvalid()
   testParseEthChainIdResultValidHex()

@@ -31,6 +31,13 @@ import { startDriftResistantScheduler } from "../shared/utils/scheduler";
 import { AdminContext, createAdminContext, createAdminRouter } from "./admin";
 import { createObserverCorsOptions } from "./cors";
 import { observerChainRpc } from "./chainRpc";
+import {
+  buildCombinedProcessHealth,
+  readPairedProcessHealth,
+  resolveHeartbeatPath,
+  resolveProviderHealthPath,
+} from "../shared/lib/tssHealth";
+import { parseProviderHealthReport } from "../shared/lib/providerHealthCheck";
 
 // ---------------------------------------------------------------------------
 // Timestamped console logs
@@ -131,9 +138,16 @@ app.get("/health", (_req, res) => {
   try {
     const counts = TransactionDB.getTransactionCountsByStatus();
     const mem = process.memoryUsage();
-    res.json({
-      status: syncReady ? "ready" : "syncing",
+    const paired = readPairedProcessHealth(resolveHeartbeatPath(PARTY_INDEX), PARTY_INDEX);
+    const combined = buildCombinedProcessHealth(syncReady, paired);
+    res.status(combined.statusCode).json({
+      status: combined.status,
       partyIndex: PARTY_INDEX,
+      observer: {
+        healthy: combined.observer.healthy,
+        syncStatus: syncReady ? "ready" : "syncing",
+      },
+      tssParty: combined.tssParty,
       uptime: Math.floor(process.uptime()),
       monitorState: {
         blocks: monitorState.blocks,
@@ -152,7 +166,21 @@ app.get("/health", (_req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ Err: "Failed to collect health data" });
+    res.status(503).json({
+      status: "unhealthy",
+      partyIndex: PARTY_INDEX,
+      observer: { healthy: false, syncStatus: syncReady ? "ready" : "syncing" },
+      tssParty: readPairedProcessHealth(resolveHeartbeatPath(PARTY_INDEX), PARTY_INDEX),
+    });
+  }
+});
+
+app.get("/provider-health", (_req, res) => {
+  try {
+    const raw = JSON.parse(fs.readFileSync(resolveProviderHealthPath(PARTY_INDEX), "utf8"));
+    res.json(parseProviderHealthReport(raw));
+  } catch (_error) {
+    res.status(503).json({ Err: "Provider health report unavailable" });
   }
 });
 
