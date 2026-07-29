@@ -212,6 +212,12 @@ export function isEthGetLogsRangeLimitError(error: unknown): boolean {
   }
   if (/upgrade to payg for expanded block range/.test(text)) return true;
 
+  // dRPC BSC Testnet returns code 19 with a generic "Temporary internal error"
+  // when eth_getLogs spans more blocks than the endpoint accepts. Keep this
+  // scoped to eth_getLogs so an unrelated dRPC internal error is not mistaken
+  // for a range restriction.
+  if (code === 19 && /temporary internal error/.test(text)) return true;
+
   // Other providers
   if (/eth_getlogs.*block range|block range.*eth_getlogs/.test(text)) return true;
   if (/query returned more than \d+ blocks|block range too (large|wide)/.test(text)) return true;

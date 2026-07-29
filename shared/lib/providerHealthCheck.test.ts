@@ -306,6 +306,62 @@ async function testRunStartupProviderHealthCheckPrunesFailedUrls(): Promise<void
   assert.deepEqual(getHttpUrls(137), ['https://keep.example/rpc'])
 }
 
+async function testStartupFailureWritesReportBeforeExit(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tss-provider-report-'))
+  const reportPath = path.join(root, 'provider-health.json')
+  let exitCode: number | undefined
+  try {
+    await runStartupProviderHealthCheck(
+      [{chainId: 97, name: 'BSC Testnet'}],
+      () => [{name: 'provider-a', url: 'https://rpc.example/SECRET_API_KEY'}],
+      {
+        rpcProviderMode: 'custom',
+        reportPath,
+        exit: (code) => { exitCode = code },
+        probeFn: async (entry) => ({
+          name: entry.name,
+          url: entry.url,
+          pass: false,
+          latencyMs: 1,
+          error: 'SECRET_API_KEY https://leak.invalid',
+        }),
+      },
+    )
+    assert.equal(exitCode, 1)
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+    assert.equal(report.failedProviderCount, 1)
+    assert.equal(report.failedProviders[0].providerName, 'provider-a')
+    assert.equal(JSON.stringify(report).includes('SECRET_API_KEY'), false)
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true})
+  }
+}
+
+async function testProviderLogsDoNotLeakProbeErrorsOrUrls(): Promise<void> {
+  const originalWarn = console.warn
+  const lines: string[] = []
+  console.warn = (...args: unknown[]) => lines.push(args.join(' '))
+  try {
+    await runCustomProviderHealthCheck(
+      [{chainId: 97, name: 'BSC Testnet'}],
+      () => [{name: 'provider-a', url: 'https://rpc.example/SECRET_API_KEY'}],
+      {probeFn: async (entry) => ({
+        name: entry.name,
+        url: entry.url,
+        pass: false,
+        latencyMs: 1,
+        error: 'SECRET_API_KEY https://leak.invalid',
+      })},
+    )
+    const output = lines.join('\n')
+    assert.equal(output.includes('SECRET_API_KEY'), false)
+    assert.equal(output.includes('leak.invalid'), false)
+    assert.equal(output.includes('rpc.example'), false)
+  } finally {
+    console.warn = originalWarn
+  }
+}
+
 async function testProbeProviderUrlPostsBatchJsonRpc(): Promise<void> {
   const originalPost = axios.post
   let postedBody: unknown
@@ -378,6 +434,8 @@ async function run(): Promise<void> {
   testPruneFailedProbeUrls()
   await testRunCustomProviderHealthCheckOutcomes()
   await testRunStartupProviderHealthCheckPrunesFailedUrls()
+  await testStartupFailureWritesReportBeforeExit()
+  await testProviderLogsDoNotLeakProbeErrorsOrUrls()
   await testProbeProviderUrlPostsBatchJsonRpc()
   await testProbeProviderUrlFailsOnChainIdMismatch()
   console.log('providerHealthCheck tests passed')

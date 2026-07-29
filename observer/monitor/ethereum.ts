@@ -5,6 +5,7 @@ import { toEthereumAddress } from "../../shared/utils/transformAddress";
 import { normalizeTxId } from "../../shared/utils/transformTxId";
 import { observerChainRpc } from "../chainRpc";
 import { monitorState, saveMonitorState } from "./state";
+import { isEthGetLogsRangeLimitError } from "../../shared/lib/rpcUrls";
 
 const BRIDGE_OUT_EVENT_ABI =
   "event BridgedOut(address indexed from, uint256 amount, address indexed targetAddress, uint256 indexed chainId, uint256 timestamp)";
@@ -20,7 +21,9 @@ const BRIDGE_IN_IFACE = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
 const BRIDGE_IN_CALL_IFACE = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 const INITIAL_BATCH_SIZE = 2000;
-const MIN_BATCH_SIZE = 100;
+// Alchemy free-tier and dRPC BSC Testnet endpoints accept eth_getLogs over
+// 10-block windows but reject larger ranges.
+const MIN_BATCH_SIZE = 10;
 const MAX_BATCH_SIZE = 5000;
 const BASE_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 30_000;
@@ -145,6 +148,7 @@ export async function monitorEthereumBridgeOutQueryFilter(
           const errorCode = error?.error?.code ?? error?.code;
           const errorMessage = String(error?.message ?? "").toLowerCase();
           const isRateLimit =
+            isEthGetLogsRangeLimitError(error) ||
             errorCode === -32005 ||
             errorCode === -16412 ||
             errorMessage.includes("limit exceeded") ||
@@ -351,6 +355,7 @@ export async function monitorEthereumBridgeInQueryFilter(
           const errorCode = error?.error?.code ?? error?.code;
           const errorMessage = String(error?.message ?? "").toLowerCase();
           const isRateLimit =
+            isEthGetLogsRangeLimitError(error) ||
             errorCode === -32005 ||
             errorCode === -16412 ||
             errorMessage.includes("limit exceeded") ||

@@ -1,7 +1,6 @@
 import axios from 'axios'
 import { ChainConfig } from '../config'
 import { ResolvedProviderUrl } from './customProviders'
-import { redactRpcUrlForLog } from './redactForLog'
 import { removeHttpUrls, scrubUrls } from './rpcUrls'
 import { writeJsonAtomically } from './atomicJson'
 
@@ -246,19 +245,17 @@ export async function probeProviderUrl(
 
 function logProbeResult(chainId: number, result: ProviderProbeResult): void {
   const status = result.pass ? 'pass' : 'fail'
-  const url = redactRpcUrlForLog(result.url)
   const latency = `latencyMs=${result.latencyMs}`
   const block =
     result.blockNumber != null ? ` blockNumber=${result.blockNumber}` : ''
   if (result.pass) {
     console.log(
-      `[providerHealthCheck] chainId=${chainId} provider=${result.name} status=${status}${block} ${latency} url=${url}`,
+      `[providerHealthCheck] chainId=${chainId} provider=${result.name} status=${status}${block} ${latency}`,
     )
     return
   }
-  const error = result.error ? ` error=${result.error}` : ''
   console.warn(
-    `[providerHealthCheck] chainId=${chainId} provider=${result.name} status=${status} ${latency}${error} url=${url}`,
+    `[providerHealthCheck] chainId=${chainId} provider=${result.name} status=${status} ${latency} failure=probe-failed`,
   )
 }
 
@@ -297,10 +294,8 @@ export function pruneFailedProbeUrls(results: ChainHealthCheckRunResult[]): numb
     if (removed === 0) continue
 
     for (const probe of failedProbes) {
-      const url = redactRpcUrlForLog(probe.url)
-      const reason = probe.error ? ` reason=${probe.error}` : ''
       console.warn(
-        `[providerHealthCheck] Removed provider from chainId=${result.chainId} RPC pool after startup probe: provider=${probe.name}${reason} url=${url}`,
+        `[providerHealthCheck] Removed provider from chainId=${result.chainId} RPC pool after startup probe: provider=${probe.name} failure=probe-failed`,
       )
     }
     console.warn(
@@ -361,6 +356,9 @@ export async function runStartupProviderHealthCheck(
     probeFn: options.probeFn,
   })
   pruneFailedProbeUrls(results)
+  if (options.reportPath) {
+    writeProviderHealthReport(options.reportPath, chains, results)
+  }
   handleFatalCustomProviderFailures(
     getFatalCustomProviderFailures(results, options.rpcProviderMode),
     options.exit ?? process.exit,
@@ -445,9 +443,6 @@ export function startCustomProviderHealthCheck(
 
   const startupReady = runStartupProviderHealthCheck(chains, getResolvedProviders, options)
     .then((results) => {
-      if (options.reportPath) {
-        writeProviderHealthReport(options.reportPath, chains, results)
-      }
       interval = setInterval(() => {
         void runCustomProviderHealthCheck(chains, getResolvedProviders)
           .then((results) => {

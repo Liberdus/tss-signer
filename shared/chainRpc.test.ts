@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { assertCustomProviderCoverage } from './chainRpc'
+import { isEthGetLogsRangeLimitError } from './lib/rpcUrls'
 
 function testAssertCustomProviderCoveragePasses(): void {
   const chains = [{ chainId: 97 }, { chainId: 80002 }]
@@ -28,10 +29,32 @@ function testAssertCustomProviderCoverageEmptyChains(): void {
   )
 }
 
+function testDrpcEthGetLogsCode19IsRangeLimited(): void {
+  assert.equal(
+    isEthGetLogsRangeLimitError({
+      code: 19,
+      message: 'eth_getLogs: Temporary internal error. Please retry',
+    }),
+    true,
+  )
+}
+
+function testDrpcUnrelatedCode19IsNotRangeLimited(): void {
+  assert.equal(
+    isEthGetLogsRangeLimitError({
+      code: 19,
+      message: 'Temporary internal error. Please retry',
+    }),
+    false,
+  )
+}
+
 function run(): void {
   testAssertCustomProviderCoveragePasses()
   testAssertCustomProviderCoverageMissingChain()
   testAssertCustomProviderCoverageEmptyChains()
+  testDrpcEthGetLogsCode19IsRangeLimited()
+  testDrpcUnrelatedCode19IsNotRangeLimited()
   console.log('chainRpc tests passed')
 }
 
