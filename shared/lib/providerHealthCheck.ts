@@ -62,10 +62,28 @@ export interface FailedProviderReportEntry {
   providerName: string
 }
 
+export type ProviderHealthSeverity = 'normal' | 'warning' | 'emergency'
+
+export interface ChainProviderHealthReport {
+  chainId: number
+  chainName: string
+  configuredCount: number
+  healthyCount: number
+  healthyPercentage: number
+  severity: ProviderHealthSeverity
+}
+
 export interface ProviderHealthReport {
   checkedAt: string
+  chains: ChainProviderHealthReport[]
   failedProviderCount: number
   failedProviders: FailedProviderReportEntry[]
+}
+
+export function providerHealthSeverity(healthyPercentage: number): ProviderHealthSeverity {
+  if (healthyPercentage <= 20) return 'emergency'
+  if (healthyPercentage <= 40) return 'warning'
+  return 'normal'
 }
 
 export interface RunCustomProviderHealthCheckOptions {
@@ -386,8 +404,24 @@ export function buildProviderHealthReport(
         providerName: probe.name,
       })),
   )
+  const resultByChain = new Map(results.map((result) => [result.chainId, result]))
+  const chainReports = chains.map((chain) => {
+    const result = resultByChain.get(chain.chainId)
+    const configuredCount = result?.configuredCount ?? 0
+    const healthyCount = result?.healthyCount ?? 0
+    const healthyPercentage = configuredCount === 0 ? 0 : (healthyCount / configuredCount) * 100
+    return {
+      chainId: chain.chainId,
+      chainName: chain.name,
+      configuredCount,
+      healthyCount,
+      healthyPercentage,
+      severity: providerHealthSeverity(healthyPercentage),
+    }
+  })
   return {
     checkedAt: checkedAt.toISOString(),
+    chains: chainReports,
     failedProviderCount: failedProviders.length,
     failedProviders,
   }
@@ -411,6 +445,25 @@ export function parseProviderHealthReport(value: unknown): ProviderHealthReport 
     throw new Error('invalid provider health checkedAt')
   }
   if (!Array.isArray(raw.failedProviders)) throw new Error('invalid failedProviders')
+  if (!Array.isArray(raw.chains)) throw new Error('invalid chains')
+  const chains = raw.chains.map((entry) => {
+    if (!entry || typeof entry.chainId !== 'number' || !Number.isFinite(entry.chainId) ||
+        typeof entry.chainName !== 'string' || !Number.isInteger(entry.configuredCount) ||
+        entry.configuredCount < 0 || !Number.isInteger(entry.healthyCount) ||
+        entry.healthyCount < 0 || entry.healthyCount > entry.configuredCount ||
+        typeof entry.healthyPercentage !== 'number' || !Number.isFinite(entry.healthyPercentage) ||
+        entry.healthyPercentage < 0 || entry.healthyPercentage > 100 ||
+        Math.abs(entry.healthyPercentage - (entry.configuredCount === 0
+          ? 0 : entry.healthyCount / entry.configuredCount * 100)) > Number.EPSILON * 100 ||
+        entry.severity !== providerHealthSeverity(entry.healthyPercentage)) {
+      throw new Error('invalid chain health entry')
+    }
+    return {
+      chainId: entry.chainId, chainName: entry.chainName,
+      configuredCount: entry.configuredCount, healthyCount: entry.healthyCount,
+      healthyPercentage: entry.healthyPercentage, severity: entry.severity,
+    }
+  })
   const failedProviders = raw.failedProviders.map((entry) => {
     if (!entry || typeof entry.chainId !== 'number' || !Number.isFinite(entry.chainId) ||
         typeof entry.chainName !== 'string' || typeof entry.providerName !== 'string') {
@@ -421,7 +474,7 @@ export function parseProviderHealthReport(value: unknown): ProviderHealthReport 
   if (raw.failedProviderCount !== failedProviders.length) {
     throw new Error('failedProviderCount does not match failedProviders')
   }
-  return {checkedAt: raw.checkedAt, failedProviderCount: failedProviders.length, failedProviders}
+  return {checkedAt: raw.checkedAt, chains, failedProviderCount: failedProviders.length, failedProviders}
 }
 
 export function startCustomProviderHealthCheck(

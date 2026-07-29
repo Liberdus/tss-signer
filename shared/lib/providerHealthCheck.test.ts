@@ -96,6 +96,14 @@ function testProviderHealthReportIsMinimalAndCounted(): void {
   )
   assert.deepEqual(report, {
     checkedAt: '2026-07-20T12:00:00.000Z',
+    chains: [{
+      chainId: 97,
+      chainName: 'BSC Testnet',
+      configuredCount: 2,
+      healthyCount: 1,
+      healthyPercentage: 50,
+      severity: 'normal',
+    }],
     failedProviderCount: 1,
     failedProviders: [{chainId: 97, chainName: 'BSC Testnet', providerName: 'alchemy'}],
   })
