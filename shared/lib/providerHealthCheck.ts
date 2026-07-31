@@ -21,8 +21,6 @@ const ETH_CHAIN_ID_REQUEST = {
   id: 2,
 }
 
-const STARTUP_PROBE_REQUESTS = [ETH_BLOCK_NUMBER_REQUEST, ETH_CHAIN_ID_REQUEST]
-
 export type ProviderHealthCheckSource = (chainId: number) => readonly ResolvedProviderUrl[]
 export type RpcProviderMode = 'custom' | 'chainlist' | 'both'
 export type ProbeProviderUrlFn = (
@@ -180,11 +178,11 @@ function formatProbeError(err: unknown): string {
   return scrubUrls((err as Error)?.message ?? String(err))
 }
 
-function parseJsonRpcBatchResult(data: unknown, id: number): unknown {
+function parseJsonRpcResult(data: unknown, id: number): unknown {
   if (Array.isArray(data)) {
     const item = data.find((entry) => (entry as JsonRpcResponse)?.id === id) as JsonRpcResponse | undefined
     if (!item) {
-      throw new Error(`JSON-RPC batch response missing id=${id}`)
+      throw new Error(`JSON-RPC response missing id=${id}`)
     }
     if (item.error) {
       const message = item.error.message ?? JSON.stringify(item.error)
@@ -206,9 +204,9 @@ async function fetchProbeResultsViaHttp(
   expectedChainId: number,
   timeoutMs: number,
 ): Promise<number> {
-  const response = await axios.post<JsonRpcResponse | JsonRpcResponse[]>(
+  const blockNumberResponse = await axios.post<JsonRpcResponse>(
     url,
-    STARTUP_PROBE_REQUESTS,
+    ETH_BLOCK_NUMBER_REQUEST,
     {
       timeout: timeoutMs,
       headers: { 'Content-Type': 'application/json' },
@@ -217,10 +215,20 @@ async function fetchProbeResultsViaHttp(
   )
 
   const blockNumber = parseEthBlockNumberResult(
-    parseJsonRpcBatchResult(response.data, ETH_BLOCK_NUMBER_REQUEST.id),
+    parseJsonRpcResult(blockNumberResponse.data, ETH_BLOCK_NUMBER_REQUEST.id),
+  )
+
+  const chainIdResponse = await axios.post<JsonRpcResponse>(
+    url,
+    ETH_CHAIN_ID_REQUEST,
+    {
+      timeout: timeoutMs,
+      headers: { 'Content-Type': 'application/json' },
+      validateStatus: (status) => status >= 200 && status < 300,
+    },
   )
   parseEthChainIdResult(
-    parseJsonRpcBatchResult(response.data, ETH_CHAIN_ID_REQUEST.id),
+    parseJsonRpcResult(chainIdResponse.data, ETH_CHAIN_ID_REQUEST.id),
     expectedChainId,
   )
   return blockNumber

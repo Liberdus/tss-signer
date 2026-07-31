@@ -370,17 +370,19 @@ async function testProviderLogsDoNotLeakProbeErrorsOrUrls(): Promise<void> {
   }
 }
 
-async function testProbeProviderUrlPostsBatchJsonRpc(): Promise<void> {
+async function testProbeProviderUrlPostsSeparateJsonRpcCalls(): Promise<void> {
   const originalPost = axios.post
-  let postedBody: unknown
+  const postedBodies: unknown[] = []
 
   axios.post = (async (_url: string, body: unknown) => {
-    postedBody = body
+    postedBodies.push(body)
+    const request = body as { id: number; method: string }
     return {
-      data: [
-        { jsonrpc: '2.0', id: 1, result: '0x2a' },
-        { jsonrpc: '2.0', id: 2, result: '0x61' },
-      ],
+      data: {
+        jsonrpc: '2.0',
+        id: request.id,
+        result: request.method === 'eth_blockNumber' ? '0x2a' : '0x61',
+      },
     }
   }) as typeof axios.post
 
@@ -390,9 +392,10 @@ async function testProbeProviderUrlPostsBatchJsonRpc(): Promise<void> {
       97,
     )
 
-    assert.ok(Array.isArray(postedBody))
-    assert.equal((postedBody as Array<{ method: string }>)[0].method, 'eth_blockNumber')
-    assert.equal((postedBody as Array<{ method: string }>)[1].method, 'eth_chainId')
+    assert.equal(postedBodies.length, 2)
+    assert.equal((postedBodies[0] as { method: string }).method, 'eth_blockNumber')
+    assert.equal((postedBodies[1] as { method: string }).method, 'eth_chainId')
+    assert.equal(postedBodies.some(Array.isArray), false)
     assert.equal(result.pass, true)
     assert.equal(result.blockNumber, 42)
   } finally {
@@ -403,11 +406,12 @@ async function testProbeProviderUrlPostsBatchJsonRpc(): Promise<void> {
 async function testProbeProviderUrlFailsOnChainIdMismatch(): Promise<void> {
   const originalPost = axios.post
 
-  axios.post = (async () => ({
-    data: [
-      { jsonrpc: '2.0', id: 1, result: '0x2a' },
-      { jsonrpc: '2.0', id: 2, result: '0x89' },
-    ],
+  axios.post = (async (_url: string, body: unknown) => ({
+    data: {
+      jsonrpc: '2.0',
+      id: (body as { id: number }).id,
+      result: (body as { method: string }).method === 'eth_blockNumber' ? '0x2a' : '0x89',
+    },
   })) as typeof axios.post
 
   try {
@@ -444,7 +448,7 @@ async function run(): Promise<void> {
   await testRunStartupProviderHealthCheckPrunesFailedUrls()
   await testStartupFailureWritesReportBeforeExit()
   await testProviderLogsDoNotLeakProbeErrorsOrUrls()
-  await testProbeProviderUrlPostsBatchJsonRpc()
+  await testProbeProviderUrlPostsSeparateJsonRpcCalls()
   await testProbeProviderUrlFailsOnChainIdMismatch()
   console.log('providerHealthCheck tests passed')
 }

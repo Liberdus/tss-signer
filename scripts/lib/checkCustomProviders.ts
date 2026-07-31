@@ -46,7 +46,7 @@ export async function runProviderCheck(
   const failures: FailureSummary[] = []
 
   console.log(
-    `[${scriptName}] Probing via HTTP JSON-RPC eth_blockNumber (axios POST; not ethers JsonRpcProvider)`,
+    `[${scriptName}] Probing via separate HTTP JSON-RPC eth_blockNumber and eth_chainId calls (axios POST; not ethers JsonRpcProvider)`,
   )
 
   for (const chain of chains) {
@@ -72,7 +72,7 @@ export async function runProviderCheck(
     }
 
     console.log(
-      `\n  Probing ${result.resolved.length} URL(s) via HTTP JSON-RPC eth_blockNumber...\n`,
+      `\n  Probing ${result.resolved.length} URL(s) via separate HTTP JSON-RPC calls...\n`,
     )
 
     const probes = await Promise.all(

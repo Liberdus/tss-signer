@@ -123,17 +123,19 @@ async function testRunProviderCheckExitsOnProbeFailure(): Promise<void> {
 
 async function testProbeProviderUrlPostsEthBlockNumberViaHttp(): Promise<void> {
   const originalPost = axios.post
-  let postedUrl: string | undefined
-  let postedBody: unknown
+  const postedUrls: string[] = []
+  const postedBodies: unknown[] = []
 
   axios.post = (async (url: string, body: unknown) => {
-    postedUrl = url
-    postedBody = body
+    postedUrls.push(url)
+    postedBodies.push(body)
+    const request = body as { id: number; method: string }
     return {
-      data: [
-        { jsonrpc: '2.0', id: 1, result: '0x2a' },
-        { jsonrpc: '2.0', id: 2, result: '0x61' },
-      ],
+      data: {
+        jsonrpc: '2.0',
+        id: request.id,
+        result: request.method === 'eth_blockNumber' ? '0x2a' : '0x61',
+      },
     }
   }) as typeof axios.post
 
@@ -143,10 +145,14 @@ async function testProbeProviderUrlPostsEthBlockNumberViaHttp(): Promise<void> {
       97,
     )
 
-    assert.equal(postedUrl, 'https://rpc.example/eth')
-    assert.ok(Array.isArray(postedBody))
-    assert.equal((postedBody as Array<{ method: string }>)[0].method, 'eth_blockNumber')
-    assert.equal((postedBody as Array<{ method: string }>)[1].method, 'eth_chainId')
+    assert.deepEqual(postedUrls, [
+      'https://rpc.example/eth',
+      'https://rpc.example/eth',
+    ])
+    assert.equal(postedBodies.length, 2)
+    assert.equal((postedBodies[0] as { method: string }).method, 'eth_blockNumber')
+    assert.equal((postedBodies[1] as { method: string }).method, 'eth_chainId')
+    assert.equal(postedBodies.some(Array.isArray), false)
     assert.equal(result.pass, true)
     assert.equal(result.blockNumber, 42)
   } finally {
