@@ -21,9 +21,9 @@ const BRIDGE_IN_IFACE = new ethers.utils.Interface([BRIDGE_IN_EVENT_ABI]);
 const BRIDGE_IN_CALL_IFACE = new ethers.utils.Interface([BRIDGE_IN_FUNCTION_ABI]);
 
 const INITIAL_BATCH_SIZE = 2000;
-// Alchemy free-tier and dRPC BSC Testnet endpoints accept eth_getLogs over
-// 10-block windows but reject larger ranges.
-const MIN_BATCH_SIZE = 10;
+// Providers that cannot serve the minimum eth_getLogs range are excluded by
+// the HTTP provider retry helper so the scan can fail over to another endpoint.
+const MIN_BATCH_SIZE = 100;
 const MAX_BATCH_SIZE = 5000;
 const BASE_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 30_000;
