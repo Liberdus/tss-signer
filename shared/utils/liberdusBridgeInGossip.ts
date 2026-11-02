@@ -1,6 +1,6 @@
 import path from "path";
 import { ethers } from "ethers";
-import * as crypto from "@shardus/crypto-utils";
+import * as crypto from "@shardus/lib-crypto-utils";
 import { toShardusAddress } from "./transformAddress";
 import { isNormalizedTxId, normalizeTxId } from "./transformTxId";
 import { DEFAULT_SHARDUS_CRYPTO_HASH_KEY } from "../../tss-tools/lib/channelId";
