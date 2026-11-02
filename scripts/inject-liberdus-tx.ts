@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import {ethers} from 'ethers'
-import * as crypto from '@shardus/crypto-utils'
+import * as crypto from '@shardus/lib-crypto-utils'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import axios from 'axios'
