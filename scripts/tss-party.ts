@@ -5,7 +5,7 @@ import * as path from 'path'
 import axios, {AxiosResponse} from 'axios'
 import http from 'http'
 import https from 'https'
-import * as crypto from '@shardus/crypto-utils'
+import * as crypto from '@shardus/lib-crypto-utils'
 import {
   ChainConfig,
   ChainConfigs,
